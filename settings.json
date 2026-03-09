@@ -15,7 +15,7 @@
         "history_days": 730,
         "discovery_horizon": 5,
         "move_threshold_pct": 1.0,
-        "min_samples_to_activate": 20
+        "min_samples_to_activate": 100
     },
     "genome_settings": {
         "sequence_lengths": [4, 5, 6],

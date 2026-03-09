@@ -1,7 +1,10 @@
 # dnabot — Adaptive Market Genome System
 
 Ein selbstlernender Trading-Bot, der Marktbewegungen wie genetische Sequenzen analysiert.
-Kein Machine Learning, kein Training — rein statistisch, deterministisch und erweiterbar.
+Keine neuronalen Netze, keine Black-Box — deterministisches statistisches Pattern Discovery.
+
+> **Disclaimer:** Diese Software ist experimentell und dient ausschließlich Forschungszwecken.
+> Der Handel mit Kryptowährungen birgt erhebliche finanzielle Risiken. Nutzung auf eigene Gefahr.
 
 ---
 
@@ -82,12 +85,15 @@ Alle Kerzen → Gene codieren
     ↓
 Sliding Window (seq_len = 4, 5, 6)
     ↓
-Für jedes Fenster: Was passierte danach?
+Für jedes Fenster: Was passierte danach? (strikt NACH dem Sequenz-Close)
   max_up > 1% UND max_up > max_down → LONG-Outcome
   max_down > 1% UND max_down > max_up → SHORT-Outcome
     ↓
 Genome in SQLite speichern / aktualisieren
 ```
+
+> Zukunfts-Kerzen werden ausschließlich nach dem Close der letzten Sequenz-Kerze bewertet
+> (kein Lookahead-Bias). Discovery und Backtester nutzen dieselbe Indexlogik.
 
 ### Phase 2 — Evolution (`evolver.py`)
 
@@ -95,11 +101,16 @@ Genome in SQLite speichern / aktualisieren
 Score = winrate × avg_move_pct × log(1 + total_occurrences)
 
 Genome mit:
-  - < 20 Samples    → inaktiv (noch nicht bewertbar)
+  - < 100 Samples   → inaktiv (statistisch nicht bewertbar)
   - Winrate < 45%   → deaktiviert
   - Score < 0.08    → deaktiviert
   - Alles andere    → aktiviert → wird im Live-Trading genutzt
 ```
+
+> **Overfitting-Warnung:** Mit 96 möglichen Genen entstehen theoretisch 96⁴ ≈ 85 Mio.
+> mögliche 4er-Sequenzen. In der Praxis sind nur wenige Tausend tatsächlich beobachtbar.
+> Sequenzen mit weniger als 100 Samples werden grundsätzlich ignoriert.
+> Seltene Muster werden nicht gehandelt.
 
 ### Phase 3 — Live-Trading
 
@@ -115,6 +126,21 @@ Jeder Cronjob-Lauf:
 Nach Trade-Abschluss:
   → Self-Learning: Trade-Ergebnis in Genome-DB schreiben
   → Winrate + Score werden für nächsten Evolver-Lauf aktualisiert
+```
+
+### Beispiel-Output (Live-Signal)
+
+```
+[Genome Signal]
+  Sequenz:   B2H-NL | B3H-UH | S1L-DL | B2H-NH
+  Richtung:  LONG
+  Score:     0.34
+  Winrate:   63.8%
+  Samples:   47
+  Entry:     ~43.250 USDT (Trigger-Limit)
+  SL:         42.800 USDT (Sequenz-Low)
+  TP:         44.150 USDT (2:1 R:R)
+  → Platziere Trigger-Limit-Order...
 ```
 
 ---
@@ -137,6 +163,26 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `score` | `0.34` | Qualitäts-Score (winrate × avg_move × log(n)) |
 | `active` | `1` | Vom Evolver freigegeben |
 
+### Schema
+
+```sql
+CREATE TABLE genomes (
+    genome_id           TEXT PRIMARY KEY,
+    sequence            TEXT NOT NULL,
+    market              TEXT NOT NULL,
+    timeframe           TEXT NOT NULL,
+    direction           TEXT NOT NULL,
+    seq_length          INTEGER NOT NULL,
+    total_occurrences   INTEGER DEFAULT 0,
+    wins                INTEGER DEFAULT 0,
+    avg_move_pct        REAL DEFAULT 0.0,
+    score               REAL DEFAULT 0.0,
+    active              INTEGER DEFAULT 0,
+    discovered_at       TEXT NOT NULL,
+    last_updated        TEXT NOT NULL
+);
+```
+
 ---
 
 ## Konfiguration (`settings.json`)
@@ -154,7 +200,7 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
         "history_days": 730,
         "discovery_horizon": 5,
         "move_threshold_pct": 1.0,
-        "min_samples_to_activate": 20
+        "min_samples_to_activate": 100
     },
     "genome_settings": {
         "sequence_lengths": [4, 5, 6],
@@ -175,7 +221,7 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `history_days` | Wie viele Tage Historien-Daten für Discovery |
 | `discovery_horizon` | Wie viele Kerzen nach einer Sequenz beobachtet werden |
 | `move_threshold_pct` | Mindest-Bewegung in % für ein gültiges Outcome |
-| `min_samples_to_activate` | Mindest-Vorkommen für Aktivierung |
+| `min_samples_to_activate` | Mindest-Vorkommen für Aktivierung (≥ 100 empfohlen) |
 | `min_score` | Mindest-Score (0.08 = guter Startpunkt) |
 | `min_winrate` | Mindest-Winrate (0.45 = 45%) |
 | `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade |
@@ -187,7 +233,7 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 
 ```bash
 # 1. Repository klonen
-git clone <repo-url> dnabot
+git clone https://github.com/Youra82/dnabot.git
 cd dnabot
 
 # 2. Installieren (venv + Abhängigkeiten)
@@ -262,6 +308,7 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 - `artifacts/tracker/` ist **nicht in Git** — enthält Trade-Status pro Symbol
 - Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
 - Genome-Discovery muss mindestens 1x pro Woche wiederholt werden (neue Marktdaten)
+- Genome mit weniger als 100 Samples werden grundsätzlich nicht gehandelt
 
 ---
 
@@ -276,4 +323,3 @@ requests==2.31.0 # Telegram
 optuna==4.5.0    # Optional: Threshold-Optimierung
 sqlite3          # Built-in Python — keine Installation nötig
 ```
-

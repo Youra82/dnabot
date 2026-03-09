@@ -151,14 +151,37 @@ Nach Trade-Abschluss:
 [Genome Signal]
   Sequenz:   B2H-NL | B3H-UH | S1L-DL | B2H-NH
   Richtung:  LONG
-  Score:     0.34
-  Winrate:   63.8%
-  Samples:   47
+  Regime:    RANGE
+  Score:     0.41
+  Winrate:   64.3%  (RANGE: 134/210)
+  Samples:   210    (RANGE-Regime)
   Entry:     ~43.250 USDT (Trigger-Limit)
   SL:         42.800 USDT (Sequenz-Low)
   TP:         44.150 USDT (2:1 R:R)
   → Platziere Trigger-Limit-Order...
 ```
+
+---
+
+## Markt-Regime
+
+Das System erkennt vier Marktphasen und handelt nur in den erlaubten:
+
+```
+TREND    — ADX > 25            Klare Richtung, Momentum-Genome profitieren
+RANGE    — ADX < 20            Seitwärtsmarkt, Reversal-Genome profitieren
+HIGH_VOL — ATR > ATR_MA × 1.5  Unkontrollierte Volatilität → immer blockiert
+NEUTRAL  — sonst               Übergangsphase, vorsichtiger Handel möglich
+```
+
+**Warum das wichtig ist:** Ein Genome das im Range-Markt 64% Winrate hat,
+kann im Trend 38% verlieren — und umgekehrt. Der Regime-Filter ist die
+wirksamste Einzelmaßnahme gegen Fehlsignale.
+
+> **Bekannte Einschränkung — ADX-Latenz:** ADX und ATR sind nachlaufende Indikatoren.
+> Wenn ein neuer Trend startet, ist der ADX noch zu niedrig — das System klassifiziert
+> die Situation als RANGE oder NEUTRAL. Das ist systemimmanent und unvermeidbar.
+> Vorteil: Es verhindert auch Fehlsignale am Anfang schwacher Trendbewegungen.
 
 ---
 
@@ -337,6 +360,23 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 - Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
 - Genome-Discovery muss mindestens 1x pro Woche wiederholt werden (neue Marktdaten)
 - Genome mit weniger als 100 Samples werden grundsätzlich nicht gehandelt
+
+---
+
+## Geplante Erweiterungen
+
+### Decay-Weighting (Time-Decay für alte Samples)
+
+Aktuelle Gewichtung: jedes Sample zählt gleich — egal ob 2 Wochen oder 2 Jahre alt.
+
+Geplant: Ältere Samples exponentiell abwerten:
+
+```
+weight = e^(−age_days / half_life)
+```
+
+Mit z.B. `half_life = 180 Tage` verlieren 1 Jahr alte Samples ~90% ihres Gewichts.
+Neue Marktstrukturen dominieren automatisch; veraltete Pattern werden ausgeblendet.
 
 ---
 

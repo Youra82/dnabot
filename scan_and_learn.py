@@ -28,6 +28,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.discovery import discover_genomes
 from dnabot.genome.evolver import evolve, print_genome_report
+from dnabot.genome.regime import get_atr_ratio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,7 +152,12 @@ def main():
 
             # Evolver (direkt nach Discovery)
             if not args.no_evolve:
-                logger.info(f"  Evolver läuft für {symbol} ({timeframe})...")
+                # Vol-Factor für volatilitätsadjustierten Decay
+                vol_factor = get_atr_ratio(df)
+                logger.info(
+                    f"  Evolver läuft für {symbol} ({timeframe}) | "
+                    f"vol_factor={vol_factor:.2f} (ATR/ATR-MA)"
+                )
                 evo_result = evolve(
                     db=db,
                     market=symbol,
@@ -160,11 +166,12 @@ def main():
                     min_winrate=min_winrate,
                     score_threshold=min_score,
                     half_life_days=half_life_days,
+                    vol_factor=vol_factor,
                 )
                 logger.info(
                     f"  Evolver: {evo_result['activated']} aktiviert, "
-                    f"{evo_result['deactivated']} deaktiviert "
-                    f"(decay half-life: {half_life_days}d)"
+                    f"{evo_result['deactivated']} deaktiviert | "
+                    f"eff. Halbwertszeit: {evo_result['effective_half_life']:.0f}d"
                 )
 
     logger.info(f"\n{'=' * 60}")

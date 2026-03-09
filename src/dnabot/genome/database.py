@@ -10,6 +10,12 @@
 #   occ_range / wins_range   — Vorkommen + Wins im RANGE-Regime
 #   occ_neutral / wins_neutral — Vorkommen + Wins im NEUTRAL-Regime
 #   active_regimes           — JSON-Liste der Regime, in denen das Genome aktiv ist
+#
+# Zeitstempel:
+#   discovered_at — wann das Genome erstmals entdeckt wurde (unveränderlich)
+#   last_seen     — wann das Genome zuletzt in Discovery/Live-Trade beobachtet wurde
+#                   (Basis für Decay-Weighting)
+#   last_updated  — wann der DB-Eintrag zuletzt geschrieben wurde (inkl. Evolver)
 
 import sqlite3
 import hashlib
@@ -56,6 +62,7 @@ class GenomeDB:
         wins_neutral        INTEGER DEFAULT 0,
         active_regimes      TEXT DEFAULT '[]',
         discovered_at       TEXT NOT NULL,
+        last_seen           TEXT NOT NULL,
         last_updated        TEXT NOT NULL
     );
 
@@ -112,6 +119,8 @@ class GenomeDB:
             ("occ_neutral",    "INTEGER DEFAULT 0"),
             ("wins_neutral",   "INTEGER DEFAULT 0"),
             ("active_regimes", "TEXT DEFAULT '[]'"),
+            # last_seen = Basis für Decay; Fallback auf last_updated für alte DBs
+            ("last_seen",      f"TEXT DEFAULT '{datetime.now(timezone.utc).isoformat()}'"),
         ]
         for col, definition in migrations:
             if col not in existing:
@@ -140,6 +149,7 @@ class GenomeDB:
         """
         Erstellt oder aktualisiert ein Genome mit einem Trade-Ergebnis.
         Inkrementiert die richtigen per-Regime-Zähler.
+        Setzt last_seen = jetzt (Basis für Decay).
         Gibt True zurück wenn es ein neues Genome war, sonst False.
         """
         gid = _genome_id(sequence, market, timeframe, direction)
@@ -159,15 +169,16 @@ class GenomeDB:
                 INSERT INTO genomes
                     (genome_id, sequence, market, timeframe, direction, seq_length,
                      total_occurrences, wins, sum_move_pct, avg_move_pct, score,
-                     active, {occ_col}, {wins_col}, active_regimes, discovered_at, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, 1, ?, '[]', ?, ?)
+                     active, {occ_col}, {wins_col}, active_regimes,
+                     discovered_at, last_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, 1, ?, '[]', ?, ?, ?)
             """, (
                 gid, sequence, market, timeframe, direction, seq_length,
                 1 if is_win else 0,
                 move_pct,
                 move_pct,
                 1 if is_win else 0,
-                now, now
+                now, now, now
             ))
             self._conn.commit()
             return True
@@ -184,9 +195,10 @@ class GenomeDB:
                     avg_move_pct = ?,
                     {occ_col} = {occ_col} + 1,
                     {wins_col} = {wins_col} + ?,
+                    last_seen = ?,
                     last_updated = ?
                 WHERE genome_id = ?
-            """, (total, wins, sum_move, avg_move, 1 if is_win else 0, now, gid))
+            """, (total, wins, sum_move, avg_move, 1 if is_win else 0, now, now, gid))
             self._conn.commit()
             return False
 
@@ -233,6 +245,7 @@ class GenomeDB:
     ):
         """
         Aktualisiert Score, Aktivierungsstatus und aktive Regime nach einem Evolver-Lauf.
+        Aktualisiert NUR last_updated, NICHT last_seen — Decay bleibt korrekt.
 
         Args:
             active_regimes: Liste der Regime, in denen das Genome profitabel ist.
@@ -265,7 +278,7 @@ class GenomeDB:
         ).fetchall()
         top = self._conn.execute("""
             SELECT sequence, market, timeframe, direction, score,
-                   wins, total_occurrences, active_regimes,
+                   wins, total_occurrences, active_regimes, last_seen,
                    CAST(wins AS REAL) / total_occurrences AS winrate
             FROM genomes
             WHERE active = 1 AND total_occurrences >= 100

@@ -113,3 +113,38 @@ def is_regime_allowed(current_regime: str, allowed_regimes: list[str]) -> bool:
     if current_regime == REGIME_HIGH_VOL:
         return False
     return current_regime in allowed_regimes
+
+
+def get_atr_ratio(
+    df: pd.DataFrame,
+    atr_period: int = 14,
+    atr_ma_period: int = 50,
+) -> float:
+    """
+    Berechnet das aktuelle ATR / ATR-MA-Verhältnis als Volatilitätsmaß.
+
+    Wird als vol_factor im Evolver genutzt:
+      > 1.0 → hohe Volatilität → Pattern altern schneller (kürzere Halbwertszeit)
+      < 1.0 → niedrige Volatilität → Pattern bleiben länger gültig
+      = 1.0 → normale Volatilität (Fallback)
+
+    Args:
+        df: OHLCV DataFrame (mind. atr_ma_period Kerzen empfohlen)
+
+    Returns:
+        ATR-Ratio (float), Fallback 1.0 bei Fehler oder zu wenig Daten
+    """
+    if len(df) < atr_ma_period + 5:
+        return 1.0
+    try:
+        atr_indicator = ta.volatility.AverageTrueRange(
+            high=df['high'], low=df['low'], close=df['close'],
+            window=atr_period, fillna=True
+        )
+        atr_series = atr_indicator.average_true_range()
+        current_atr = float(atr_series.iloc[-1])
+        atr_ma = float(atr_series.rolling(window=atr_ma_period, min_periods=10).mean().iloc[-1])
+        return current_atr / atr_ma if atr_ma > 0 else 1.0
+    except Exception as e:
+        logger.warning(f"ATR-Ratio Berechnung fehlgeschlagen: {e}. Fallback: 1.0")
+        return 1.0

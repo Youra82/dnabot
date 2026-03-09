@@ -113,14 +113,23 @@ active_regimes = Liste der qualifizierenden Regime
 
 Genome ist aktiv (active=1) wenn mindestens ein Regime qualifiziert.
 
-Decay-Weighting (Halbwertszeit = 180 Tage):
-  decay = e^(−age_days / half_life_days)
-  score_final = score_regime × decay
+Decay-Weighting (Occurrence-Decay, volatilitätsadjustiert):
+  effective_occ = occ_regime × decay
+  score_regime  = winrate × avg_move × log(1 + effective_occ)
 
-  age_days = Tage seit letztem Discovery-Update.
-  Frisch gescannte Genome: decay ≈ 1.0 (volle Stärke)
-  Genome die 6 Monate nicht mehr auftauchen: decay ≈ 0.5
-  Genome die 1 Jahr fehlen: decay ≈ 0.13 → werden automatisch deaktiviert
+  decay = e^(−age_days / effective_half_life)
+  effective_half_life = half_life_days / vol_factor
+
+  vol_factor = ATR / ATR_MA (aktuelle Marktvolatilität):
+    vol_factor = 1.0 → half_life = 180d  (normal)
+    vol_factor = 2.0 → half_life = 90d   (hohe Vol → schnellerer Decay)
+    vol_factor = 0.5 → half_life = 360d  (niedrige Vol → langsamerer Decay)
+
+  age_days basiert auf last_seen (letzter echter Beobachtung in Discovery
+  oder Live-Trade). Evolver-Updates ändern last_seen NICHT.
+
+  Beispiel: 1000 Samples, 1 Jahr nicht gesehen (half_life=180d):
+    decay ≈ 0.13 → effective_occ ≈ 130 (wie ~130 frische Samples)
 ```
 
 **Beispiel:** Ein Genome mit 3 Regime-Profilen:

@@ -1,0 +1,292 @@
+# dnabot — Adaptive Market Genome System
+
+Ein selbstlernender Trading-Bot, der Marktbewegungen wie genetische Sequenzen analysiert.
+Kein Machine Learning, kein Training — rein statistisch, deterministisch und erweiterbar.
+
+---
+
+## Grundidee
+
+Jede Kerze wird zu einem **Gen-Code** komprimiert:
+
+```
+B3H-UH
+│││ ││
+│││ │└── Volumen:    H = hoch (über 20er-MA), L = niedrig
+│││ └─── Wick:       U = oben, D = unten, B = beide, N = keiner
+││└───── Volatilität: H = hoch (Range ≥ ATR), L = niedrig
+│└────── Körpergröße: 1 = klein (<30% ATR), 2 = mittel, 3 = groß
+└─────── Richtung:   B = Bullish, S = Bearish
+```
+
+**96 mögliche Gene** — kombinatorisch, vollständig deterministisch.
+
+Sequenzen aus 4–6 aufeinanderfolgenden Genen bilden ein **Genome**:
+
+```
+"B2H-NL | B3H-UH | S1L-DL | B2H-NH"
+   ↓
+Dieses Muster erschien 47x in der Vergangenheit.
+30x davon stieg der Kurs danach > 1%.
+→ Winrate: 63.8% | Score: 0.34 | Status: AKTIV
+```
+
+Der Bot handelt nur, wenn ein solches Genome im Live-Markt erkannt wird.
+
+---
+
+## Architektur
+
+```
+dnabot/
+├── scan_and_learn.py          # Haupt-Lernprozess (Discovery + Evolver)
+├── master_runner.py           # Cronjob-Orchestrator für Live-Trading
+├── run_pipeline.sh            # Vollständige Pipeline (Discovery → Report)
+├── install.sh                 # Erstinstallation auf VPS
+├── update.sh                  # Git-Update (sichert secret.json)
+├── settings.json              # Konfiguration
+├── secret.json                # API-Keys (nicht in Git)
+│
+└── src/dnabot/
+    ├── genome/
+    │   ├── encoder.py         # Kerze → Gen-String
+    │   ├── database.py        # SQLite-Interface (Genome-Library)
+    │   ├── discovery.py       # Pattern-Mining aus Historien-Daten
+    │   └── evolver.py         # Scoring + Aktivierung/Deaktivierung
+    │
+    ├── strategy/
+    │   ├── genome_logic.py    # Aktuelle Kerzen vs. DB → Signal
+    │   └── run.py             # Entry Point für eine Strategie
+    │
+    ├── analysis/
+    │   ├── backtester.py      # Historische Simulation
+    │   └── show_results.py    # Report: Genome-Library + Backtest
+    │
+    └── utils/
+        ├── exchange.py        # Bitget CCXT Wrapper
+        ├── trade_manager.py   # Entry/TP/SL + Self-Learning
+        ├── telegram.py        # Telegram-Benachrichtigungen
+        └── guardian.py        # Crash-Schutz Decorator
+```
+
+---
+
+## Wie das System lernt
+
+### Phase 1 — Discovery (`scan_and_learn.py`)
+
+```
+Historische Daten (2 Jahre OHLCV)
+    ↓
+Alle Kerzen → Gene codieren
+    ↓
+Sliding Window (seq_len = 4, 5, 6)
+    ↓
+Für jedes Fenster: Was passierte danach?
+  max_up > 1% UND max_up > max_down → LONG-Outcome
+  max_down > 1% UND max_down > max_up → SHORT-Outcome
+    ↓
+Genome in SQLite speichern / aktualisieren
+```
+
+### Phase 2 — Evolution (`evolver.py`)
+
+```
+Score = winrate × avg_move_pct × log(1 + total_occurrences)
+
+Genome mit:
+  - < 20 Samples    → inaktiv (noch nicht bewertbar)
+  - Winrate < 45%   → deaktiviert
+  - Score < 0.08    → deaktiviert
+  - Alles andere    → aktiviert → wird im Live-Trading genutzt
+```
+
+### Phase 3 — Live-Trading
+
+```
+Jeder Cronjob-Lauf:
+  1. Letzte 6 Kerzen codieren
+  2. Sequenzen der Länge 4/5/6 gegen DB prüfen
+  3. Bestes aktives Genome (höchster Score) → Signal
+  4. Entry: Trigger-Limit-Order (±0.05% Delta)
+  5. SL: Low/High der Sequenz-Kerzen
+  6. TP: 2:1 R:R
+
+Nach Trade-Abschluss:
+  → Self-Learning: Trade-Ergebnis in Genome-DB schreiben
+  → Winrate + Score werden für nächsten Evolver-Lauf aktualisiert
+```
+
+---
+
+## Genome-Datenbank
+
+SQLite unter `artifacts/db/genome.db`.
+Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
+
+| Feld | Beispiel | Bedeutung |
+|---|---|---|
+| `genome_id` | `a3f2b9c1...` | MD5-Hash (eindeutiger Schlüssel) |
+| `sequence` | `B2H-NL\|B3H-UH\|S1L-DL\|B2H-NH` | Gen-Sequenz |
+| `market` | `BTC/USDT:USDT` | Handelspaar |
+| `timeframe` | `4h` | Zeitrahmen |
+| `direction` | `LONG` | Erwartete Richtung |
+| `total_occurrences` | `47` | Wie oft dieses Muster in der History auftrat |
+| `wins` | `30` | Wie oft danach die erwartete Bewegung kam |
+| `avg_move_pct` | `1.84` | Durchschnittliche Preisbewegung in % |
+| `score` | `0.34` | Qualitäts-Score (winrate × avg_move × log(n)) |
+| `active` | `1` | Vom Evolver freigegeben |
+
+---
+
+## Konfiguration (`settings.json`)
+
+```json
+{
+    "live_trading_settings": {
+        "active_strategies": [
+            { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": false }
+        ]
+    },
+    "scan_settings": {
+        "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
+        "timeframes": ["1h", "4h", "1d"],
+        "history_days": 730,
+        "discovery_horizon": 5,
+        "move_threshold_pct": 1.0,
+        "min_samples_to_activate": 20
+    },
+    "genome_settings": {
+        "sequence_lengths": [4, 5, 6],
+        "min_score": 0.08,
+        "min_winrate": 0.45
+    },
+    "risk_settings": {
+        "risk_per_entry_pct": 1.0,
+        "leverage": 5,
+        "margin_mode": "isolated",
+        "rr_ratio": 2.0
+    }
+}
+```
+
+| Parameter | Erklärung |
+|---|---|
+| `history_days` | Wie viele Tage Historien-Daten für Discovery |
+| `discovery_horizon` | Wie viele Kerzen nach einer Sequenz beobachtet werden |
+| `move_threshold_pct` | Mindest-Bewegung in % für ein gültiges Outcome |
+| `min_samples_to_activate` | Mindest-Vorkommen für Aktivierung |
+| `min_score` | Mindest-Score (0.08 = guter Startpunkt) |
+| `min_winrate` | Mindest-Winrate (0.45 = 45%) |
+| `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade |
+| `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2) |
+
+---
+
+## Installation (VPS)
+
+```bash
+# 1. Repository klonen
+git clone <repo-url> dnabot
+cd dnabot
+
+# 2. Installieren (venv + Abhängigkeiten)
+./install.sh
+
+# 3. API-Keys eintragen
+cp secret.json.example secret.json
+nano secret.json
+
+# 4. Genome-Discovery starten (dauert je nach Märkten 10–30 Min)
+./run_pipeline.sh
+
+# 5. Ergebnisse prüfen, dann live schalten:
+#    → settings.json: "active": true
+#    → Cronjob einrichten (alle 15 Min / 1h / 4h je nach Timeframe)
+```
+
+### `secret.json` Struktur
+
+```json
+{
+    "dnabot": [
+        {
+            "name": "Main-Account",
+            "apiKey": "DEIN_API_KEY",
+            "secret": "DEIN_SECRET",
+            "password": "DEIN_PASSPHRASE"
+        }
+    ],
+    "telegram": {
+        "bot_token": "DEIN_BOT_TOKEN",
+        "chat_id": "DEINE_CHAT_ID"
+    }
+}
+```
+
+---
+
+## Cronjob-Einrichtung
+
+```bash
+crontab -e
+```
+
+```cron
+# Für 1h-Strategien: jede Stunde (5 Min nach voll)
+5 * * * * cd /pfad/zu/dnabot && .venv/bin/python3 master_runner.py
+
+# Für 4h-Strategien: alle 4h
+5 */4 * * * cd /pfad/zu/dnabot && .venv/bin/python3 master_runner.py
+
+# Wöchentliches Relearning (Sonntag 2 Uhr)
+0 2 * * 0 cd /pfad/zu/dnabot && .venv/bin/python3 scan_and_learn.py
+```
+
+---
+
+## Update
+
+```bash
+./update.sh
+```
+
+Sichert automatisch `secret.json` vor dem `git reset --hard`.
+
+---
+
+## Wichtige Regeln
+
+- `secret.json` ist **nicht in Git** (steht in `.gitignore`)
+- `artifacts/db/genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
+- `artifacts/tracker/` ist **nicht in Git** — enthält Trade-Status pro Symbol
+- Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
+- Genome-Discovery muss mindestens 1x pro Woche wiederholt werden (neue Marktdaten)
+
+---
+
+## Abhängigkeiten
+
+```
+ccxt==4.3.5      # Exchange-Verbindung (Bitget)
+pandas==2.1.3    # Datenverarbeitung
+ta==0.11.0       # ATR-Berechnung (für Encoding)
+numpy            # Array-Operationen
+requests==2.31.0 # Telegram
+optuna==4.5.0    # Optional: Threshold-Optimierung
+sqlite3          # Built-in Python — keine Installation nötig
+```
+
+---
+
+## Unterschiede zu ltbbot / dbot
+
+| | ltbbot | dbot | dnabot |
+|---|---|---|---|
+| Signal | Technische Indikatoren | LSTM Neural Network | Genome-Sequenzen (statistisch) |
+| Training | keins | PyTorch, Stunden | keins (Discovery < 30 Min) |
+| Entry | 3 gestaffelte Layers | 1 Trigger-Limit | 1 Trigger-Limit |
+| SL | % vom Entry | % vom Entry | Sequenz-Struktur (Low/High) |
+| Datenbank | keins | keins | SQLite Genome-Library |
+| Self-Learning | nein | nein | ja (nach jedem Trade) |
+| Interpretierbar | teilweise | nein (Black Box) | ja (Gen-Sequenzen lesbar) |

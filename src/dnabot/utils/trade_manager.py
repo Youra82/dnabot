@@ -1,0 +1,655 @@
+# src/dnabot/utils/trade_manager.py
+# Trade-Management für dnabot (Genome-basierte Signale)
+#
+# Unterschiede zu dbot/ltbbot:
+#   - Signal kommt von genome_logic (nicht LSTM)
+#   - SL = Low/High der Sequenz-Kerzen (nicht % vom Entry)
+#   - Self-Learning: Nach Trade-Abschluss wird Genome in DB aktualisiert
+#   - 1 Entry (kein 3-Layer-System)
+
+import logging
+import time
+import json
+import os
+import sys
+import ccxt
+import pandas as pd
+from datetime import datetime
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
+
+sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
+
+from dnabot.utils.telegram import send_message
+from dnabot.utils.exchange import Exchange
+from dnabot.genome.database import GenomeDB
+from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
+
+MIN_NOTIONAL_USDT = 5.0
+FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
+
+
+# ─── Tracker File Handling ────────────────────────────────────────────────────
+
+def get_tracker_file_path(symbol: str, timeframe: str) -> str:
+    os.makedirs(TRACKER_DIR, exist_ok=True)
+    safe = f"{symbol.replace('/', '-').replace(':', '-')}_{timeframe}.json"
+    return os.path.join(TRACKER_DIR, safe)
+
+
+def read_tracker(path: str) -> dict:
+    default = {
+        "status": "ok_to_trade",
+        "last_side": None,
+        "stop_loss_ids": [],
+        "take_profit_ids": [],
+        "active_genome": None,
+        "performance": {
+            "total_trades": 0, "wins": 0, "losses": 0,
+            "consecutive_losses": 0, "consecutive_wins": 0,
+        }
+    }
+    if not os.path.exists(path):
+        _write_tracker(path, default)
+        return default
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+        return json.loads(content) if content else default
+    except (json.JSONDecodeError, FileNotFoundError):
+        _write_tracker(path, default)
+        return default
+
+
+def _write_tracker(path: str, data: dict):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Fehler beim Schreiben des Trackers {path}: {e}")
+
+
+# ─── Performance Tracking ─────────────────────────────────────────────────────
+
+def record_trade_result(path: str, outcome: str, logger: logging.Logger):
+    tracker = read_tracker(path)
+    perf = tracker.setdefault('performance', {
+        "total_trades": 0, "wins": 0, "losses": 0,
+        "consecutive_losses": 0, "consecutive_wins": 0,
+    })
+    perf['total_trades'] = perf.get('total_trades', 0) + 1
+    if outcome == 'win':
+        perf['wins'] = perf.get('wins', 0) + 1
+        perf['consecutive_wins'] = perf.get('consecutive_wins', 0) + 1
+        perf['consecutive_losses'] = 0
+    else:
+        perf['losses'] = perf.get('losses', 0) + 1
+        perf['consecutive_losses'] = perf.get('consecutive_losses', 0) + 1
+        perf['consecutive_wins'] = 0
+
+    total = perf['total_trades']
+    if total > 0:
+        perf['win_rate'] = perf['wins'] / total
+    _write_tracker(path, tracker)
+
+
+def should_skip_trading(path: str) -> tuple[bool, str]:
+    tracker = read_tracker(path)
+    perf = tracker.get('performance', {})
+    if perf.get('consecutive_losses', 0) >= 5:
+        return True, f"{perf['consecutive_losses']} aufeinanderfolgende Verluste"
+    total = perf.get('total_trades', 0)
+    if total >= 30 and perf.get('win_rate', 1.0) < 0.25:
+        return True, f"Win-Rate {perf.get('win_rate', 0):.1%} nach {total} Trades"
+    return False, "OK"
+
+
+# ─── Order Management ────────────────────────────────────────────────────────
+
+def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
+                         tracker_path: str = None):
+    """Storniert alle offenen Limit- und nicht-reduceOnly Trigger-Orders."""
+    count = 0
+    for order in exchange.fetch_open_orders(symbol):
+        try:
+            exchange.cancel_order(order['id'], symbol)
+            count += 1
+            time.sleep(0.1)
+        except ccxt.OrderNotFound:
+            pass
+        except Exception as e:
+            logger.warning(f"Konnte Order {order['id']} nicht stornieren: {e}")
+
+    for order in exchange.fetch_open_trigger_orders(symbol):
+        if order.get('reduceOnly'):
+            continue
+        try:
+            exchange.cancel_trigger_order(order['id'], symbol)
+            count += 1
+            time.sleep(0.1)
+        except ccxt.OrderNotFound:
+            pass
+        except Exception as e:
+            logger.warning(f"Konnte Trigger {order['id']} nicht stornieren: {e}")
+
+    return count
+
+
+def check_sl_triggered(exchange: Exchange, symbol: str, tracker_path: str,
+                        logger: logging.Logger) -> bool:
+    tracker = read_tracker(tracker_path)
+    sl_ids = tracker.get('stop_loss_ids', [])
+    if not sl_ids:
+        return False
+    try:
+        params = {'stop': True, 'productType': 'USDT-FUTURES'}
+        all_orders = exchange.exchange.fetchOrders(symbol, limit=20, params=params)
+        closed = [o for o in all_orders if o.get('stopPrice') and o['status'] in ['closed', 'canceled']]
+        for o in closed:
+            if o['id'] in sl_ids and o.get('status') == 'closed':
+                logger.warning(f"STOP LOSS ausgelöst für {symbol}! Order: {o['id']}")
+                pos_side = 'long' if o['side'] == 'sell' else 'short'
+                tracker.update({
+                    "status": "stop_loss_triggered",
+                    "last_side": pos_side,
+                    "stop_loss_ids": [],
+                    "take_profit_ids": [],
+                })
+                tracker.pop('last_notified_entry_price', None)
+                tracker.pop('last_notified_side', None)
+                _write_tracker(tracker_path, tracker)
+                return True
+    except Exception as e:
+        logger.error(f"Fehler beim Prüfen des SL: {e}", exc_info=True)
+    return False
+
+
+def check_tp_triggered(exchange: Exchange, symbol: str, tracker_path: str,
+                        logger: logging.Logger) -> bool:
+    tracker = read_tracker(tracker_path)
+    tp_ids = tracker.get('take_profit_ids', [])
+    if not tp_ids:
+        return False
+    try:
+        params = {'stop': True, 'productType': 'USDT-FUTURES'}
+        all_orders = exchange.exchange.fetchOrders(symbol, limit=20, params=params)
+        closed = [o for o in all_orders if o.get('stopPrice') and o['status'] in ['closed', 'canceled']]
+        for o in closed:
+            if o['id'] in tp_ids and o.get('status') == 'closed':
+                logger.info(f"TAKE PROFIT ausgelöst für {symbol}!")
+                tracker.update({"status": "take_profit_triggered", "take_profit_ids": []})
+                tracker.pop('last_notified_entry_price', None)
+                tracker.pop('last_notified_side', None)
+                _write_tracker(tracker_path, tracker)
+                return True
+    except Exception as e:
+        logger.error(f"Fehler beim Prüfen des TP: {e}", exc_info=True)
+    return False
+
+
+def notify_new_position(exchange: Exchange, position: dict, params: dict,
+                         tracker_path: str, telegram_config: dict, logger: logging.Logger):
+    """Sendet Telegram-Benachrichtigung wenn neue Position erkannt wird."""
+    tracker = read_tracker(tracker_path)
+    symbol = params['market']['symbol']
+    entry_price = float(position.get('entryPrice', 0))
+    side = position.get('side', '')
+
+    last_entry = tracker.get('last_notified_entry_price')
+    last_side = tracker.get('last_notified_side')
+
+    is_new = (
+        last_entry is None or last_side is None or
+        abs(entry_price - last_entry) > entry_price * 0.001 or
+        side != last_side
+    )
+
+    if not is_new:
+        return
+
+    try:
+        contracts = float(position.get('contracts', 0))
+        leverage = position.get('leverage', params['risk'].get('leverage', 1))
+        unrealized_pnl = position.get('unrealizedPnl', 0)
+        liq_price = position.get('liquidationPrice', 0)
+
+        tp_price = sl_price = None
+        for o in exchange.fetch_open_trigger_orders(symbol):
+            if o.get('reduceOnly'):
+                tp_val = o.get('triggerPrice') or o.get('stopPrice')
+                if tp_val:
+                    tp_val = float(tp_val)
+                    if side == 'long' and tp_val > entry_price:
+                        tp_price = tp_val
+                    elif side == 'long' and tp_val < entry_price:
+                        sl_price = tp_val
+                    elif side == 'short' and tp_val < entry_price:
+                        tp_price = tp_val
+                    elif side == 'short' and tp_val > entry_price:
+                        sl_price = tp_val
+    except Exception:
+        pass
+
+    # Genome-Info aus Tracker
+    active_genome = tracker.get('active_genome', {})
+    genome_info = ""
+    if active_genome:
+        genome_info = (
+            f"\nGenome: {active_genome.get('genome_id', '?')[:8]}...\n"
+            f"Sequenz: {active_genome.get('sequence', '?')}\n"
+            f"Score: {active_genome.get('score', 0):.3f} | "
+            f"WR: {active_genome.get('winrate', 0):.1%} | "
+            f"n={active_genome.get('total_occurrences', 0)}"
+        )
+
+    side_label = "LONG" if side == 'long' else "SHORT"
+    msg = (
+        f"NEUE POSITION: {side_label}\n\n"
+        f"Symbol: {symbol} | TF: {params['market']['timeframe']}\n"
+        f"Menge: {contracts:.4f} | Entry: {entry_price:.4f} USDT\n"
+        f"Hebel: {leverage}x"
+    )
+    if tp_price:
+        tp_pct = abs(tp_price - entry_price) / entry_price * 100
+        msg += f"\nTP: {tp_price:.4f} (+{tp_pct:.2f}%)"
+    if sl_price:
+        sl_pct = abs(sl_price - entry_price) / entry_price * 100
+        msg += f"\nSL: {sl_price:.4f} (-{sl_pct:.2f}%)"
+    if tp_price and sl_price:
+        rr = abs(tp_price - entry_price) / abs(entry_price - sl_price)
+        msg += f"\nR:R 1:{rr:.2f}"
+    msg += f"\nP&L: {unrealized_pnl:.2f} USDT"
+    if liq_price:
+        msg += f"\nLiq: {liq_price:.4f} USDT"
+    if genome_info:
+        msg += genome_info
+    msg += f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
+
+    tracker['last_notified_entry_price'] = entry_price
+    tracker['last_notified_side'] = side
+    _write_tracker(tracker_path, tracker)
+
+
+def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
+                  params: dict, tracker_path: str, logger: logging.Logger):
+    """Setzt TP/SL nach wenn sie fehlen (Sicherheitsnetz)."""
+    symbol = params['market']['symbol']
+    pos_side = position['side']
+
+    triggers = exchange.fetch_open_trigger_orders(symbol)
+    entry_price = float(position.get('entryPrice', 0))
+
+    tp_exists = any(
+        o.get('reduceOnly') and (
+            (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) > entry_price) or
+            (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) < entry_price)
+        )
+        for o in triggers
+    )
+    sl_exists = any(
+        o.get('reduceOnly') and (
+            (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) < entry_price) or
+            (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) > entry_price)
+        )
+        for o in triggers
+    )
+
+    if tp_exists and sl_exists:
+        return
+
+    logger.warning(f"TP={tp_exists}, SL={sl_exists} fehlen — nachtragen...")
+
+    contracts = float(position.get('contracts', 0))
+    if contracts == 0 or not genome_signal:
+        return
+
+    tp_price = genome_signal.get('tp_price')
+    sl_price = genome_signal.get('sl_price')
+    if not tp_price or not sl_price:
+        return
+
+    tracker = read_tracker(tracker_path)
+    new_tp_ids = tracker.get('take_profit_ids', [])
+    new_sl_ids = tracker.get('stop_loss_ids', [])
+
+    try:
+        if not tp_exists and tp_price:
+            tp_side = 'sell' if pos_side == 'long' else 'buy'
+            o = exchange.place_trigger_market_order(symbol, tp_side, contracts, tp_price, reduce=True)
+            if o and 'id' in o:
+                new_tp_ids.append(o['id'])
+            logger.info(f"TP nachgetragen @ {tp_price:.4f}")
+            time.sleep(0.2)
+
+        if not sl_exists and sl_price:
+            sl_side = 'sell' if pos_side == 'long' else 'buy'
+            o = exchange.place_trigger_market_order(symbol, sl_side, contracts, sl_price, reduce=True)
+            if o and 'id' in o:
+                new_sl_ids.append(o['id'])
+            logger.info(f"SL nachgetragen @ {sl_price:.4f}")
+    except Exception as e:
+        logger.error(f"Fehler beim Nachtragen von TP/SL: {e}", exc_info=True)
+
+    tracker['take_profit_ids'] = new_tp_ids
+    tracker['stop_loss_ids'] = new_sl_ids
+    _write_tracker(tracker_path, tracker)
+
+
+# ─── Entry Orders ─────────────────────────────────────────────────────────────
+
+def place_entry_orders(
+    exchange: Exchange,
+    genome_signal: dict,
+    params: dict,
+    balance: float,
+    tracker_path: str,
+    telegram_config: dict,
+    logger: logging.Logger,
+):
+    """
+    Platziert einen Entry-Trade basierend auf dem Genome-Signal.
+
+    Entry: Trigger-Limit-Order knapp über/unter aktuellem Preis
+    SL: Aus der Sequenz-Struktur (Low/High der Genome-Kerzen)
+    TP: 2:1 R:R vom Entry
+    """
+    symbol = params['market']['symbol']
+    side = genome_signal.get('side')
+
+    if side is None:
+        logger.info("Kein Genome-Signal → kein Trade.")
+        return
+
+    if side == 'long' and not params.get('behavior', {}).get('use_longs', True):
+        logger.info("Longs deaktiviert.")
+        return
+    if side == 'short' and not params.get('behavior', {}).get('use_shorts', True):
+        logger.info("Shorts deaktiviert.")
+        return
+
+    risk = params['risk']
+    leverage = risk['leverage']
+    risk_pct = risk.get('risk_per_entry_pct', 1.0)
+
+    # Risiko-Reduktion bei schlechter Performance
+    skip, reason = should_skip_trading(tracker_path)
+    if skip:
+        logger.warning(f"Trading pausiert: {reason}")
+        return
+
+    entry_price = genome_signal['entry_price']
+    sl_price = genome_signal['sl_price']
+    tp_price = genome_signal['tp_price']
+    sl_pct = genome_signal['sl_pct']
+
+    if sl_pct <= 0:
+        logger.warning("SL-Distanz = 0. Überspringe.")
+        return
+
+    # Positionsgröße: risikiertes Kapital / SL-Distanz
+    sl_distance_price = abs(entry_price - sl_price)
+    risk_amount_usd = balance * (risk_pct / 100.0)
+    amount_coins = risk_amount_usd / sl_distance_price
+
+    # Mindest-Checks
+    min_amount = exchange.fetch_min_amount_tradable(symbol)
+    if amount_coins < min_amount:
+        logger.warning(f"Menge {amount_coins:.6f} unter Minimum {min_amount:.6f}. Überspringe.")
+        return
+
+    notional = amount_coins * entry_price
+    if notional < MIN_NOTIONAL_USDT:
+        logger.warning(f"Notional {notional:.2f} USDT unter Minimum {MIN_NOTIONAL_USDT} USDT. Überspringe.")
+        return
+
+    # Margin und Leverage setzen
+    try:
+        exchange.set_margin_mode(symbol, risk.get('margin_mode', 'isolated'))
+        time.sleep(0.3)
+        exchange.set_leverage(symbol, leverage, risk.get('margin_mode', 'isolated'))
+        time.sleep(0.3)
+    except Exception as e:
+        logger.warning(f"Konnte Margin/Leverage nicht setzen: {e}")
+
+    # Entry-Trigger: 0.05% Delta für quasi-sofortige Ausführung
+    delta = 0.0005
+    if side == 'long':
+        order_side = 'buy'
+        entry_trigger = entry_price * (1 - delta)
+        entry_limit = entry_price * (1 - delta * 2)
+        tp_side = sl_side = 'sell'
+    else:
+        order_side = 'sell'
+        entry_trigger = entry_price * (1 + delta)
+        entry_limit = entry_price * (1 + delta * 2)
+        tp_side = sl_side = 'buy'
+
+    logger.info(
+        f"[Entry] {side.upper()} {amount_coins:.6f} {symbol} | "
+        f"Entry~{entry_trigger:.4f} | SL={sl_price:.4f} ({sl_pct:.2f}%) | "
+        f"TP={tp_price:.4f} | Score={genome_signal['score']:.3f}"
+    )
+
+    new_tp_ids = []
+    new_sl_ids = []
+
+    try:
+        # 1. TP (reduceOnly)
+        tp_order = exchange.place_trigger_market_order(symbol, tp_side, amount_coins, tp_price, reduce=True)
+        if tp_order and 'id' in tp_order:
+            new_tp_ids.append(tp_order['id'])
+        logger.info(f"TP gesetzt @ {tp_price:.4f}")
+        time.sleep(0.2)
+
+        # 2. SL (reduceOnly)
+        sl_order = exchange.place_trigger_market_order(symbol, sl_side, amount_coins, sl_price, reduce=True)
+        if sl_order and 'id' in sl_order:
+            new_sl_ids.append(sl_order['id'])
+        logger.info(f"SL gesetzt @ {sl_price:.4f}")
+        time.sleep(0.2)
+
+        # 3. Entry-Trigger-Limit
+        exchange.place_trigger_limit_order(
+            symbol, order_side, amount_coins, entry_trigger, entry_limit, reduce=False
+        )
+        logger.info(f"Entry-Order platziert: {order_side.upper()} @ trigger {entry_trigger:.4f}")
+
+    except ccxt.InsufficientFunds as e:
+        logger.error(f"Nicht genug Guthaben: {e}")
+        cancel_entry_orders(exchange, symbol, logger)
+        return
+    except Exception as e:
+        logger.error(f"Fehler beim Platzieren: {e}", exc_info=True)
+        cancel_entry_orders(exchange, symbol, logger)
+        return
+
+    # Tracker aktualisieren (Genome-Info für Self-Learning)
+    tracker = read_tracker(tracker_path)
+    tracker['stop_loss_ids'] = new_sl_ids
+    tracker['take_profit_ids'] = new_tp_ids
+    tracker['last_side'] = side
+    tracker['status'] = 'ok_to_trade'
+    tracker['active_genome'] = {
+        "genome_id": genome_signal['genome_id'],
+        "sequence": genome_signal['sequence'],
+        "direction": side.upper(),
+        "seq_length": genome_signal['seq_length'],
+        "score": genome_signal['score'],
+        "winrate": genome_signal['winrate'],
+        "total_occurrences": genome_signal['total_occurrences'],
+        "entry_price": entry_price,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+    }
+    _write_tracker(tracker_path, tracker)
+
+    logger.info(f"Entry-Orders erfolgreich platziert für {symbol} ({side.upper()}).")
+
+
+# ─── Self-Learning Update ─────────────────────────────────────────────────────
+
+def self_learn_from_closed_trade(
+    tracker_path: str, db: GenomeDB, outcome: str,
+    exit_price: float, logger: logging.Logger
+):
+    """
+    Aktualisiert die Genome-DB nach einem abgeschlossenen Trade.
+    Wird aufgerufen wenn SL oder TP ausgelöst wurde.
+    """
+    tracker = read_tracker(tracker_path)
+    active_genome = tracker.get('active_genome')
+
+    if not active_genome:
+        return
+
+    entry_price = active_genome.get('entry_price', 0)
+    direction = active_genome.get('direction', 'LONG')
+
+    if entry_price > 0 and exit_price > 0:
+        if direction == 'LONG':
+            actual_move_pct = (exit_price - entry_price) / entry_price * 100
+        else:
+            actual_move_pct = (entry_price - exit_price) / entry_price * 100
+    else:
+        actual_move_pct = 0.0
+
+    update_genome_with_trade_result(
+        db=db,
+        genome_id=active_genome['genome_id'],
+        sequence=active_genome['sequence'],
+        market=tracker.get('market', ''),
+        timeframe=tracker.get('timeframe', ''),
+        direction=direction,
+        seq_length=active_genome['seq_length'],
+        outcome=outcome,
+        actual_move_pct=actual_move_pct,
+    )
+
+    # Genome aus Tracker löschen (Trade abgeschlossen)
+    tracker['active_genome'] = None
+    _write_tracker(tracker_path, tracker)
+
+
+# ─── Haupt-Trading-Zyklus ─────────────────────────────────────────────────────
+
+def full_trade_cycle(
+    exchange: Exchange,
+    params: dict,
+    telegram_config: dict,
+    db_path: str,
+    logger: logging.Logger,
+):
+    """
+    Vollständiger Handelszyklus für dnabot:
+
+    1. OHLCV-Daten laden
+    2. Genome-Signal berechnen
+    3. SL/TP-Trigger prüfen + Self-Learning
+    4. Alte Entry-Orders stornieren
+    5. Offene Position verwalten ODER neue Entry platzieren
+    """
+    symbol = params['market']['symbol']
+    timeframe = params['market']['timeframe']
+    tracker_path = get_tracker_file_path(symbol, timeframe)
+
+    # Markt in Tracker schreiben für Self-Learning
+    tracker = read_tracker(tracker_path)
+    tracker['market'] = symbol
+    tracker['timeframe'] = timeframe
+    _write_tracker(tracker_path, tracker)
+
+    # 1. OHLCV laden
+    logger.info(f"Lade {FETCH_LIMIT} Kerzen für {symbol} ({timeframe})...")
+    df = exchange.fetch_recent_ohlcv(symbol, timeframe, limit=FETCH_LIMIT)
+    if df is None or len(df) < 50:
+        logger.error(f"Zu wenig Daten ({len(df) if df is not None else 0}). Abbruch.")
+        return
+
+    # 2. Genome-Signal
+    db = GenomeDB(db_path)
+    genome_signal = get_genome_signal(df, params, db)
+
+    if genome_signal:
+        logger.info(
+            f"Genome Signal: {genome_signal['side'].upper()} | "
+            f"Score: {genome_signal['score']:.3f} | WR: {genome_signal['winrate']:.1%}"
+        )
+    else:
+        logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
+
+    # 3. SL/TP Trigger prüfen
+    sl_triggered = check_sl_triggered(exchange, symbol, tracker_path, logger)
+    if sl_triggered:
+        logger.warning(f"SL ausgelöst für {symbol}.")
+        record_trade_result(tracker_path, 'loss', logger)
+        # Self-Learning: Genome als Verlust markieren
+        try:
+            last_price = float(df['close'].iloc[-1])
+            self_learn_from_closed_trade(tracker_path, db, 'LOSS', last_price, logger)
+        except Exception as e:
+            logger.error(f"Self-Learning Fehler nach SL: {e}")
+
+    tp_triggered = check_tp_triggered(exchange, symbol, tracker_path, logger)
+    if tp_triggered:
+        logger.info(f"TP ausgelöst für {symbol}.")
+        record_trade_result(tracker_path, 'win', logger)
+        # Self-Learning: Genome als Gewinn markieren
+        try:
+            last_price = float(df['close'].iloc[-1])
+            self_learn_from_closed_trade(tracker_path, db, 'WIN', last_price, logger)
+        except Exception as e:
+            logger.error(f"Self-Learning Fehler nach TP: {e}")
+
+    # 4. Alte Entry-Orders stornieren
+    cancel_entry_orders(exchange, symbol, logger)
+
+    # 5. Position prüfen
+    open_positions = exchange.fetch_open_positions(symbol)
+
+    if open_positions:
+        position = open_positions[0]
+        logger.info(f"Offene Position: {position.get('side')} @ {position.get('entryPrice')}")
+
+        try:
+            exchange.set_margin_mode(symbol, params['risk'].get('margin_mode', 'isolated'))
+            exchange.set_leverage(symbol, params['risk']['leverage'], params['risk'].get('margin_mode', 'isolated'))
+        except Exception:
+            pass
+
+        notify_new_position(exchange, position, params, tracker_path, telegram_config, logger)
+        ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, logger)
+
+    else:
+        tracker = read_tracker(tracker_path)
+        status = tracker.get('status', 'ok_to_trade')
+
+        if status == 'stop_loss_triggered':
+            # Cooldown: Erst wieder handeln wenn Genome-Signal die Gegenrichtung signalisiert
+            last_side = tracker.get('last_side')
+            current_side = genome_signal.get('side') if genome_signal else None
+
+            if last_side and current_side and current_side != last_side:
+                logger.info(f"Cooldown beendet: Signal {current_side} (letzter SL war {last_side}).")
+                tracker['status'] = 'ok_to_trade'
+                _write_tracker(tracker_path, tracker)
+            else:
+                logger.info(f"Cooldown aktiv nach SL ({last_side}). Signal: {current_side}. Warte...")
+                db.close()
+                return
+
+        balance = exchange.fetch_balance_usdt()
+        logger.info(f"Guthaben: {balance:.2f} USDT")
+
+        if balance < MIN_NOTIONAL_USDT:
+            logger.warning(f"Guthaben zu niedrig ({balance:.2f} USDT).")
+            db.close()
+            return
+
+        place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger)
+
+    db.close()
+    logger.info(f"Trade-Zyklus abgeschlossen für {symbol} ({timeframe}).")

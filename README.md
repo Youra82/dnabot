@@ -112,6 +112,15 @@ active_regimes = Liste der qualifizierenden Regime
   → z.B. ["RANGE", "NEUTRAL"]  (TREND zu unzuverlässig → nicht gehandelt)
 
 Genome ist aktiv (active=1) wenn mindestens ein Regime qualifiziert.
+
+Decay-Weighting (Halbwertszeit = 180 Tage):
+  decay = e^(−age_days / half_life_days)
+  score_final = score_regime × decay
+
+  age_days = Tage seit letztem Discovery-Update.
+  Frisch gescannte Genome: decay ≈ 1.0 (volle Stärke)
+  Genome die 6 Monate nicht mehr auftauchen: decay ≈ 0.5
+  Genome die 1 Jahr fehlen: decay ≈ 0.13 → werden automatisch deaktiviert
 ```
 
 **Beispiel:** Ein Genome mit 3 Regime-Profilen:
@@ -273,8 +282,9 @@ CREATE TABLE genomes (
 | `discovery_horizon` | Wie viele Kerzen nach einer Sequenz beobachtet werden |
 | `move_threshold_pct` | Mindest-Bewegung in % für ein gültiges Outcome |
 | `min_samples_to_activate` | Mindest-Vorkommen für Aktivierung (≥ 100 empfohlen) |
-| `min_score` | Mindest-Score (0.08 = guter Startpunkt) |
+| `min_score` | Mindest-Score (nach Decay, 0.08 = guter Startpunkt) |
 | `min_winrate` | Mindest-Winrate (0.45 = 45%) |
+| `half_life_days` | Halbwertszeit für Score-Decay (180 = 6 Monate) |
 | `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade |
 | `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2) |
 
@@ -360,23 +370,6 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 - Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
 - Genome-Discovery muss mindestens 1x pro Woche wiederholt werden (neue Marktdaten)
 - Genome mit weniger als 100 Samples werden grundsätzlich nicht gehandelt
-
----
-
-## Geplante Erweiterungen
-
-### Decay-Weighting (Time-Decay für alte Samples)
-
-Aktuelle Gewichtung: jedes Sample zählt gleich — egal ob 2 Wochen oder 2 Jahre alt.
-
-Geplant: Ältere Samples exponentiell abwerten:
-
-```
-weight = e^(−age_days / half_life)
-```
-
-Mit z.B. `half_life = 180 Tage` verlieren 1 Jahr alte Samples ~90% ihres Gewichts.
-Neue Marktstrukturen dominieren automatisch; veraltete Pattern werden ausgeblendet.
 
 ---
 

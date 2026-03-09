@@ -6,6 +6,15 @@
 # Per-Regime-Score-Formel:
 #   score_regime = winrate_regime × avg_move_pct × log(1 + occ_regime)
 #
+# Decay-Weighting:
+#   Ältere Genome verlieren Gewicht — neue Marktstrukturen dominieren.
+#   decay = e^(−age_days / half_life_days)
+#   score_final = score_regime × decay
+#
+#   Alter = Tage seit letztem upsert (last_updated).
+#   Nach jedem Discovery-Lauf ist last_updated frisch → decay ≈ 1.0.
+#   Genome die nicht mehr im Markt auftauchen altern → werden deaktiviert.
+#
 # Bewertungslogik pro Regime (TREND, RANGE, NEUTRAL):
 #   - Zu wenig Samples (<min_samples)    → Regime inaktiv
 #   - Winrate < min_winrate              → Regime inaktiv
@@ -19,6 +28,7 @@
 import math
 import json
 import logging
+from datetime import datetime, timezone
 
 from dnabot.genome.database import GenomeDB
 
@@ -51,6 +61,35 @@ def compute_score(winrate: float, avg_move_pct: float, occurrences: int) -> floa
     return winrate * avg_move_pct * math.log(1.0 + occurrences)
 
 
+def compute_decay(last_updated_iso: str, half_life_days: float) -> float:
+    """
+    Berechnet den temporalen Decay-Faktor eines Genomes.
+
+    decay = e^(−age_days / half_life_days)
+
+    age_days = Tage seit letztem Occurrence-Update (last_updated).
+    Nach einem frischen Discovery-Lauf ist age ≈ 0 → decay ≈ 1.0.
+    Genome die nicht mehr im Markt erscheinen altern → decay → 0.
+
+    Args:
+        last_updated_iso: ISO-8601 Timestamp aus der DB
+        half_life_days: Halbwertszeit in Tagen (z.B. 180)
+
+    Returns:
+        Decay-Faktor zwischen 0.0 und 1.0
+    """
+    if half_life_days <= 0:
+        return 1.0
+    try:
+        last_updated = datetime.fromisoformat(last_updated_iso)
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - last_updated).days
+        return math.exp(-age_days / half_life_days)
+    except Exception:
+        return 1.0  # Fallback: kein Decay bei ungültigem Timestamp
+
+
 def evolve(
     db: GenomeDB,
     market: str = None,
@@ -58,10 +97,11 @@ def evolve(
     min_samples: int = 100,
     min_winrate: float = 0.45,
     score_threshold: float = 0.08,
+    half_life_days: float = 180.0,
 ) -> dict:
     """
     Wertet alle Genome aus und aktiviert/deaktiviert sie basierend auf
-    ihrer per-Regime-Performance.
+    ihrer per-Regime-Performance mit Decay-Weighting.
 
     Args:
         db: GenomeDB-Instanz
@@ -69,7 +109,8 @@ def evolve(
         timeframe: Optional — nur Genome für diesen Timeframe bewerten
         min_samples: Mindestanzahl an Regime-Occurrences für Aktivierung
         min_winrate: Mindest-Winrate (z.B. 0.45 = 45%)
-        score_threshold: Mindest-Score für Aktivierung
+        score_threshold: Mindest-Score für Aktivierung (nach Decay)
+        half_life_days: Halbwertszeit für Decay (0 = kein Decay)
 
     Returns:
         dict mit Evolutions-Statistiken
@@ -84,6 +125,9 @@ def evolve(
         gid = genome['genome_id']
         avg_move = genome['avg_move_pct']
 
+        # Decay-Faktor basierend auf letztem Update
+        decay = compute_decay(genome.get('last_updated', ''), half_life_days)
+
         active_regimes = []
         best_score = 0.0
 
@@ -96,7 +140,7 @@ def evolve(
                 continue
 
             winrate = wins / occ
-            score = compute_score(winrate, avg_move, occ)
+            score = compute_score(winrate, avg_move, occ) * decay
 
             if winrate >= min_winrate and score >= score_threshold:
                 active_regimes.append(regime)
@@ -104,7 +148,7 @@ def evolve(
                 total_regime_activations[regime] += 1
                 logger.debug(
                     f"[{regime}] Aktiv: {genome['sequence']} [{genome['direction']}] "
-                    f"WR={winrate:.1%} Score={score:.3f} n={occ}"
+                    f"WR={winrate:.1%} Score={score:.3f} (decay={decay:.2f}) n={occ}"
                 )
 
         is_active = len(active_regimes) > 0
@@ -114,7 +158,7 @@ def evolve(
             total = genome['total_occurrences'] or 0
             global_wins = genome['wins'] or 0
             global_winrate = global_wins / total if total > 0 else 0.0
-            best_score = compute_score(global_winrate, avg_move, total)
+            best_score = compute_score(global_winrate, avg_move, total) * decay
 
         db.update_genome_evolution(gid, best_score, is_active, active_regimes)
 
@@ -130,6 +174,7 @@ def evolve(
     logger.info(
         f"[Evolver] {market or 'alle'} ({timeframe or 'alle TF'}) | "
         f"Gesamt: {len(genomes)} | Aktiviert: {activated} | Deaktiviert: {deactivated} | "
+        f"Decay half-life: {half_life_days}d | "
         f"Regime-Aktivierungen: TREND={total_regime_activations['TREND']}, "
         f"RANGE={total_regime_activations['RANGE']}, "
         f"NEUTRAL={total_regime_activations['NEUTRAL']}"

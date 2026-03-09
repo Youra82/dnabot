@@ -21,7 +21,8 @@
         "sequence_lengths": [4, 5, 6],
         "min_score": 0.08,
         "min_winrate": 0.45,
-        "score_formula": "winrate * avg_move_pct * log(1 + total_occurrences)",
+        "half_life_days": 180,
+        "score_formula": "winrate * avg_move_pct * log(1 + occ_regime) * decay",
         "allowed_regimes": ["TREND", "RANGE", "NEUTRAL"],
         "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar."
     },

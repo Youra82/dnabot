@@ -102,7 +102,8 @@ def main():
     move_threshold_pct = scan_cfg.get('move_threshold_pct', 1.0)
     sequence_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
     min_winrate = genome_cfg.get('min_winrate', 0.45)
-    min_score = genome_cfg.get('min_score', 0.05)
+    min_score = genome_cfg.get('min_score', 0.08)
+    half_life_days = genome_cfg.get('half_life_days', 180.0)
 
     # CLI-Filter
     if args.symbol:
@@ -158,10 +159,12 @@ def main():
                     min_samples=genome_min_samples,
                     min_winrate=min_winrate,
                     score_threshold=min_score,
+                    half_life_days=half_life_days,
                 )
                 logger.info(
                     f"  Evolver: {evo_result['activated']} aktiviert, "
-                    f"{evo_result['deactivated_low_winrate'] + evo_result['deactivated_low_score']} deaktiviert"
+                    f"{evo_result['deactivated']} deaktiviert "
+                    f"(decay half-life: {half_life_days}d)"
                 )
 
     logger.info(f"\n{'=' * 60}")

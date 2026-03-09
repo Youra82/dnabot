@@ -20,6 +20,7 @@
 #     "seq_length": int,
 #   }
 
+import json
 import logging
 import pandas as pd
 from typing import Optional
@@ -150,10 +151,10 @@ def get_genome_signal(
 
         sequence = genes_to_sequence_string(genes[-seq_len:])
 
-        # LONG prüfen — nur wenn Genome im passenden Regime entdeckt wurde
+        # LONG prüfen — nur wenn das Genome im aktuellen Regime aktiv ist
         long_genome = db.get_genome(sequence, market, timeframe, "LONG")
         if (long_genome and long_genome['active'] and long_genome['score'] >= min_score
-                and _regime_matches(long_genome.get('primary_regime', 'NEUTRAL'), current_regime)):
+                and _regime_active(long_genome, current_regime)):
             if long_genome['score'] > best_score:
                 best_score = long_genome['score']
                 best_signal = _build_signal("long", df, long_genome, rr_ratio)
@@ -161,7 +162,7 @@ def get_genome_signal(
         # SHORT prüfen
         short_genome = db.get_genome(sequence, market, timeframe, "SHORT")
         if (short_genome and short_genome['active'] and short_genome['score'] >= min_score
-                and _regime_matches(short_genome.get('primary_regime', 'NEUTRAL'), current_regime)):
+                and _regime_active(short_genome, current_regime)):
             if short_genome['score'] > best_score:
                 best_score = short_genome['score']
                 best_signal = _build_signal("short", df, short_genome, rr_ratio)
@@ -174,19 +175,29 @@ def get_genome_signal(
     return best_signal
 
 
-def _regime_matches(genome_regime: str, current_regime: str) -> bool:
+def _regime_active(genome: dict, current_regime: str) -> bool:
     """
     Prüft ob ein Genome im aktuellen Regime gehandelt werden darf.
 
     Logik:
-      - NEUTRAL-Genome passen in jedes Regime (außer HIGH_VOL)
-      - Sonst: Genome-Regime muss mit aktuellem Regime übereinstimmen
+      - HIGH_VOL → immer blockiert
+      - active_regimes (JSON-Liste) muss das aktuelle Regime enthalten
+      - Fallback: Genome ohne active_regimes-Daten darf überall gehandelt werden
+        (Rückwärtskompatibilität mit alten DB-Einträgen)
     """
     if current_regime == REGIME_HIGH_VOL:
         return False
-    if genome_regime == 'NEUTRAL':
+
+    try:
+        active_regimes = json.loads(genome.get('active_regimes', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        active_regimes = []
+
+    # Leere Liste = alter DB-Eintrag ohne Regime-Tracking → erlauben
+    if not active_regimes:
         return True
-    return genome_regime == current_regime
+
+    return current_regime in active_regimes
 
 
 def update_genome_with_trade_result(
@@ -199,6 +210,7 @@ def update_genome_with_trade_result(
     seq_length: int,
     outcome: str,
     actual_move_pct: float,
+    regime: str = 'NEUTRAL',
 ):
     """
     Aktualisiert die Genome-DB nach Abschluss eines Live-Trades.
@@ -207,6 +219,7 @@ def update_genome_with_trade_result(
     Args:
         outcome: "WIN" oder "LOSS"
         actual_move_pct: Tatsächliche Preisbewegung in %
+        regime: Marktregime zum Zeitpunkt des Trades
     """
     is_win = outcome == "WIN"
     db.upsert_genome_outcome(
@@ -217,8 +230,9 @@ def update_genome_with_trade_result(
         seq_length=seq_length,
         is_win=is_win,
         move_pct=abs(actual_move_pct),
+        regime=regime,
     )
     logger.info(
         f"[Self-Learning] Genome {genome_id[:8]}... aktualisiert: "
-        f"outcome={outcome}, move={actual_move_pct:.2f}%"
+        f"outcome={outcome}, move={actual_move_pct:.2f}%, regime={regime}"
     )

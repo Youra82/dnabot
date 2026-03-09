@@ -4,10 +4,16 @@
 # Tabellen:
 #   genomes   — alle entdeckten Muster mit Statistiken
 #   scan_log  — Protokoll der Discovery-Läufe
+#
+# Per-Regime-Tracking:
+#   occ_trend / wins_trend   — Vorkommen + Wins im TREND-Regime
+#   occ_range / wins_range   — Vorkommen + Wins im RANGE-Regime
+#   occ_neutral / wins_neutral — Vorkommen + Wins im NEUTRAL-Regime
+#   active_regimes           — JSON-Liste der Regime, in denen das Genome aktiv ist
 
 import sqlite3
 import hashlib
-import math
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -42,7 +48,13 @@ class GenomeDB:
         avg_move_pct        REAL DEFAULT 0.0,
         score               REAL DEFAULT 0.0,
         active              INTEGER DEFAULT 0,
-        primary_regime      TEXT DEFAULT 'NEUTRAL',
+        occ_trend           INTEGER DEFAULT 0,
+        wins_trend          INTEGER DEFAULT 0,
+        occ_range           INTEGER DEFAULT 0,
+        wins_range          INTEGER DEFAULT 0,
+        occ_neutral         INTEGER DEFAULT 0,
+        wins_neutral        INTEGER DEFAULT 0,
+        active_regimes      TEXT DEFAULT '[]',
         discovered_at       TEXT NOT NULL,
         last_updated        TEXT NOT NULL
     );
@@ -63,6 +75,13 @@ class GenomeDB:
     CREATE INDEX IF NOT EXISTS idx_genomes_sequence
         ON genomes (sequence, market, timeframe, direction);
     """
+
+    # Regime-Column-Mapping: regime → (occ_col, wins_col)
+    _REGIME_COLS = {
+        'TREND':   ('occ_trend',   'wins_trend'),
+        'RANGE':   ('occ_range',   'wins_range'),
+        'NEUTRAL': ('occ_neutral', 'wins_neutral'),
+    }
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -85,10 +104,20 @@ class GenomeDB:
     def _migrate(self):
         """Fügt fehlende Spalten zu bestehenden DBs hinzu (rückwärtskompatibel)."""
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(genomes)")}
-        if 'primary_regime' not in existing:
-            self._conn.execute("ALTER TABLE genomes ADD COLUMN primary_regime TEXT DEFAULT 'NEUTRAL'")
-            self._conn.commit()
-            logger.info("DB Migration: Spalte 'primary_regime' hinzugefügt.")
+        migrations = [
+            ("occ_trend",      "INTEGER DEFAULT 0"),
+            ("wins_trend",     "INTEGER DEFAULT 0"),
+            ("occ_range",      "INTEGER DEFAULT 0"),
+            ("wins_range",     "INTEGER DEFAULT 0"),
+            ("occ_neutral",    "INTEGER DEFAULT 0"),
+            ("wins_neutral",   "INTEGER DEFAULT 0"),
+            ("active_regimes", "TEXT DEFAULT '[]'"),
+        ]
+        for col, definition in migrations:
+            if col not in existing:
+                self._conn.execute(f"ALTER TABLE genomes ADD COLUMN {col} {definition}")
+                logger.info(f"DB Migration: Spalte '{col}' hinzugefügt.")
+        self._conn.commit()
 
     def close(self):
         self._conn.close()
@@ -110,10 +139,15 @@ class GenomeDB:
     ) -> bool:
         """
         Erstellt oder aktualisiert ein Genome mit einem Trade-Ergebnis.
+        Inkrementiert die richtigen per-Regime-Zähler.
         Gibt True zurück wenn es ein neues Genome war, sonst False.
         """
         gid = _genome_id(sequence, market, timeframe, direction)
         now = datetime.now(timezone.utc).isoformat()
+
+        # Regime auf bekannte Werte beschränken (HIGH_VOL zählen wir nicht)
+        regime_key = regime if regime in self._REGIME_COLS else 'NEUTRAL'
+        occ_col, wins_col = self._REGIME_COLS[regime_key]
 
         existing = self._conn.execute(
             "SELECT genome_id, total_occurrences, wins, sum_move_pct FROM genomes WHERE genome_id = ?",
@@ -121,18 +155,19 @@ class GenomeDB:
         ).fetchone()
 
         if existing is None:
-            self._conn.execute("""
+            self._conn.execute(f"""
                 INSERT INTO genomes
                     (genome_id, sequence, market, timeframe, direction, seq_length,
                      total_occurrences, wins, sum_move_pct, avg_move_pct, score,
-                     active, primary_regime, discovered_at, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, ?, ?, ?)
+                     active, {occ_col}, {wins_col}, active_regimes, discovered_at, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, 1, ?, '[]', ?, ?)
             """, (
                 gid, sequence, market, timeframe, direction, seq_length,
                 1 if is_win else 0,
                 move_pct,
                 move_pct,
-                regime, now, now
+                1 if is_win else 0,
+                now, now
             ))
             self._conn.commit()
             return True
@@ -141,15 +176,17 @@ class GenomeDB:
             wins = existing['wins'] + (1 if is_win else 0)
             sum_move = existing['sum_move_pct'] + move_pct
             avg_move = sum_move / total
-            self._conn.execute("""
+            self._conn.execute(f"""
                 UPDATE genomes
                 SET total_occurrences = ?,
                     wins = ?,
                     sum_move_pct = ?,
                     avg_move_pct = ?,
+                    {occ_col} = {occ_col} + 1,
+                    {wins_col} = {wins_col} + ?,
                     last_updated = ?
                 WHERE genome_id = ?
-            """, (total, wins, sum_move, avg_move, now, gid))
+            """, (total, wins, sum_move, avg_move, 1 if is_win else 0, now, gid))
             self._conn.commit()
             return False
 
@@ -187,21 +224,33 @@ class GenomeDB:
             rows = self._conn.execute("SELECT * FROM genomes").fetchall()
         return [dict(r) for r in rows]
 
+    def update_genome_evolution(
+        self,
+        genome_id: str,
+        score: float,
+        active: bool,
+        active_regimes: list,
+    ):
+        """
+        Aktualisiert Score, Aktivierungsstatus und aktive Regime nach einem Evolver-Lauf.
+
+        Args:
+            active_regimes: Liste der Regime, in denen das Genome profitabel ist.
+                            Z.B. ["RANGE", "NEUTRAL"] oder [] (kein aktives Regime)
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("""
+            UPDATE genomes
+            SET score = ?, active = ?, active_regimes = ?, last_updated = ?
+            WHERE genome_id = ?
+        """, (score, 1 if active else 0, json.dumps(active_regimes), now, genome_id))
+        self._conn.commit()
+
+    # Rückwärtskompatibilität — wird intern nicht mehr genutzt
     def update_genome_score(self, genome_id: str, score: float, active: bool,
                              primary_regime: str = None):
-        """Aktualisiert Score, Aktivierungsstatus und optional das primäre Regime."""
-        now = datetime.now(timezone.utc).isoformat()
-        if primary_regime:
-            self._conn.execute("""
-                UPDATE genomes SET score = ?, active = ?, primary_regime = ?, last_updated = ?
-                WHERE genome_id = ?
-            """, (score, 1 if active else 0, primary_regime, now, genome_id))
-        else:
-            self._conn.execute("""
-                UPDATE genomes SET score = ?, active = ?, last_updated = ?
-                WHERE genome_id = ?
-            """, (score, 1 if active else 0, now, genome_id))
-        self._conn.commit()
+        """Legacy-Methode. Nutze update_genome_evolution() für neue Aufrufe."""
+        self.update_genome_evolution(genome_id, score, active, active_regimes=[])
 
     # -------------------------------------------------------------------------
     # Statistics
@@ -216,10 +265,10 @@ class GenomeDB:
         ).fetchall()
         top = self._conn.execute("""
             SELECT sequence, market, timeframe, direction, score,
-                   wins, total_occurrences,
+                   wins, total_occurrences, active_regimes,
                    CAST(wins AS REAL) / total_occurrences AS winrate
             FROM genomes
-            WHERE active = 1 AND total_occurrences >= 20
+            WHERE active = 1 AND total_occurrences >= 100
             ORDER BY score DESC
             LIMIT 10
         """).fetchall()

@@ -97,15 +97,32 @@ Genome in SQLite speichern / aktualisieren
 
 ### Phase 2 — Evolution (`evolver.py`)
 
-```
-Score = winrate × avg_move_pct × log(1 + total_occurrences)
+Der Evolver bewertet jedes Genome **pro Markt-Regime** separat:
 
-Genome mit:
-  - < 100 Samples   → inaktiv (statistisch nicht bewertbar)
-  - Winrate < 45%   → deaktiviert
-  - Score < 0.08    → deaktiviert
-  - Alles andere    → aktiviert → wird im Live-Trading genutzt
 ```
+Für jedes Regime (TREND / RANGE / NEUTRAL):
+  Score_regime = winrate_regime × avg_move_pct × log(1 + occ_regime)
+
+Ein Regime wird aktiviert wenn:
+  - occ_regime  ≥ 100 Samples (statistisch belastbar)
+  - winrate     ≥ 45%
+  - score       ≥ 0.08
+
+active_regimes = Liste der qualifizierenden Regime
+  → z.B. ["RANGE", "NEUTRAL"]  (TREND zu unzuverlässig → nicht gehandelt)
+
+Genome ist aktiv (active=1) wenn mindestens ein Regime qualifiziert.
+```
+
+**Beispiel:** Ein Genome mit 3 Regime-Profilen:
+
+| Regime  | Samples | Winrate | Score  | Status   |
+|---------|---------|---------|--------|----------|
+| TREND   | 120     | 38%     | 0.06   | inaktiv  |
+| RANGE   | 210     | 64%     | 0.41   | **aktiv** |
+| NEUTRAL | 180     | 52%     | 0.19   | **aktiv** |
+
+→ `active_regimes = ["RANGE", "NEUTRAL"]` — wird nur in diesen Phasen gehandelt.
 
 > **Overfitting-Warnung:** Mit 96 möglichen Genen entstehen theoretisch 96⁴ ≈ 85 Mio.
 > mögliche 4er-Sequenzen. In der Praxis sind nur wenige Tausend tatsächlich beobachtbar.
@@ -160,8 +177,12 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `total_occurrences` | `47` | Wie oft dieses Muster in der History auftrat |
 | `wins` | `30` | Wie oft danach die erwartete Bewegung kam |
 | `avg_move_pct` | `1.84` | Durchschnittliche Preisbewegung in % |
-| `score` | `0.34` | Qualitäts-Score (winrate × avg_move × log(n)) |
+| `score` | `0.34` | Bester Regime-Score |
 | `active` | `1` | Vom Evolver freigegeben |
+| `occ_trend` / `wins_trend` | `120` / `46` | Vorkommen + Wins im TREND-Regime |
+| `occ_range` / `wins_range` | `210` / `134` | Vorkommen + Wins im RANGE-Regime |
+| `occ_neutral` / `wins_neutral` | `180` / `94` | Vorkommen + Wins im NEUTRAL-Regime |
+| `active_regimes` | `["RANGE","NEUTRAL"]` | Regime, in denen das Genome gehandelt wird |
 
 ### Schema
 
@@ -178,6 +199,13 @@ CREATE TABLE genomes (
     avg_move_pct        REAL DEFAULT 0.0,
     score               REAL DEFAULT 0.0,
     active              INTEGER DEFAULT 0,
+    occ_trend           INTEGER DEFAULT 0,
+    wins_trend          INTEGER DEFAULT 0,
+    occ_range           INTEGER DEFAULT 0,
+    wins_range          INTEGER DEFAULT 0,
+    occ_neutral         INTEGER DEFAULT 0,
+    wins_neutral        INTEGER DEFAULT 0,
+    active_regimes      TEXT DEFAULT '[]',
     discovered_at       TEXT NOT NULL,
     last_updated        TEXT NOT NULL
 );

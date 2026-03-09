@@ -26,6 +26,7 @@ from typing import Optional
 
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
 from dnabot.genome.database import GenomeDB
+from dnabot.genome.regime import detect_regime, is_regime_allowed, REGIME_HIGH_VOL
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +120,20 @@ def get_genome_signal(
     min_score = params.get('genome', {}).get('min_score', 0.05)
     rr_ratio = params.get('risk', {}).get('rr_ratio', 2.0)
     sequence_lengths = params.get('genome', {}).get('sequence_lengths', [4, 5, 6])
+    allowed_regimes = params.get('genome', {}).get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL'])
 
-    # Alle Kerzen codieren (letzten 40 reichen, aber wir nehmen alles für korrekte ATR)
+    # ── Regime-Filter ──────────────────────────────────────────────────────────
+    current_regime = detect_regime(df)
+    logger.info(f"[Regime] Aktuell: {current_regime}")
+
+    if not is_regime_allowed(current_regime, allowed_regimes):
+        logger.info(
+            f"[Regime] {current_regime} nicht erlaubt "
+            f"(erlaubt: {allowed_regimes}). Kein Signal."
+        )
+        return None
+    # ──────────────────────────────────────────────────────────────────────────
+
     genes = encode_dataframe(df)
 
     if len(genes) < max(sequence_lengths):
@@ -130,31 +143,50 @@ def get_genome_signal(
     best_signal = None
     best_score = -1.0
 
-    # Längste Sequenz zuerst (liefert spezifischere Signale)
+    # Längste Sequenz zuerst (spezifischer = besser)
     for seq_len in sorted(sequence_lengths, reverse=True):
         if len(genes) < seq_len:
             continue
 
         sequence = genes_to_sequence_string(genes[-seq_len:])
 
-        # LONG prüfen
+        # LONG prüfen — nur wenn Genome im passenden Regime entdeckt wurde
         long_genome = db.get_genome(sequence, market, timeframe, "LONG")
-        if long_genome and long_genome['active'] and long_genome['score'] >= min_score:
+        if (long_genome and long_genome['active'] and long_genome['score'] >= min_score
+                and _regime_matches(long_genome.get('primary_regime', 'NEUTRAL'), current_regime)):
             if long_genome['score'] > best_score:
                 best_score = long_genome['score']
                 best_signal = _build_signal("long", df, long_genome, rr_ratio)
 
         # SHORT prüfen
         short_genome = db.get_genome(sequence, market, timeframe, "SHORT")
-        if short_genome and short_genome['active'] and short_genome['score'] >= min_score:
+        if (short_genome and short_genome['active'] and short_genome['score'] >= min_score
+                and _regime_matches(short_genome.get('primary_regime', 'NEUTRAL'), current_regime)):
             if short_genome['score'] > best_score:
                 best_score = short_genome['score']
                 best_signal = _build_signal("short", df, short_genome, rr_ratio)
 
-    if best_signal is None:
-        logger.info(f"[Genome Signal] Kein passendes aktives Genome gefunden für {market} ({timeframe}).")
+    if best_signal:
+        best_signal['regime'] = current_regime
+    else:
+        logger.info(f"[Genome Signal] Kein Match für {market} ({timeframe}) im Regime {current_regime}.")
 
     return best_signal
+
+
+def _regime_matches(genome_regime: str, current_regime: str) -> bool:
+    """
+    Prüft ob ein Genome im aktuellen Regime gehandelt werden darf.
+
+    Logik:
+      - NEUTRAL-Genome passen in jedes Regime (außer HIGH_VOL)
+      - Sonst: Genome-Regime muss mit aktuellem Regime übereinstimmen
+    """
+    if current_regime == REGIME_HIGH_VOL:
+        return False
+    if genome_regime == 'NEUTRAL':
+        return True
+    return genome_regime == current_regime
 
 
 def update_genome_with_trade_result(

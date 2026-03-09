@@ -42,6 +42,7 @@ class GenomeDB:
         avg_move_pct        REAL DEFAULT 0.0,
         score               REAL DEFAULT 0.0,
         active              INTEGER DEFAULT 0,
+        primary_regime      TEXT DEFAULT 'NEUTRAL',
         discovered_at       TEXT NOT NULL,
         last_updated        TEXT NOT NULL
     );
@@ -79,6 +80,15 @@ class GenomeDB:
             if s:
                 self._conn.execute(s)
         self._conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """Fügt fehlende Spalten zu bestehenden DBs hinzu (rückwärtskompatibel)."""
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(genomes)")}
+        if 'primary_regime' not in existing:
+            self._conn.execute("ALTER TABLE genomes ADD COLUMN primary_regime TEXT DEFAULT 'NEUTRAL'")
+            self._conn.commit()
+            logger.info("DB Migration: Spalte 'primary_regime' hinzugefügt.")
 
     def close(self):
         self._conn.close()
@@ -96,6 +106,7 @@ class GenomeDB:
         seq_length: int,
         is_win: bool,
         move_pct: float,
+        regime: str = 'NEUTRAL',
     ) -> bool:
         """
         Erstellt oder aktualisiert ein Genome mit einem Trade-Ergebnis.
@@ -114,14 +125,14 @@ class GenomeDB:
                 INSERT INTO genomes
                     (genome_id, sequence, market, timeframe, direction, seq_length,
                      total_occurrences, wins, sum_move_pct, avg_move_pct, score,
-                     active, discovered_at, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, ?, ?)
+                     active, primary_regime, discovered_at, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0.0, 0, ?, ?, ?)
             """, (
                 gid, sequence, market, timeframe, direction, seq_length,
                 1 if is_win else 0,
                 move_pct,
-                move_pct,   # avg_move_pct bei erstem Eintrag = move_pct
-                now, now
+                move_pct,
+                regime, now, now
             ))
             self._conn.commit()
             return True
@@ -176,13 +187,20 @@ class GenomeDB:
             rows = self._conn.execute("SELECT * FROM genomes").fetchall()
         return [dict(r) for r in rows]
 
-    def update_genome_score(self, genome_id: str, score: float, active: bool):
-        """Aktualisiert Score und Aktivierungsstatus eines Genomes."""
+    def update_genome_score(self, genome_id: str, score: float, active: bool,
+                             primary_regime: str = None):
+        """Aktualisiert Score, Aktivierungsstatus und optional das primäre Regime."""
         now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute("""
-            UPDATE genomes SET score = ?, active = ?, last_updated = ?
-            WHERE genome_id = ?
-        """, (score, 1 if active else 0, now, genome_id))
+        if primary_regime:
+            self._conn.execute("""
+                UPDATE genomes SET score = ?, active = ?, primary_regime = ?, last_updated = ?
+                WHERE genome_id = ?
+            """, (score, 1 if active else 0, primary_regime, now, genome_id))
+        else:
+            self._conn.execute("""
+                UPDATE genomes SET score = ?, active = ?, last_updated = ?
+                WHERE genome_id = ?
+            """, (score, 1 if active else 0, now, genome_id))
         self._conn.commit()
 
     # -------------------------------------------------------------------------

@@ -7,16 +7,20 @@
 #   3. Für jedes Fenster: Was passierte danach? (Horizon-Kerzen)
 #   4. LONG-Outcome: max Up-Move > Threshold UND > max Down-Move
 #   5. SHORT-Outcome: max Down-Move > Threshold UND > max Up-Move
-#   6. Genome-DB aktualisieren
+#   6. Regime zum Zeitpunkt der Sequenz erfassen
+#   7. Genome-DB aktualisieren
 
 import logging
 import pandas as pd
-from typing import Optional
 
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
 from dnabot.genome.database import GenomeDB
+from dnabot.genome.regime import detect_regime
 
 logger = logging.getLogger(__name__)
+
+# Regime wird alle N Kerzen neu berechnet (Performance-Optimierung)
+REGIME_RECALC_INTERVAL = 20
 
 
 def discover_genomes(
@@ -33,7 +37,7 @@ def discover_genomes(
 
     Args:
         df: OHLCV DataFrame (index=Timestamp, Spalten: open, high, low, close, volume)
-        market: Handelspar z.B. "BTC/USDT:USDT"
+        market: Handelspaar z.B. "BTC/USDT:USDT"
         timeframe: Zeitrahmen z.B. "4h"
         db: GenomeDB-Instanz
         sequence_lengths: Fenstergrößen zu prüfen (Standard: [4, 5, 6])
@@ -46,11 +50,14 @@ def discover_genomes(
     if sequence_lengths is None:
         sequence_lengths = [4, 5, 6]
 
-    if len(df) < 50:
-        logger.warning(f"Zu wenig Daten für {market} ({timeframe}): {len(df)} Kerzen. Minimum: 50.")
+    if len(df) < 60:
+        logger.warning(f"Zu wenig Daten für {market} ({timeframe}): {len(df)} Kerzen. Minimum: 60.")
         return {"candles_processed": 0, "new_genomes": 0, "updated_genomes": 0}
 
-    logger.info(f"[Discovery] {market} ({timeframe}) | {len(df)} Kerzen | Horizon={discovery_horizon} | Threshold={move_threshold_pct}%")
+    logger.info(
+        f"[Discovery] {market} ({timeframe}) | {len(df)} Kerzen | "
+        f"Horizon={discovery_horizon} | Threshold={move_threshold_pct}%"
+    )
 
     # Alle Kerzen codieren
     genes = encode_dataframe(df)
@@ -61,6 +68,16 @@ def discover_genomes(
     new_genomes = 0
     updated_genomes = 0
     threshold_factor = move_threshold_pct / 100.0
+
+    # Regime-Cache: wird alle REGIME_RECALC_INTERVAL Kerzen neu berechnet
+    regime_cache = {}
+
+    def get_regime_at(idx: int) -> str:
+        bucket = (idx // REGIME_RECALC_INTERVAL) * REGIME_RECALC_INTERVAL
+        if bucket not in regime_cache:
+            sub_df = df.iloc[max(0, bucket - 50): bucket + 1]
+            regime_cache[bucket] = detect_regime(sub_df)
+        return regime_cache[bucket]
 
     # Für jede Sequenzlänge
     for seq_len in sequence_lengths:
@@ -73,18 +90,19 @@ def discover_genomes(
         logger.debug(f"  Scanne seq_len={seq_len} | {max_start} Fenster...")
 
         for i in range(max_start):
-            # Sequenz aus Gene-Strings erstellen
             seq_genes = genes[i:i + seq_len]
             sequence = genes_to_sequence_string(seq_genes)
 
-            # Entry-Preis ist der Close der letzten Sequenz-Kerze
             entry_idx = i + seq_len
             entry_price = closes[entry_idx - 1]
 
             if entry_price <= 0:
                 continue
 
-            # Zukunft beobachten: nächste `discovery_horizon` Kerzen
+            # Regime zum Zeitpunkt dieser Sequenz
+            regime = get_regime_at(i)
+
+            # Zukunft beobachten (strikt NACH Close der Sequenz — kein Lookahead)
             future_highs = highs[entry_idx: entry_idx + discovery_horizon]
             future_lows = lows[entry_idx: entry_idx + discovery_horizon]
 
@@ -94,11 +112,9 @@ def discover_genomes(
             max_high = float(future_highs.max())
             min_low = float(future_lows.min())
 
-            # Maximale Bewegung in % nach oben und unten
             max_up_pct = (max_high - entry_price) / entry_price
             max_down_pct = (entry_price - min_low) / entry_price
 
-            # Outcome bestimmen
             long_outcome = (max_up_pct >= threshold_factor) and (max_up_pct > max_down_pct)
             short_outcome = (max_down_pct >= threshold_factor) and (max_down_pct > max_up_pct)
 
@@ -111,6 +127,7 @@ def discover_genomes(
                     seq_length=seq_len,
                     is_win=True,
                     move_pct=max_up_pct * 100.0,
+                    regime=regime,
                 )
                 if is_new:
                     new_genomes += 1
@@ -126,6 +143,7 @@ def discover_genomes(
                     seq_length=seq_len,
                     is_win=True,
                     move_pct=max_down_pct * 100.0,
+                    regime=regime,
                 )
                 if is_new:
                     new_genomes += 1
@@ -133,13 +151,11 @@ def discover_genomes(
                     updated_genomes += 1
 
             else:
-                # Kein klares Outcome — beide Richtungen als "Loss" festhalten
-                # (wichtig für korrekte Winrate-Berechnung!)
+                # Kein klares Outcome — bestehende Genomes als Loss aktualisieren
                 for direction, move in [("LONG", max_up_pct), ("SHORT", max_down_pct)]:
                     existing = db.get_genome(sequence, market, timeframe, direction)
                     if existing is not None:
-                        # Nur bestehende Genomes aktualisieren, keine neuen anlegen
-                        is_new = db.upsert_genome_outcome(
+                        db.upsert_genome_outcome(
                             sequence=sequence,
                             market=market,
                             timeframe=timeframe,
@@ -147,6 +163,7 @@ def discover_genomes(
                             seq_length=seq_len,
                             is_win=False,
                             move_pct=move * 100.0,
+                            regime=regime,
                         )
                         updated_genomes += 1
 

@@ -277,16 +277,3 @@ optuna==4.5.0    # Optional: Threshold-Optimierung
 sqlite3          # Built-in Python — keine Installation nötig
 ```
 
----
-
-## Unterschiede zu ltbbot / dbot
-
-| | ltbbot | dbot | dnabot |
-|---|---|---|---|
-| Signal | Technische Indikatoren | LSTM Neural Network | Genome-Sequenzen (statistisch) |
-| Training | keins | PyTorch, Stunden | keins (Discovery < 30 Min) |
-| Entry | 3 gestaffelte Layers | 1 Trigger-Limit | 1 Trigger-Limit |
-| SL | % vom Entry | % vom Entry | Sequenz-Struktur (Low/High) |
-| Datenbank | keins | keins | SQLite Genome-Library |
-| Self-Learning | nein | nein | ja (nach jedem Trade) |
-| Interpretierbar | teilweise | nein (Black Box) | ja (Gen-Sequenzen lesbar) |

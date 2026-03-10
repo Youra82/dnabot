@@ -71,9 +71,33 @@ def main():
     risk_cfg    = settings.get('risk_settings', {})
     active_strats = settings.get('live_trading_settings', {}).get('active_strategies', [])
 
-    # Pairs bestimmen
+    # Pairs bestimmen (Priorität: CLI > Env-Overrides > active_strategies)
+    override_coins = os.environ.get('DNABOT_OVERRIDE_COINS', '').strip()
+    override_tfs   = os.environ.get('DNABOT_OVERRIDE_TFS', '').strip()
+
     if args.symbol and args.timeframe:
         pairs = [(args.symbol, args.timeframe)]
+    elif override_coins or override_tfs:
+        # Gleiche Logik wie run_pipeline.sh: kartesisches Produkt der Overrides
+        def _to_symbol(coin: str) -> str:
+            coin = coin.strip().upper()
+            return coin if '/' in coin else f"{coin}/USDT:USDT"
+
+        auto_coins = list(dict.fromkeys(
+            s['symbol'] for s in active_strats if s.get('symbol')
+        )) or ['BTC/USDT:USDT']
+        auto_tfs = list(dict.fromkeys(
+            s['timeframe'] for s in active_strats if s.get('timeframe')
+        )) or ['4h']
+
+        coins = [_to_symbol(c) for c in override_coins.split()] if override_coins else auto_coins
+        tfs   = [t.strip() for t in override_tfs.split()] if override_tfs else auto_tfs
+        seen, pairs = set(), []
+        for sym in coins:
+            for tf in tfs:
+                if (sym, tf) not in seen:
+                    pairs.append((sym, tf))
+                    seen.add((sym, tf))
     else:
         seen, pairs = set(), []
         for s in active_strats:

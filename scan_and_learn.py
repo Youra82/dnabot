@@ -96,8 +96,20 @@ def main():
     genome_cfg = settings.get('genome_settings', {})
     genome_min_samples = settings.get('scan_settings', {}).get('min_samples_to_activate', 20)
 
-    symbols = settings.get('scan_settings', {}).get('symbols', ['BTC/USDT:USDT'])
-    timeframes = settings.get('scan_settings', {}).get('timeframes', ['4h'])
+    # Symbols: aus scan_settings.symbols ODER automatisch aus active_strategies ableiten
+    explicit_symbols = scan_cfg.get('symbols', [])
+    if explicit_symbols:
+        symbols = explicit_symbols
+    else:
+        symbols = list(dict.fromkeys(
+            s['symbol'] for s in settings.get('live_trading_settings', {}).get('active_strategies', [])
+            if s.get('symbol')
+        ))
+        if not symbols:
+            symbols = ['BTC/USDT:USDT']
+        logger.info(f"  scan_settings.symbols nicht gesetzt — übernehme Coins aus active_strategies: {symbols}")
+
+    timeframes = scan_cfg.get('timeframes', ['4h'])
     history_days = scan_cfg.get('history_days', 730)
     discovery_horizon = scan_cfg.get('discovery_horizon', 5)
     move_threshold_pct = scan_cfg.get('move_threshold_pct', 1.0)

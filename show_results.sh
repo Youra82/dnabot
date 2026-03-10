@@ -29,6 +29,14 @@ MODE=${MODE:-2}
 
 if [ "$MODE" == "1" ]; then
     echo ""
+    read -p "Coin(s) eingeben (z.B. BTC ETH SOL) [leer=aus active_strategies]: " COINS_INPUT
+    COINS_INPUT="${COINS_INPUT//[$'\r\n']/}"
+    read -p "Timeframe(s) eingeben (z.B. 4h 6h 2h) [leer=aus active_strategies]: " TF_INPUT
+    TF_INPUT="${TF_INPUT//[$'\r\n']/}"
+
+    [ -n "$COINS_INPUT" ] && export DNABOT_OVERRIDE_COINS="$COINS_INPUT"
+    [ -n "$TF_INPUT" ]    && export DNABOT_OVERRIDE_TFS="$TF_INPUT"
+
     read -p "Startkapital in USDT [Standard: 1000]: " CAPITAL
     CAPITAL="${CAPITAL//[$'\r\n ']/}"
     if ! [[ "$CAPITAL" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL=1000; fi
@@ -39,6 +47,8 @@ if [ "$MODE" == "1" ]; then
 
     echo ""
     python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK"
+
+    unset DNABOT_OVERRIDE_COINS DNABOT_OVERRIDE_TFS
 
 elif [ "$MODE" == "4" ]; then
     echo ""

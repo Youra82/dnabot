@@ -46,7 +46,11 @@ if [ "$MODE" == "1" ]; then
     if ! [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=1.0; fi
 
     echo ""
-    python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK"
+    if [ -z "$COINS_INPUT" ] && [ -z "$TF_INPUT" ]; then
+        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" --all-from-db
+    else
+        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK"
+    fi
 
     unset DNABOT_OVERRIDE_COINS DNABOT_OVERRIDE_TFS
 

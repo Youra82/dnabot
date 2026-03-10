@@ -221,6 +221,13 @@ class GenomeDB:
         """, (market, timeframe)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_all_market_pairs(self) -> list[tuple[str, str]]:
+        """Gibt alle eindeutigen (market, timeframe)-Paare aus der DB zurück."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT market, timeframe FROM genomes ORDER BY market, timeframe"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def get_all_genomes(self, market: str = None, timeframe: str = None) -> list[dict]:
         """Gibt alle Genomes zurück, optional gefiltert."""
         if market and timeframe:

@@ -57,10 +57,12 @@ def main():
     os.makedirs(os.path.join(PROJECT_ROOT, 'logs'), exist_ok=True)
 
     parser = argparse.ArgumentParser(description="dnabot Backtester")
-    parser.add_argument('--symbol',    type=str,   default=None)
-    parser.add_argument('--timeframe', type=str,   default=None)
-    parser.add_argument('--capital',   type=float, default=1000.0)
-    parser.add_argument('--risk',      type=float, default=1.0)
+    parser.add_argument('--symbol',      type=str,   default=None)
+    parser.add_argument('--timeframe',   type=str,   default=None)
+    parser.add_argument('--capital',     type=float, default=1000.0)
+    parser.add_argument('--risk',        type=float, default=1.0)
+    parser.add_argument('--all-from-db', action='store_true',
+                        help="Alle (market, timeframe)-Paare aus der DB backtesten")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -75,9 +77,16 @@ def main():
     override_coins = os.environ.get('DNABOT_OVERRIDE_COINS', '').strip()
     override_tfs   = os.environ.get('DNABOT_OVERRIDE_TFS', '').strip()
 
+    if args.all_from_db:
+        db_temp = GenomeDB(DB_PATH)
+        pairs = db_temp.get_all_market_pairs()
+        db_temp.close()
+        if not pairs:
+            logger.warning("DB enthält keine Genome. Fallback auf active_strategies.")
+            args.all_from_db = False
     if args.symbol and args.timeframe:
         pairs = [(args.symbol, args.timeframe)]
-    elif override_coins or override_tfs:
+    elif not args.all_from_db and (override_coins or override_tfs):
         # Gleiche Logik wie run_pipeline.sh: kartesisches Produkt der Overrides
         def _to_symbol(coin: str) -> str:
             coin = coin.strip().upper()
@@ -98,7 +107,7 @@ def main():
                 if (sym, tf) not in seen:
                     pairs.append((sym, tf))
                     seen.add((sym, tf))
-    else:
+    elif not args.all_from_db:
         seen, pairs = set(), []
         for s in active_strats:
             sym, tf = s.get('symbol'), s.get('timeframe')

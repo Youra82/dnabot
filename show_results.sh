@@ -45,11 +45,21 @@ if [ "$MODE" == "1" ]; then
     RISK="${RISK//[$'\r\n ']/}"
     if ! [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=1.0; fi
 
+    read -p "Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: " START_DATE
+    START_DATE="${START_DATE//[$'\r\n ']/}"
+    if ! [[ "$START_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then START_DATE="2023-01-01"; fi
+
+    read -p "Enddatum (JJJJ-MM-TT) [Standard: Heute]: " END_DATE
+    END_DATE="${END_DATE//[$'\r\n ']/}"
+
+    DATE_ARGS="--start-date $START_DATE"
+    [ -n "$END_DATE" ] && [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+
     echo ""
     if [ -z "$COINS_INPUT" ] && [ -z "$TF_INPUT" ]; then
-        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" --all-from-db
+        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" --all-from-db $DATE_ARGS
     else
-        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK"
+        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" $DATE_ARGS
     fi
 
     unset DNABOT_OVERRIDE_COINS DNABOT_OVERRIDE_TFS

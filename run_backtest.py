@@ -13,6 +13,8 @@ import logging
 import argparse
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
@@ -63,6 +65,10 @@ def main():
     parser.add_argument('--risk',        type=float, default=1.0)
     parser.add_argument('--all-from-db', action='store_true',
                         help="Alle (market, timeframe)-Paare aus der DB backtesten")
+    parser.add_argument('--start-date',  type=str,   default=None,
+                        help="Startdatum für Backtest (YYYY-MM-DD)")
+    parser.add_argument('--end-date',    type=str,   default=None,
+                        help="Enddatum für Backtest (YYYY-MM-DD)")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -140,9 +146,13 @@ def main():
     capital  = args.capital
     risk_pct = args.risk or risk_cfg.get('risk_per_entry_pct', 1.0)
 
+    date_range = ""
+    if args.start_date or args.end_date:
+        date_range = f" | {args.start_date or '...'} → {args.end_date or 'heute'}"
+
     print(f"\n{'=' * 60}")
     print(f"  dnabot — Einzel-Backtest")
-    print(f"  Kapital: {capital:.0f} USDT | Risiko: {risk_pct}% | Pairs: {len(pairs)}")
+    print(f"  Kapital: {capital:.0f} USDT | Risiko: {risk_pct}% | Pairs: {len(pairs)}{date_range}")
     print(f"{'=' * 60}\n")
 
     all_stats = []
@@ -150,6 +160,15 @@ def main():
         history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
         df = fetch_history(exchange, symbol, timeframe, history_days)
         if df is None:
+            continue
+
+        # Datumsfilter anwenden
+        if args.start_date:
+            df = df[df.index >= pd.Timestamp(args.start_date, tz='UTC')]
+        if args.end_date:
+            df = df[df.index <= pd.Timestamp(args.end_date + ' 23:59:59', tz='UTC')]
+        if df.empty:
+            logger.warning(f"Keine Daten im angegebenen Zeitraum für {symbol} ({timeframe}).")
             continue
 
         results = run_backtest(
@@ -168,21 +187,42 @@ def main():
     db.close()
 
     if len(all_stats) > 1:
-        print(f"\n{'=' * 60}")
+        G  = '\033[0;32m'   # grün
+        Y  = '\033[1;33m'   # gelb
+        R  = '\033[0;31m'   # rot
+        C  = '\033[0;36m'   # cyan (Header)
+        NC = '\033[0m'
+
+        w = 68
+        print(f"\n{'=' * w}")
         print(f"  ZUSAMMENFASSUNG — alle Pairs")
-        print(f"{'=' * 60}")
-        print(f"  {'Markt':<22} {'TF':<5} {'Trades':>7} {'WR':>7} {'PnL%':>8} {'MaxDD':>7}")
-        print(f"  {'-' * 55}")
+        print(f"{'=' * w}")
+        print(
+            f"{C}  {'Markt':<22} {'TF':<5} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'PF':>6} {'MaxDD':>7}{NC}"
+        )
+        print(f"  {'-' * (w - 2)}")
         for sym, tf, st in sorted(all_stats, key=lambda x: x[2].get('total_pnl_pct', 0), reverse=True):
             if not st.get('total_trades'):
                 continue
-            sign = '+' if st['total_pnl_pct'] >= 0 else ''
+            pnl   = st['total_pnl_pct']
+            wr    = st['win_rate']
+            pf    = st.get('profit_factor', 0)
+            dd    = st['max_drawdown_pct']
+            n     = st['total_trades']
+            sign  = '+' if pnl >= 0 else ''
+            pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
+
+            pnl_col = G if pnl > 0 else (Y if pnl == 0 else R)
+            wr_col  = G if wr >= 0.50 else (Y if wr >= 0.43 else R)
+
             print(
-                f"  {sym:<22} {tf:<5} {st['total_trades']:>7} "
-                f"{st['win_rate']:>6.1%} {sign}{st['total_pnl_pct']:>7.1f}% "
-                f"{st['max_drawdown_pct']:>6.1f}%"
+                f"  {sym:<22} {tf:<5} {n:>7} "
+                f"{wr_col}{wr:>6.1%}{NC} "
+                f"{pnl_col}{sign}{pnl:>7.1f}%{NC} "
+                f"{pf_str:>6} "
+                f"{dd:>6.1f}%"
             )
-        print(f"{'=' * 60}\n")
+        print(f"{'=' * w}\n")
 
 
 if __name__ == '__main__':

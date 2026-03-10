@@ -166,8 +166,10 @@ def main():
     os.makedirs(os.path.join(PROJECT_ROOT, 'artifacts', 'db'), exist_ok=True)
 
     parser = argparse.ArgumentParser(description="dnabot Genome Discovery")
-    parser.add_argument('--symbol', type=str, help="Nur dieses Symbol scannen")
-    parser.add_argument('--timeframe', type=str, help="Nur diesen Timeframe scannen")
+    parser.add_argument('--symbol',       type=str, help="Nur dieses Symbol scannen")
+    parser.add_argument('--timeframe',    type=str, help="Nur diesen Timeframe scannen")
+    parser.add_argument('--history-days', type=int, default=None,
+                        help="History-Tage überschreiben (sonst auto nach Timeframe)")
     parser.add_argument('--no-evolve', action='store_true', help="Evolver überspringen")
     args = parser.parse_args()
 
@@ -212,8 +214,8 @@ def main():
             f"übernehme Paare aus active_strategies: {scan_pairs}"
         )
 
-    # Manuelle Overrides aus settings.json (None = auto nach Timeframe)
-    history_days_override    = scan_cfg.get('history_days', None)
+    # Manuelle Overrides: CLI hat Vorrang vor settings.json, dann auto nach Timeframe
+    history_days_override    = args.history_days or scan_cfg.get('history_days', None)
     discovery_horizon_override = scan_cfg.get('discovery_horizon', None)
     move_threshold_override  = scan_cfg.get('move_threshold_pct', None)
     min_samples_override     = scan_cfg.get('min_samples_to_activate', None)

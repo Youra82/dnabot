@@ -61,7 +61,7 @@ def detect_regime(
         Regime-String: "TREND" | "RANGE" | "HIGH_VOL" | "NEUTRAL"
     """
     if len(df) < atr_ma_period + 5:
-        logger.warning(f"Zu wenig Kerzen für Regime-Erkennung ({len(df)}). Nutze NEUTRAL.")
+        logger.debug(f"Zu wenig Kerzen für Regime-Erkennung ({len(df)}). Nutze NEUTRAL.")
         return REGIME_NEUTRAL
 
     try:

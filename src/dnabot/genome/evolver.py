@@ -167,12 +167,26 @@ def evolve(
 
         is_active = len(active_regimes) > 0
 
-        # Fallback-Score: global, wenn kein Regime genug Samples hat
-        if best_score == 0.0:
+        # Fallback: wenn kein Regime genug per-Regime-Samples hat (z.B. Legacy-DB ohne
+        # occ_trend/occ_range/occ_neutral), globale Stats als NEUTRAL verwenden.
+        if not active_regimes:
             total = genome['total_occurrences'] or 0
             global_wins = genome['wins'] or 0
-            global_winrate = global_wins / total if total > 0 else 0.0
-            best_score = compute_score(global_winrate, avg_move, total * decay)
+            if total >= min_samples:
+                global_winrate = global_wins / total
+                effective_occ = total * decay
+                best_score = compute_score(global_winrate, avg_move, effective_occ)
+                if global_winrate >= min_winrate and best_score >= score_threshold:
+                    active_regimes = ['NEUTRAL']
+                    is_active = True
+                    total_regime_activations['NEUTRAL'] += 1
+                    logger.debug(
+                        f"[NEUTRAL/global fallback] Aktiv: {genome['sequence']} [{genome['direction']}] "
+                        f"WR={global_winrate:.1%} Score={best_score:.3f} n={total}"
+                    )
+            elif best_score == 0.0 and total > 0:
+                global_winrate = global_wins / total if total > 0 else 0.0
+                best_score = compute_score(global_winrate, avg_move, total * decay)
 
         db.update_genome_evolution(gid, best_score, is_active, active_regimes)
 

@@ -46,13 +46,38 @@ def setup_logging(symbol: str, timeframe: str) -> logging.Logger:
     return logger
 
 
+def _find_strategy_overrides(symbol: str, timeframe: str, settings: dict) -> dict:
+    """
+    Sucht per-Strategy-Overrides in active_strategies.
+    Felder 'risk_overrides' und 'genome_overrides' überschreiben globale Werte.
+
+    Beispiel in settings.json:
+        { "symbol": "ETH/USDT:USDT", "timeframe": "1h",
+          "risk_overrides":   { "leverage": 3, "risk_per_entry_pct": 0.5 },
+          "genome_overrides": { "min_score": 0.12 } }
+    """
+    for strategy in settings.get('live_trading_settings', {}).get('active_strategies', []):
+        if strategy.get('symbol') == symbol and strategy.get('timeframe') == timeframe:
+            return {
+                'risk':   strategy.get('risk_overrides', {}),
+                'genome': strategy.get('genome_overrides', {}),
+            }
+    return {'risk': {}, 'genome': {}}
+
+
 def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     """
     Baut die Runtime-Config aus settings.json und Symbol/Timeframe.
-    Kein separates Config-File nötig — alles kommt aus settings.json.
+
+    Globale Werte aus risk_settings / genome_settings werden durch
+    per-Strategy-Overrides (risk_overrides / genome_overrides in
+    active_strategies) überschrieben.
     """
-    risk = settings.get('risk_settings', {})
-    genome = settings.get('genome_settings', {})
+    global_risk = settings.get('risk_settings', {})
+    global_genome = settings.get('genome_settings', {})
+    overrides = _find_strategy_overrides(symbol, timeframe, settings)
+    risk_ov = overrides['risk']
+    genome_ov = overrides['genome']
 
     return {
         "market": {
@@ -60,18 +85,29 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
             "timeframe": timeframe,
         },
         "risk": {
-            "risk_per_entry_pct": risk.get('risk_per_entry_pct', 1.0),
-            "leverage": risk.get('leverage', 5),
-            "margin_mode": risk.get('margin_mode', 'isolated'),
-            "rr_ratio": risk.get('rr_ratio', 2.0),
+            "risk_per_entry_pct": risk_ov.get('risk_per_entry_pct',
+                                   global_risk.get('risk_per_entry_pct', 1.0)),
+            "leverage":           risk_ov.get('leverage',
+                                   global_risk.get('leverage', 5)),
+            "margin_mode":        risk_ov.get('margin_mode',
+                                   global_risk.get('margin_mode', 'isolated')),
+            "rr_ratio":           risk_ov.get('rr_ratio',
+                                   global_risk.get('rr_ratio', 2.0)),
         },
         "genome": {
-            "min_score": genome.get('min_score', 0.05),
-            "sequence_lengths": genome.get('sequence_lengths', [4, 5, 6]),
+            "min_score":       genome_ov.get('min_score',
+                                global_genome.get('min_score', 0.08)),
+            "min_winrate":     genome_ov.get('min_winrate',
+                                global_genome.get('min_winrate', 0.45)),
+            "sequence_lengths": genome_ov.get('sequence_lengths',
+                                 global_genome.get('sequence_lengths', [4, 5, 6])),
+            "allowed_regimes": genome_ov.get('allowed_regimes',
+                                global_genome.get('allowed_regimes',
+                                                  ['TREND', 'RANGE', 'NEUTRAL'])),
         },
         "behavior": {
-            "use_longs": True,
-            "use_shorts": True,
+            "use_longs":  risk_ov.get('use_longs', True),
+            "use_shorts": risk_ov.get('use_shorts', True),
         },
     }
 

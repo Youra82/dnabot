@@ -6,6 +6,21 @@
                 "timeframe": "4h",
                 "active": false,
                 "note": "Erst aktivieren nach: scan_and_learn.py + run_pipeline.sh"
+            },
+            {
+                "symbol": "ETH/USDT:USDT",
+                "timeframe": "1h",
+                "active": false,
+                "risk_overrides": {
+                    "leverage": 3,
+                    "risk_per_entry_pct": 0.5,
+                    "rr_ratio": 2.5
+                },
+                "genome_overrides": {
+                    "min_score": 0.12,
+                    "min_winrate": 0.50,
+                    "allowed_regimes": ["RANGE", "NEUTRAL"]
+                }
             }
         ]
     },

@@ -260,13 +260,11 @@ CREATE TABLE genomes (
 {
     "live_trading_settings": {
         "active_strategies": [
-            { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": false }
+            { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": false },
+            { "symbol": "ETH/USDT:USDT", "timeframe": "1h", "active": false }
         ]
     },
     "scan_settings": {
-        "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
-        "timeframes": ["1h", "4h", "1d"],
-        "history_days": 730,
         "discovery_horizon": 5,
         "move_threshold_pct": 1.0,
         "min_samples_to_activate": 100
@@ -274,7 +272,8 @@ CREATE TABLE genomes (
     "genome_settings": {
         "sequence_lengths": [4, 5, 6],
         "min_score": 0.08,
-        "min_winrate": 0.45
+        "min_winrate": 0.45,
+        "half_life_days": 180
     },
     "risk_settings": {
         "risk_per_entry_pct": 1.0,
@@ -285,12 +284,26 @@ CREATE TABLE genomes (
 }
 ```
 
+> **Automatische Ableitung:** `symbols`, `timeframes` und `history_days` müssen in `scan_settings` **nicht** definiert werden.
+> - Der Scanner übernimmt die (Symbol, Timeframe)-Paare direkt aus `active_strategies` — jede Strategie wird einzeln gescannt. Im Beispiel oben: BTC@4h und ETH@1h, **nicht** BTC@1h oder ETH@4h.
+> - Alle `scan_settings`-Felder werden automatisch nach Timeframe gewählt — nichts muss gesetzt werden:
+>
+> | Parameter | 1h | 4h | 1d |
+> |---|---|---|---|
+> | `history_days` | 365d | 730d | 1095d |
+> | `discovery_horizon` | 24 Kerzen | 6 Kerzen | 3 Kerzen |
+> | `move_threshold_pct` | 0.5% | 1.0% | 2.0% |
+> | `min_samples_to_activate` | 100 | 80 | 50 |
+>
+> Sollen mehr Kombinationen gescannt werden als gehandelt werden, können `symbols`, `timeframes` und/oder
+> einzelne Parameter in `scan_settings` explizit gesetzt werden — dann gilt dieser Wert fest für alle Paare.
+
 | Parameter | Erklärung |
 |---|---|
-| `history_days` | Wie viele Tage Historien-Daten für Discovery |
-| `discovery_horizon` | Wie viele Kerzen nach einer Sequenz beobachtet werden |
-| `move_threshold_pct` | Mindest-Bewegung in % für ein gültiges Outcome |
-| `min_samples_to_activate` | Mindest-Vorkommen für Aktivierung (≥ 100 empfohlen) |
+| `history_days` | **Auto nach Timeframe** (4h→730d, 1h→365d, 1d→1095d …). Explizit setzen für festen Wert. |
+| `discovery_horizon` | **Auto nach Timeframe** (~1 Tag Lookahead: 4h→6, 1h→24, 1d→3). |
+| `move_threshold_pct` | **Auto nach Timeframe** (4h→1.0%, 1h→0.5%, 1d→2.0%). |
+| `min_samples_to_activate` | **Auto nach Timeframe** (4h→80, 1h→100, 1d→50). |
 | `min_score` | Mindest-Score (nach Decay, 0.08 = guter Startpunkt) |
 | `min_winrate` | Mindest-Winrate (0.45 = 45%) |
 | `half_life_days` | Halbwertszeit für Score-Decay (180 = 6 Monate) |
@@ -299,29 +312,36 @@ CREATE TABLE genomes (
 
 ---
 
-## Installation (VPS)
+## Installation 🚀
+
+Führe die folgenden Schritte auf einem frischen Ubuntu-Server (oder lokal) aus.
+
+#### 1. Projekt klonen
 
 ```bash
-# 1. Repository klonen
 git clone https://github.com/Youra82/dnabot.git
 cd dnabot
-
-# 2. Installieren (venv + Abhängigkeiten)
-./install.sh
-
-# 3. API-Keys eintragen
-cp secret.json.example secret.json
-nano secret.json
-
-# 4. Genome-Discovery starten (dauert je nach Märkten 10–30 Min)
-./run_pipeline.sh
-
-# 5. Ergebnisse prüfen, dann live schalten:
-#    → settings.json: "active": true
-#    → Cronjob einrichten (alle 15 Min / 1h / 4h je nach Timeframe)
 ```
 
-### `secret.json` Struktur
+#### 2. Installations-Skript ausführen
+
+```bash
+chmod +x install.sh
+bash ./install.sh
+```
+
+Das Skript erstellt die virtuelle Python-Umgebung, installiert alle Abhängigkeiten und legt die Verzeichnisstruktur an.
+
+#### 3. API-Keys eintragen
+
+```bash
+cp secret.json.example secret.json
+nano secret.json
+```
+
+*(Achte darauf, dass der Hauptschlüssel `"dnabot"` heißt — siehe Struktur unten.)*
+
+Speichere mit `Strg + X`, dann `Y`, dann `Enter`.
 
 ```json
 {
@@ -342,26 +362,112 @@ nano secret.json
 
 ---
 
-## Cronjob-Einrichtung
+## Konfiguration & Automatisierung
+
+#### 1. Coins und Timeframes einstellen
+
+Bearbeite `settings.json` und trage deine gewünschten Handelspaare in `active_strategies` ein:
+
+```bash
+nano settings.json
+```
+
+```json
+"active_strategies": [
+    { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": false },
+    { "symbol": "ETH/USDT:USDT", "timeframe": "1h", "active": false }
+]
+```
+
+> Alle `scan_settings`-Parameter werden automatisch nach Timeframe abgeleitet — nichts weiter nötig.
+
+#### 2. Genome-Discovery starten (Pipeline)
+
+```bash
+./run_pipeline.sh
+```
+
+Die Pipeline lädt historische Daten, entdeckt Muster und bewertet sie. Dauert je nach Märkten 10–30 Minuten.
+
+#### 3. Ergebnisse analysieren
+
+```bash
+./show_results.sh
+```
+
+- **Modus 1:** Einzel-Backtest — simuliert jedes aktive Pair und zeigt WR, PnL, Drawdown.
+- **Modus 2:** Genome Bibliothek — Top-Patterns, Stats und Verteilung aus der DB.
+- **Modus 3:** Regime-Analyse — welches Markt-Regime (TREND/RANGE/NEUTRAL) wo am besten funktioniert.
+- **Modus 4:** Interaktive Charts — Candlestick + Entry/Exit-Marker + Equity-Kurve als HTML.
+
+#### 4. Strategien live schalten
+
+```bash
+nano settings.json
+```
+
+Setze für die gewünschten Pairs `"active": true`:
+
+```json
+{ "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": true }
+```
+
+#### 5. Cronjob einrichten
 
 ```bash
 crontab -e
 ```
 
+Füge passend zum Timeframe eine der folgenden Zeilen ein (Pfad anpassen):
+
 ```cron
-# Für 1h-Strategien: jede Stunde (5 Min nach voll)
-5 * * * * cd /pfad/zu/dnabot && .venv/bin/python3 master_runner.py
+# 1h-Strategien: jede Stunde, 5 Min nach voll
+5 * * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
 
-# Für 4h-Strategien: alle 4h
-5 */4 * * * cd /pfad/zu/dnabot && .venv/bin/python3 master_runner.py
+# 4h-Strategien: alle 4 Stunden
+5 */4 * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
 
-# Wöchentliches Relearning (Sonntag 2 Uhr)
-0 2 * * 0 cd /pfad/zu/dnabot && .venv/bin/python3 scan_and_learn.py
+# Wöchentliches Relearning — neue Marktdaten einlernen (Sonntag 2 Uhr)
+0 2 * * 0 cd /root/dnabot && .venv/bin/python3 scan_and_learn.py >> /root/dnabot/logs/scan.log 2>&1
 ```
 
 ---
 
-## Update
+## Tägliche Verwaltung & Wichtige Befehle ⚙️
+
+#### Logs ansehen
+
+```bash
+# Live mitverfolgen
+tail -f logs/cron.log
+
+# Nach Fehlern suchen
+grep -i "ERROR" logs/cron.log
+
+# Discovery-Log
+tail -f logs/scan_and_learn.log
+
+# Einzelnes Symbol
+tail -n 100 logs/dnabot_BTCUSDTUSDT_4h.log
+```
+
+#### Manueller Start (Test)
+
+```bash
+cd /root/dnabot && .venv/bin/python3 master_runner.py
+```
+
+#### Genome-Discovery manuell neu starten
+
+```bash
+# Alle konfigurierten Pairs
+./run_pipeline.sh
+
+# Nur ein bestimmtes Pair
+.venv/bin/python3 scan_and_learn.py --symbol BTC/USDT:USDT --timeframe 4h
+```
+
+#### Bot aktualisieren
 
 ```bash
 ./update.sh
@@ -369,16 +475,24 @@ crontab -e
 
 Sichert automatisch `secret.json` vor dem `git reset --hard`.
 
+#### Genome-Datenbank zurücksetzen
+
+```bash
+# Achtung: löscht alle erlernten Muster!
+rm artifacts/db/genome.db
+./run_pipeline.sh
+```
+
 ---
 
 ## Wichtige Regeln
 
-- `secret.json` ist **nicht in Git** (steht in `.gitignore`)
+- `secret.json` ist **nicht in Git** — wird von `update.sh` gesichert
 - `artifacts/db/genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
-- `artifacts/tracker/` ist **nicht in Git** — enthält Trade-Status pro Symbol
+- `artifacts/tracker/` ist **nicht in Git** — enthält den offenen Trade-Status pro Symbol
 - Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
-- Genome-Discovery muss mindestens 1x pro Woche wiederholt werden (neue Marktdaten)
-- Genome mit weniger als 100 Samples werden grundsätzlich nicht gehandelt
+- Genome-Discovery sollte mindestens **1x pro Woche** wiederholt werden (neue Marktdaten)
+- Genome mit weniger als 80 Samples (4h) werden grundsätzlich nicht gehandelt
 
 ---
 
@@ -387,9 +501,10 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 ```
 ccxt==4.3.5      # Exchange-Verbindung (Bitget)
 pandas==2.1.3    # Datenverarbeitung
-ta==0.11.0       # ATR-Berechnung (für Encoding)
+ta==0.11.0       # ATR-Berechnung (für Encoding + Regime)
 numpy            # Array-Operationen
 requests==2.31.0 # Telegram
+plotly           # Interaktive Charts (show_results.sh Modus 4)
 optuna==4.5.0    # Optional: Threshold-Optimierung
 sqlite3          # Built-in Python — keine Installation nötig
 ```

@@ -20,12 +20,7 @@
         ]
     },
     "scan_settings": {
-        "_note_symbols": "symbols weglassen → Coins werden automatisch aus active_strategies übernommen. Oder explizit setzen um mehr Coins zu scannen als getradet werden.",
-        "timeframes": ["4h"],
-        "history_days": 730,
-        "discovery_horizon": 5,
-        "move_threshold_pct": 1.0,
-        "min_samples_to_activate": 100
+        "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6), move_threshold_pct (4h→1.0%), min_samples_to_activate (4h→80)."
     },
     "genome_settings": {
         "sequence_lengths": [4, 5, 6],

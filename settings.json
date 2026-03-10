@@ -1,26 +1,21 @@
 {
     "live_trading_settings": {
+        "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
         "active_strategies": [
             {
                 "symbol": "BTC/USDT:USDT",
                 "timeframe": "4h",
-                "active": false,
-                "note": "Erst aktivieren nach: scan_and_learn.py + run_pipeline.sh"
+                "active": false
             },
             {
                 "symbol": "ETH/USDT:USDT",
-                "timeframe": "1h",
-                "active": false,
-                "risk_overrides": {
-                    "leverage": 3,
-                    "risk_per_entry_pct": 0.5,
-                    "rr_ratio": 2.5
-                },
-                "genome_overrides": {
-                    "min_score": 0.12,
-                    "min_winrate": 0.50,
-                    "allowed_regimes": ["RANGE", "NEUTRAL"]
-                }
+                "timeframe": "4h",
+                "active": false
+            },
+            {
+                "symbol": "SOL/USDT:USDT",
+                "timeframe": "4h",
+                "active": false
             }
         ]
     },

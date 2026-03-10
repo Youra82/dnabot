@@ -118,54 +118,27 @@ def discover_genomes(
             long_outcome = (max_up_pct >= threshold_factor) and (max_up_pct > max_down_pct)
             short_outcome = (max_down_pct >= threshold_factor) and (max_down_pct > max_up_pct)
 
-            if long_outcome:
+            # Immer BEIDE Richtungen aufzeichnen — gibt realistische Win/Loss-Statistiken.
+            # LONG gewinnt wenn Up > Threshold und Up > Down, sonst verliert LONG.
+            # SHORT gewinnt wenn Down > Threshold und Down > Up, sonst verliert SHORT.
+            for direction, is_win, move in [
+                ("LONG",  long_outcome,  max_up_pct   * 100.0),
+                ("SHORT", short_outcome, max_down_pct * 100.0),
+            ]:
                 is_new = db.upsert_genome_outcome(
                     sequence=sequence,
                     market=market,
                     timeframe=timeframe,
-                    direction="LONG",
+                    direction=direction,
                     seq_length=seq_len,
-                    is_win=True,
-                    move_pct=max_up_pct * 100.0,
+                    is_win=is_win,
+                    move_pct=move,
                     regime=regime,
                 )
                 if is_new:
                     new_genomes += 1
                 else:
                     updated_genomes += 1
-
-            elif short_outcome:
-                is_new = db.upsert_genome_outcome(
-                    sequence=sequence,
-                    market=market,
-                    timeframe=timeframe,
-                    direction="SHORT",
-                    seq_length=seq_len,
-                    is_win=True,
-                    move_pct=max_down_pct * 100.0,
-                    regime=regime,
-                )
-                if is_new:
-                    new_genomes += 1
-                else:
-                    updated_genomes += 1
-
-            else:
-                # Kein klares Outcome — bestehende Genomes als Loss aktualisieren
-                for direction, move in [("LONG", max_up_pct), ("SHORT", max_down_pct)]:
-                    existing = db.get_genome(sequence, market, timeframe, direction)
-                    if existing is not None:
-                        db.upsert_genome_outcome(
-                            sequence=sequence,
-                            market=market,
-                            timeframe=timeframe,
-                            direction=direction,
-                            seq_length=seq_len,
-                            is_win=False,
-                            move_pct=move * 100.0,
-                            regime=regime,
-                        )
-                        updated_genomes += 1
 
     candles_processed = len(df)
     db.log_scan(market, timeframe, candles_processed, new_genomes, updated_genomes)

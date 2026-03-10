@@ -92,19 +92,22 @@ MOVE_THRESHOLD_MAP = {
     '1w':  3.0,
 }
 
-# Mindest-Vorkommen für Aktivierung (stat. Belastbarkeit je verfügbarer Datenmenge)
+# Mindest-Vorkommen für Aktivierung.
+# Da jeder Candle-Scan BEIDE Richtungen (LONG + SHORT) aufzeichnet, akkumulieren
+# Genome realistischere Statistiken. Trotzdem bleiben Werte bewusst niedrig, da
+# Crypto-Patterns selten ≥ 30× in einem üblichen Datensatz wiederkehren.
 MIN_SAMPLES_MAP = {
-    '5m':  200,
-    '15m': 150,
-    '30m': 120,
-    '1h':  100,
-    '2h':  80,
-    '4h':  80,
-    '6h':  60,
-    '8h':  60,
-    '12h': 50,
-    '1d':  50,
-    '1w':  30,
+    '5m':  20,
+    '15m': 15,
+    '30m': 10,
+    '1h':  8,
+    '2h':  6,
+    '4h':  5,
+    '6h':  4,
+    '8h':  4,
+    '12h': 3,
+    '1d':  3,
+    '1w':  2,
 }
 
 

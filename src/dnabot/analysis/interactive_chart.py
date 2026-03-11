@@ -21,6 +21,7 @@ import pandas as pd
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
+sys.path.append(PROJECT_ROOT)
 
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest

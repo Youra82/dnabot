@@ -68,11 +68,11 @@ def select_pairs() -> list[tuple[str, str]]:
 
     w = 70
     print("\n" + "=" * w)
-    print("  Verfügbare Pairs:")
+    print("  Verfügbare Pairs:  (PnL = gespeicherter Backtest, voller Zeitraum)")
     print("=" * w)
     for i, (sym, tf) in enumerate(pairs, 1):
         pnl = pnl_map.get((sym, tf))
-        pnl_str = f"  [+{pnl:.1f}%]" if pnl and pnl > 0 else (f"  [{pnl:.1f}%]" if pnl else "")
+        pnl_str = f"  [+{pnl:.1f}%]" if pnl and pnl > 0 else (f"  [{pnl:.1f}%]" if pnl is not None else "")
         safe = sym.replace('/', '').replace(':', '')
         print(f"  {i:2d}) {safe}_{tf}{pnl_str}")
     print("=" * w)
@@ -315,6 +315,12 @@ def run_interactive_chart(settings: dict, secrets: dict):
     cap_raw = input("Startkapital in USDT [Standard: 1000]: ").strip()
     start_capital = float(cap_raw) if cap_raw.replace('.', '').isdigit() else 1000.0
 
+    risk_raw = input("Risiko pro Trade in % [Standard: 1.0]: ").strip()
+    try:
+        chart_risk_pct = float(risk_raw) if risk_raw else None
+    except ValueError:
+        chart_risk_pct = None
+
     tg_raw = input("Per Telegram senden? (j/n) [Standard: n]: ").strip().lower()
     send_tg = tg_raw in ('j', 'y', 'yes')
 
@@ -359,10 +365,11 @@ def run_interactive_chart(settings: dict, secrets: dict):
         # Backtest auf vollem DataFrame
         db = GenomeDB(DB_PATH)
         print("  Führe Backtest durch...")
+        effective_risk = chart_risk_pct if chart_risk_pct is not None else risk_cfg.get('risk_per_entry_pct', 1.0)
         results = run_backtest(
             df=df, market=symbol, timeframe=timeframe, db=db,
             params=params, start_capital=start_capital,
-            risk_per_trade_pct=risk_cfg.get('risk_per_entry_pct', 1.0),
+            risk_per_trade_pct=effective_risk,
         )
         db.close()
 
@@ -395,7 +402,7 @@ def run_interactive_chart(settings: dict, secrets: dict):
         print("  Erstelle Chart...")
         fig = create_chart(
             symbol, timeframe, df_chart, trades_chart, stats, start_capital,
-            risk_pct=risk_cfg.get('risk_per_entry_pct', 1.0),
+            risk_pct=effective_risk,
             rr_ratio=risk_cfg.get('rr_ratio', 2.0),
         )
         if fig is None:

@@ -36,36 +36,65 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 # Symbol-Auswahl
 # ─────────────────────────────────────────────────────────────────────────────
 
-def select_pair(settings: dict) -> tuple[str, str] | None:
-    """Zeigt aktive Strategies und lässt den User eine auswählen."""
-    strategies = settings.get('live_trading_settings', {}).get('active_strategies', [])
-    seen, pairs = set(), []
-    for s in strategies:
-        sym, tf = s.get('symbol'), s.get('timeframe')
-        if sym and tf and (sym, tf) not in seen:
-            pairs.append((sym, tf))
-            seen.add((sym, tf))
+def _load_backtest_pnl() -> dict:
+    """Lädt PnL% aus gespeicherten Backtest-JSONs. Key: (market, timeframe)."""
+    pnl_map = {}
+    if not os.path.isdir(RESULTS_DIR):
+        return pnl_map
+    for fname in os.listdir(RESULTS_DIR):
+        if not fname.startswith('backtest_') or not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(RESULTS_DIR, fname)) as f:
+                d = json.load(f)
+            key = (d['market'], d['timeframe'])
+            pnl_map[key] = d.get('stats', {}).get('total_pnl_pct', None)
+        except Exception:
+            pass
+    return pnl_map
+
+
+def select_pairs() -> list[tuple[str, str]]:
+    """
+    Zeigt alle Pairs aus den Backtest-Ergebnissen mit PnL%.
+    Erlaubt Einzel- und Mehrfach-Auswahl (z.B. '1' oder '1,3,5').
+    """
+    pnl_map = _load_backtest_pnl()
+    pairs = sorted(pnl_map.keys(), key=lambda x: (x[0], x[1]))
 
     if not pairs:
-        print("Keine active_strategies in settings.json gefunden.")
-        return None
+        print("Keine Backtest-Ergebnisse gefunden. Zuerst Mode 1 ausführen.")
+        return []
 
-    print("\n" + "=" * 50)
+    w = 70
+    print("\n" + "=" * w)
     print("  Verfügbare Pairs:")
-    print("=" * 50)
+    print("=" * w)
     for i, (sym, tf) in enumerate(pairs, 1):
-        print(f"  {i:2d}) {sym}  ({tf})")
-    print("=" * 50)
+        pnl = pnl_map.get((sym, tf))
+        pnl_str = f"  [+{pnl:.1f}%]" if pnl and pnl > 0 else (f"  [{pnl:.1f}%]" if pnl else "")
+        safe = sym.replace('/', '').replace(':', '')
+        print(f"  {i:2d}) {safe}_{tf}{pnl_str}")
+    print("=" * w)
 
-    raw = input("\nAuswahl (Nummer): ").strip()
-    try:
-        idx = int(raw)
-        if 1 <= idx <= len(pairs):
-            return pairs[idx - 1]
-    except ValueError:
-        pass
-    print("Ungültige Auswahl.")
-    return None
+    print("\n  Wähle Pair(s):")
+    print("  Einzeln: z.B. '1' oder '5'")
+    print("  Mehrfach: z.B. '1,3,5' oder '1 3 5'")
+    raw = input("\n  Auswahl: ").strip()
+
+    selected = []
+    for token in raw.replace(',', ' ').split():
+        try:
+            idx = int(token)
+            if 1 <= idx <= len(pairs):
+                if pairs[idx - 1] not in selected:
+                    selected.append(pairs[idx - 1])
+        except ValueError:
+            pass
+
+    if not selected:
+        print("Ungültige Auswahl.")
+    return selected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,56 +273,36 @@ def create_chart(
 
 def run_interactive_chart(settings: dict, secrets: dict):
     from dnabot.utils.exchange import Exchange
-    from scan_and_learn import resolve_history_days, load_settings
+    from scan_and_learn import resolve_history_days
 
-    # Pair auswählen
-    pair = select_pair(settings)
-    if pair is None:
+    print("\n" + "=" * 60)
+    print("  INTERAKTIVE CHARTS")
+    print("=" * 60)
+
+    # Pairs auswählen (aus Backtest-Ergebnissen, mit PnL%)
+    selected_pairs = select_pairs()
+    if not selected_pairs:
         return
-    symbol, timeframe = pair
 
     # Chart-Optionen
     print()
+    start_raw = input("Startdatum (JJJJ-MM-TT) [leer=beliebig]: ").strip()
+    end_raw   = input("Enddatum   (JJJJ-MM-TT) [leer=heute]: ").strip()
+
     cap_raw = input("Startkapital in USDT [Standard: 1000]: ").strip()
     start_capital = float(cap_raw) if cap_raw.replace('.', '').isdigit() else 1000.0
-
-    days_raw = input("Letzten N Tage anzeigen [leer=alle]: ").strip()
-    display_days = int(days_raw) if days_raw.isdigit() else None
 
     tg_raw = input("Per Telegram senden? (j/n) [Standard: n]: ").strip().lower()
     send_tg = tg_raw in ('j', 'y', 'yes')
 
-    # Daten laden
+    # Exchange
     accounts = secrets.get('dnabot', [])
     if not accounts:
         print("Kein 'dnabot'-Account in secret.json.")
         return
     exchange = Exchange(accounts[0])
 
-    scan_cfg     = settings.get('scan_settings', {})
-    history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
-
-    print(f"\nLade {history_days} Tage History für {symbol} ({timeframe})...")
-    end_date   = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=history_days)
-    df = exchange.fetch_historical_ohlcv(
-        symbol, timeframe,
-        start_date.strftime('%Y-%m-%d'),
-        end_date.strftime('%Y-%m-%d'),
-    )
-    if df is None or df.empty:
-        print(f"Keine Daten für {symbol} ({timeframe}).")
-        return
-    print(f"{len(df)} Kerzen geladen.")
-
-    # Zeitraum-Filter für Chart-Anzeige
-    df_chart = df.copy()
-    if display_days:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=display_days)
-        df_chart = df_chart[df_chart.index >= cutoff]
-
-    # Backtest ausführen (auf vollem DataFrame für korrekte Genome-Erkennung)
-    db = GenomeDB(DB_PATH)
+    scan_cfg   = settings.get('scan_settings', {})
     genome_cfg = settings.get('genome_settings', {})
     risk_cfg   = settings.get('risk_settings', {})
     params = {
@@ -304,50 +313,86 @@ def run_interactive_chart(settings: dict, secrets: dict):
         },
         'risk': {'rr_ratio': risk_cfg.get('rr_ratio', 2.0)},
     }
-    print("Führe Backtest durch...")
-    results = run_backtest(
-        df=df,
-        market=symbol,
-        timeframe=timeframe,
-        db=db,
-        params=params,
-        start_capital=start_capital,
-        risk_per_trade_pct=risk_cfg.get('risk_per_entry_pct', 1.0),
-    )
-    db.close()
 
-    trades = results.get('trades', [])
-    stats  = results.get('stats', {})
-    print(f"  {stats.get('total_trades', 0)} Trades | WR: {stats.get('win_rate', 0):.1%} | "
-          f"PnL: {stats.get('total_pnl_pct', 0):+.1f}%")
+    generated = []
 
-    # Chart nur über dem display_days-Zeitraum zeigen
-    if display_days:
-        cutoff_str = (datetime.now(timezone.utc) - timedelta(days=display_days)).isoformat()
-        trades_chart = [t for t in trades if t['entry_time'] >= cutoff_str]
-    else:
+    for symbol, timeframe in selected_pairs:
+        print(f"\n--- {symbol} ({timeframe}) ---")
+        history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
+
+        print(f"  Lade {history_days} Tage History...")
+        fetch_end   = datetime.now(timezone.utc)
+        fetch_start = fetch_end - timedelta(days=history_days)
+        df = exchange.fetch_historical_ohlcv(
+            symbol, timeframe,
+            fetch_start.strftime('%Y-%m-%d'),
+            fetch_end.strftime('%Y-%m-%d'),
+        )
+        if df is None or df.empty:
+            print(f"  Keine Daten — übersprungen.")
+            continue
+        print(f"  {len(df)} Kerzen geladen.")
+
+        # Backtest auf vollem DataFrame
+        db = GenomeDB(DB_PATH)
+        print("  Führe Backtest durch...")
+        results = run_backtest(
+            df=df, market=symbol, timeframe=timeframe, db=db,
+            params=params, start_capital=start_capital,
+            risk_per_trade_pct=risk_cfg.get('risk_per_entry_pct', 1.0),
+        )
+        db.close()
+
+        trades = results.get('trades', [])
+        stats  = results.get('stats', {})
+        print(f"  {stats.get('total_trades', 0)} Trades | "
+              f"WR: {stats.get('win_rate', 0):.1%} | "
+              f"PnL: {stats.get('total_pnl_pct', 0):+.1f}%")
+
+        # Datum-Filter auf Trades und DataFrame
+        df_chart     = df.copy()
         trades_chart = trades
+        if start_raw:
+            try:
+                sd = pd.Timestamp(start_raw, tz='UTC')
+                df_chart     = df_chart[df_chart.index >= sd]
+                trades_chart = [t for t in trades_chart
+                                if str(t.get('entry_time', '')) >= start_raw]
+            except Exception:
+                pass
+        if end_raw:
+            try:
+                ed = pd.Timestamp(end_raw + ' 23:59:59', tz='UTC')
+                df_chart     = df_chart[df_chart.index <= ed]
+                trades_chart = [t for t in trades_chart
+                                if str(t.get('entry_time', '')) <= end_raw + ' 23:59:59']
+            except Exception:
+                pass
 
-    print("Erstelle Chart...")
-    fig = create_chart(symbol, timeframe, df_chart, trades_chart, stats, start_capital)
-    if fig is None:
-        return
+        print("  Erstelle Chart...")
+        fig = create_chart(symbol, timeframe, df_chart, trades_chart, stats, start_capital)
+        if fig is None:
+            continue
 
-    safe_name   = f"{symbol.replace('/', '_').replace(':', '_')}_{timeframe}"
-    output_file = f"/tmp/dnabot_{safe_name}.html"
-    fig.write_html(output_file)
-    print(f"\n✅ Chart gespeichert: {output_file}")
+        safe_name   = f"{symbol.replace('/', '').replace(':', '')}_{timeframe}"
+        output_file = f"/tmp/dnabot_{safe_name}.html"
+        fig.write_html(output_file)
+        print(f"  ✅ Chart gespeichert: {output_file}")
+        generated.append((symbol, timeframe, output_file))
+
+    print(f"\n✅ {len(generated)} Chart(s) generiert!")
 
     # Telegram
-    if send_tg:
+    if send_tg and generated:
         tg = secrets.get('telegram', {})
         if tg.get('bot_token') and tg.get('chat_id'):
             try:
                 from dnabot.utils.telegram import send_document
-                send_document(tg['bot_token'], tg['chat_id'], output_file,
-                              caption=f"dnabot Chart: {symbol} {timeframe}")
-                print("✅ Telegram: Chart gesendet.")
+                for sym, tf, path in generated:
+                    send_document(tg['bot_token'], tg['chat_id'], path,
+                                  caption=f"dnabot Chart: {sym} {tf}")
+                    print(f"  ✅ Telegram: {sym} {tf} gesendet.")
             except Exception as e:
-                print(f"Telegram-Fehler: {e}")
+                print(f"  Telegram-Fehler: {e}")
         else:
-            print("Telegram nicht konfiguriert (bot_token/chat_id fehlt in secret.json).")
+            print("  Telegram nicht konfiguriert (bot_token/chat_id fehlt).")

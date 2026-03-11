@@ -183,6 +183,47 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
     }
 
 
+def compute_filtered_stats(trades: list, sub_capital: float, risk_pct: float) -> dict:
+    """Berechnet Statistiken direkt aus den (gefilterten) Trades."""
+    if not trades:
+        return {'total_trades': 0, 'win_rate': 0.0, 'total_pnl_pct': 0.0, 'max_drawdown_pct': 0.0}
+
+    eq   = sub_capital
+    peak = eq
+    max_dd = 0.0
+    wins = 0
+
+    for t in sorted(trades, key=lambda x: str(x.get('exit_time', x.get('entry_time', '')))):
+        risk_amount = eq * (risk_pct / 100.0)
+        outcome = t.get('outcome', 'LOSS')
+        sl_pct  = max(t.get('sl_pct', 1.0), 0.01)
+
+        if outcome == 'WIN':
+            pnl = risk_amount * RR_RATIO
+            wins += 1
+        elif outcome == 'LOSS':
+            pnl = -risk_amount
+        else:
+            pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
+
+        eq += pnl
+        if eq > peak:
+            peak = eq
+        if peak > 0:
+            dd = (peak - eq) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+
+    total_pnl_pct = (eq - sub_capital) / sub_capital * 100.0 if sub_capital > 0 else 0.0
+    n = len(trades)
+    return {
+        'total_trades':     n,
+        'win_rate':         wins / n if n > 0 else 0.0,
+        'total_pnl_pct':    total_pnl_pct,
+        'max_drawdown_pct': max_dd,
+    }
+
+
 def greedy_optimize(all_results: list, capital: float, risk_pct: float,
                     max_dd_limit: float) -> list:
     """
@@ -190,7 +231,12 @@ def greedy_optimize(all_results: list, capital: float, risk_pct: float,
     am meisten steigert, solange MaxDD <= max_dd_limit.
 
     Constraint: max. 1 Timeframe pro Coin (Bitget).
+    Verwendet gefilterte Stats (aus aktuell geladenen Trades).
     """
+    # Gefilterte Stats pro Pair vorausberechnen (auf vollem Kapital für Vergleichbarkeit)
+    for r in all_results:
+        r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
+
     candidates     = [r for r in all_results if len(r['trades']) > 0]
     selected       = []
     selected_coins = set()
@@ -203,8 +249,8 @@ def greedy_optimize(all_results: list, capital: float, risk_pct: float,
         for pair in remaining:
             if pair['coin'] in selected_coins:
                 continue
-            # Nur Pairs mit positivem Einzel-PnL berücksichtigen
-            if pair['stats'].get('total_pnl_pct', 0) <= 0:
+            # Nur Pairs mit positivem Einzel-PnL im gefilterten Zeitraum
+            if pair['filtered_stats'].get('total_pnl_pct', 0) <= 0:
                 continue
 
             trial   = selected + [pair]
@@ -246,8 +292,8 @@ def print_optimization_result(selected: list, portfolio_metrics: dict,
     print(f"\n  {'Markt':<24} {'TF':<6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
     print(f"  {'-' * (w - 2)}")
 
-    for pr in sorted(selected, key=lambda x: x['stats'].get('total_pnl_pct', 0), reverse=True):
-        st  = pr['stats']
+    for pr in sorted(selected, key=lambda x: x['filtered_stats'].get('total_pnl_pct', 0), reverse=True):
+        st  = pr['filtered_stats']  # gefilterte Stats (gleicher Zeitraum wie Portfolio)
         n_t = st.get('total_trades', 0)
         wr  = st.get('win_rate', 0)
         pnl = st.get('total_pnl_pct', 0)

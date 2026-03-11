@@ -288,6 +288,150 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
     print(f"{'=' * w}\n")
 
 
+def generate_charts_for_portfolio(selected: list, start_date: str, end_date: str,
+                                   capital: float, risk_pct: float):
+    """Erstellt interaktive Charts für alle Pairs im Portfolio und sendet sie via Telegram."""
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        import pandas as pd
+    except ImportError:
+        print(f"{R}  pandas nicht installiert — Charts übersprungen.{NC}")
+        return
+
+    # Settings + Secrets laden
+    try:
+        with open(SETTINGS_PATH) as f:
+            settings = _json.load(f)
+    except Exception as e:
+        print(f"{R}  settings.json nicht lesbar: {e}{NC}")
+        return
+
+    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
+    try:
+        with open(secret_path) as f:
+            secrets = _json.load(f)
+    except Exception as e:
+        print(f"{R}  secret.json nicht lesbar: {e}{NC}")
+        return
+
+    sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
+    try:
+        from dnabot.utils.exchange import Exchange
+        from dnabot.genome.database import GenomeDB
+        from dnabot.analysis.backtester import run_backtest
+        from dnabot.analysis.interactive_chart import create_chart
+        from scan_and_learn import resolve_history_days
+    except Exception as e:
+        print(f"{R}  Import-Fehler: {e}{NC}")
+        return
+
+    accounts = secrets.get('dnabot', [])
+    if not accounts:
+        print(f"{R}  Kein 'dnabot'-Account in secret.json.{NC}")
+        return
+    exchange = Exchange(accounts[0])
+
+    scan_cfg   = settings.get('scan_settings', {})
+    genome_cfg = settings.get('genome_settings', {})
+    risk_cfg   = settings.get('risk_settings', {})
+    db_path    = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
+
+    params = {
+        'genome': {
+            'min_score':        genome_cfg.get('min_score', 0.08),
+            'min_winrate':      genome_cfg.get('min_winrate', 0.45),
+            'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
+        },
+        'risk': {'rr_ratio': risk_cfg.get('rr_ratio', 2.0)},
+    }
+
+    # Telegram-Credentials
+    tg          = accounts[0] if accounts else {}
+    bot_token   = tg.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
+    chat_id     = tg.get('telegram_chat_id', '')   or secrets.get('telegram', {}).get('chat_id', '')
+    send_tg     = bool(bot_token and chat_id)
+
+    generated = []
+    print()
+
+    for pr in selected:
+        symbol    = pr['market']
+        timeframe = pr['timeframe']
+        print(f"  Erstelle Chart: {symbol} ({timeframe}) ...", end='', flush=True)
+
+        history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
+        fetch_end    = datetime.now(timezone.utc)
+        fetch_start  = fetch_end - timedelta(days=history_days)
+
+        df = exchange.fetch_historical_ohlcv(
+            symbol, timeframe,
+            fetch_start.strftime('%Y-%m-%d'),
+            fetch_end.strftime('%Y-%m-%d'),
+        )
+        if df is None or df.empty:
+            print(f" {Y}keine Daten.{NC}")
+            continue
+
+        db      = GenomeDB(db_path)
+        results = run_backtest(
+            df=df, market=symbol, timeframe=timeframe, db=db,
+            params=params, start_capital=capital,
+            risk_per_trade_pct=risk_pct,
+        )
+        db.close()
+
+        trades      = results.get('trades', [])
+        stats       = results.get('stats', {})
+        trades_filt = trades
+
+        if start_date:
+            trades_filt = [t for t in trades_filt
+                           if str(t.get('entry_time', '')) >= start_date]
+        if end_date:
+            trades_filt = [t for t in trades_filt
+                           if str(t.get('entry_time', '')) <= end_date + ' 23:59:59']
+
+        df_chart = df.copy()
+        if start_date:
+            try:
+                df_chart = df_chart[df_chart.index >= pd.Timestamp(start_date, tz='UTC')]
+            except Exception:
+                pass
+        if end_date:
+            try:
+                df_chart = df_chart[df_chart.index <= pd.Timestamp(end_date + ' 23:59:59', tz='UTC')]
+            except Exception:
+                pass
+
+        fig = create_chart(
+            symbol, timeframe, df_chart, trades_filt, stats, capital,
+            risk_pct=risk_pct,
+            rr_ratio=risk_cfg.get('rr_ratio', 2.0),
+        )
+        if fig is None:
+            print(f" {R}Fehler beim Erstellen.{NC}")
+            continue
+
+        safe_name   = f"{symbol.replace('/', '').replace(':', '')}_{timeframe}"
+        output_file = f"/tmp/dnabot_{safe_name}.html"
+        fig.write_html(output_file)
+        generated.append((symbol, timeframe, output_file))
+        print(f" {G}✓{NC}")
+
+    print(f"\n  {G}{len(generated)} Chart(s) erstellt.{NC}")
+
+    if send_tg and generated:
+        from dnabot.utils.telegram import send_document
+        print(f"  Sende via Telegram ...")
+        for sym, tf, path in generated:
+            send_document(bot_token, chat_id, path, caption=f"dnabot Portfolio-Chart: {sym} {tf}")
+            print(f"  {G}✓ {sym} {tf} gesendet.{NC}")
+    elif generated:
+        print(f"  {Y}Telegram nicht konfiguriert — Charts nur lokal in /tmp/ gespeichert.{NC}")
+
+
 def write_to_settings(selected: list):
     try:
         with open(SETTINGS_PATH) as f:
@@ -370,6 +514,16 @@ def main():
             write_to_settings(best_combo)
         else:
             print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
+
+    # Charts für das Portfolio anbieten
+    try:
+        chart_ans = input("  Interaktive Charts für diese Zusammenstellung erstellen & via Telegram senden? (j/n): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        chart_ans = 'n'
+    if chart_ans in ('j', 'ja', 'y', 'yes'):
+        generate_charts_for_portfolio(
+            best_combo, args.start_date, args.end_date, args.capital, args.risk
+        )
 
 
 if __name__ == '__main__':

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 # run_portfolio_optimizer.py
-# Automatische Portfolio-Optimierung:
-# Liest gespeicherte Backtest-Ergebnisse, findet die beste
-# Kombination von Pairs die den maximalen Profit bei einem
-# vorgegebenen Drawdown-Limit liefert.
+# Automatische Portfolio-Optimierung (jaegerbot-Style):
 #
-# Modell:
-#   - Jedes Pair läuft UNABHÄNGIG auf sub_capital = capital / n_pairs
-#   - Risiko pro Trade = risk_pct% des Sub-Kapitals
-#   - Combined-Equity = Summe aller Sub-Equities
-#   - MaxDD wird auf der kombinierten Equity-Kurve gemessen
-#   - Portfolio-PnL% = Durchschnitt der Einzel-PnL%s
+# Kapital-Modell:
+#   - EIN gemeinsamer Kapital-Pool für alle Pairs
+#   - Alle Trades laufen chronologisch auf demselben Kapital
+#   - Jeder Trade riskiert risk_pct% des AKTUELLEN Equity
+#   - Mehr profitable Trades = mehr Kompoundierung = höherer PnL
+#   - Nebenläufige Trades werden nacheinander auf das gleiche Equity angewandt
 #
-# Constraints:
-#   - Max. 1 Timeframe pro Coin (Bitget erlaubt nur 1 Position/Coin)
+# Optimizer:
+#   - Exhaustive Suche: testet alle möglichen Pair-Kombinationen
+#   - Constraint: max. 1 TF pro Coin (Bitget: 1 Position pro Symbol)
+#   - Stoppt wenn keine weitere Verbesserung durch mehr Coins möglich ist
 
 import os
 import sys
 import json
 import argparse
 from datetime import datetime, timezone
+from itertools import combinations
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
@@ -90,195 +90,165 @@ def load_all_results(start_date=None, end_date=None):
     return results
 
 
-def _simulate_pair_equity(trades: list, sub_capital: float, risk_pct: float) -> list:
-    """
-    Simuliert ein einzelnes Pair auf sub_capital.
-    Gibt liste von (exit_time_str, equity) Tupeln zurück.
-    """
-    eq = sub_capital
-    events = []
-    for t in sorted(trades, key=lambda x: str(x.get('exit_time', x.get('entry_time', '')))):
-        risk_amount = eq * (risk_pct / 100.0)
-        outcome = t.get('outcome', 'LOSS')
-        sl_pct  = max(t.get('sl_pct', 1.0), 0.01)
-
-        if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
-        elif outcome == 'LOSS':
-            pnl = -risk_amount
-        else:  # TIMEOUT
-            pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
-
-        eq += pnl
-        ts = str(t.get('exit_time', t.get('entry_time', '')))
-        events.append((ts, eq))
-
-    return events
-
-
 def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> dict:
     """
-    Simuliert ein Portfolio.
+    Simuliert ein Portfolio mit GEMEINSAMEM Kapital-Pool.
 
-    Jedes Pair bekommt sub_capital = capital / n_pairs.
-    Trades laufen unabhängig, Combined-Equity = Summe aller Sub-Equities.
-    MaxDD wird auf der kombinierten Equity-Kurve gemessen.
+    Alle Trades aller Pairs werden chronologisch zusammengeführt.
+    Jeder Trade riskiert risk_pct% des aktuellen Equity (Kompoundierung).
+    Das ermöglicht höhere PnL als Einzel-Pairs durch mehr Trades.
     """
-    n = len(pair_results)
-    if n == 0:
+    if not pair_results:
         return {
             'total_pnl_pct': 0.0, 'final_equity': capital,
             'max_dd': 0.0, 'n_trades': 0, 'win_rate': 0.0,
         }
 
-    sub_capital = capital / n
-
-    # Jeden Pair unabhängig simulieren → (timestamp, equity) Ereignisse
-    pair_keys   = []
-    pair_events = {}
-    current_eq  = {}
-
+    # Alle Trades zusammenführen und chronologisch sortieren
+    all_trades = []
     for pr in pair_results:
-        key = f"{pr['market']}_{pr['timeframe']}"
-        pair_keys.append(key)
-        current_eq[key] = sub_capital
-        pair_events[key] = _simulate_pair_equity(pr['trades'], sub_capital, risk_pct)
+        for t in pr['trades']:
+            all_trades.append({
+                'market':    pr['market'],
+                'timeframe': pr['timeframe'],
+                'outcome':   t.get('outcome', 'LOSS'),
+                'pnl_pct':   t.get('pnl_pct', 0.0),
+                'sl_pct':    t.get('sl_pct', 1.0),
+                'entry_time': str(t.get('entry_time', '')),
+            })
 
-    # Alle Ereignisse chronologisch zusammenführen
-    all_events = []
-    for key, events in pair_events.items():
-        for ts, eq in events:
-            all_events.append((ts, key, eq))
-    all_events.sort(key=lambda x: x[0])
+    all_trades.sort(key=lambda t: t['entry_time'])
 
-    # Combined-Equity Drawdown berechnen
-    combined = capital
-    peak     = combined
-    max_dd   = 0.0
-
-    for ts, key, new_eq in all_events:
-        combined += new_eq - current_eq[key]
-        current_eq[key] = new_eq
-
-        if combined > peak:
-            peak = combined
-        if peak > 0:
-            dd = (peak - combined) / peak * 100.0
-            if dd > max_dd:
-                max_dd = dd
-
-    final_equity  = sum(current_eq.values())
-    total_pnl_pct = (final_equity - capital) / capital * 100.0
-
-    n_trades = sum(len(pr['trades']) for pr in pair_results)
-    wins     = sum(1 for pr in pair_results for t in pr['trades'] if t.get('outcome') == 'WIN')
-    wr       = wins / n_trades if n_trades > 0 else 0.0
-
-    return {
-        'total_pnl_pct': total_pnl_pct,
-        'final_equity':  final_equity,
-        'max_dd':        max_dd,
-        'n_trades':      n_trades,
-        'win_rate':      wr,
-    }
-
-
-def compute_filtered_stats(trades: list, sub_capital: float, risk_pct: float) -> dict:
-    """Berechnet Statistiken direkt aus den (gefilterten) Trades."""
-    if not trades:
-        return {'total_trades': 0, 'win_rate': 0.0, 'total_pnl_pct': 0.0, 'max_drawdown_pct': 0.0}
-
-    eq   = sub_capital
-    peak = eq
+    equity = capital
+    peak   = equity
     max_dd = 0.0
-    wins = 0
+    wins   = 0
 
-    for t in sorted(trades, key=lambda x: str(x.get('exit_time', x.get('entry_time', '')))):
-        risk_amount = eq * (risk_pct / 100.0)
-        outcome = t.get('outcome', 'LOSS')
-        sl_pct  = max(t.get('sl_pct', 1.0), 0.01)
+    for t in all_trades:
+        risk_amount = equity * (risk_pct / 100.0)
+        outcome     = t['outcome']
+        sl_pct      = max(t['sl_pct'], 0.01)
 
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO
             wins += 1
         elif outcome == 'LOSS':
             pnl = -risk_amount
-        else:
-            pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
+        else:  # TIMEOUT
+            pnl = risk_amount * (t['pnl_pct'] / sl_pct)
 
-        eq += pnl
-        if eq > peak:
-            peak = eq
+        equity += pnl
+        if equity > peak:
+            peak = equity
         if peak > 0:
-            dd = (peak - eq) / peak * 100.0
+            dd = (peak - equity) / peak * 100.0
             if dd > max_dd:
                 max_dd = dd
 
-    total_pnl_pct = (eq - sub_capital) / sub_capital * 100.0 if sub_capital > 0 else 0.0
-    n = len(trades)
+    n = len(all_trades)
+    total_pnl_pct = (equity - capital) / capital * 100.0 if capital > 0 else 0.0
+
     return {
-        'total_trades':     n,
-        'win_rate':         wins / n if n > 0 else 0.0,
-        'total_pnl_pct':    total_pnl_pct,
-        'max_drawdown_pct': max_dd,
+        'total_pnl_pct': total_pnl_pct,
+        'final_equity':  equity,
+        'max_dd':        max_dd,
+        'n_trades':      n,
+        'win_rate':      wins / n if n > 0 else 0.0,
     }
 
 
-def greedy_optimize(all_results: list, capital: float, risk_pct: float,
-                    max_dd_limit: float) -> list:
-    """
-    Greedy-Suche: fügt nacheinander das Pair hinzu, das den Portfolio-PnL%
-    am meisten steigert, solange MaxDD <= max_dd_limit.
+def compute_filtered_stats(trades: list, capital: float, risk_pct: float) -> dict:
+    """Berechnet Einzel-Statistiken aus gefilterten Trades (shared-capital Modell)."""
+    return simulate_portfolio(
+        [{'market': '', 'timeframe': '', 'trades': trades}],
+        capital, risk_pct
+    )
 
-    Constraint: max. 1 Timeframe pro Coin (Bitget).
-    Verwendet gefilterte Stats (aus aktuell geladenen Trades).
+
+def best_portfolio_for_size(candidates: list, team_size: int, capital: float,
+                             risk_pct: float, max_dd_limit: float,
+                             force_coins: set = None) -> tuple:
     """
-    # Gefilterte Stats pro Pair vorausberechnen (auf vollem Kapital für Vergleichbarkeit)
-    for r in all_results:
+    Findet das beste Portfolio mit genau team_size Pairs (exhaustive).
+    Constraint: max. 1 TF pro Coin.
+    Returns: (best_metrics, best_combo) or (None, None)
+    """
+    # Nur 1 TF pro Coin zulassen: besten TF pro Coin vorausfiltern
+    coin_map = {}
+    for pair in candidates:
+        coin = pair['coin']
+        pnl  = pair['filtered_stats']['total_pnl_pct']
+        if pnl <= 0:
+            continue
+        if coin not in coin_map or pnl > coin_map[coin]['filtered_stats']['total_pnl_pct']:
+            coin_map[coin] = pair
+
+    eligible = list(coin_map.values())
+    if len(eligible) < team_size:
+        return None, None
+
+    best_metrics = None
+    best_combo   = None
+
+    for combo in combinations(eligible, team_size):
+        metrics = simulate_portfolio(list(combo), capital, risk_pct)
+        if metrics['max_dd'] > max_dd_limit:
+            continue
+        if best_metrics is None or metrics['total_pnl_pct'] > best_metrics['total_pnl_pct']:
+            best_metrics = metrics
+            best_combo   = list(combo)
+
+    return best_metrics, best_combo
+
+
+def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
+                        max_dd_limit: float) -> tuple:
+    """
+    Findet das optimale Portfolio durch schrittweise Team-Größen-Suche.
+    Stoppt wenn keine weitere Verbesserung mehr möglich ist.
+    """
+    # Gefilterte Einzel-Stats berechnen
+    for r in candidates:
         r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
 
-    candidates     = [r for r in all_results if len(r['trades']) > 0]
-    selected       = []
-    selected_coins = set()
-    remaining      = list(candidates)
+    best_overall_metrics = None
+    best_overall_combo   = None
+    max_possible_size    = len(set(r['coin'] for r in candidates
+                                   if r['filtered_stats']['total_pnl_pct'] > 0))
 
-    while remaining:
-        best_pair    = None
-        best_pnl     = -1e9
+    for team_size in range(1, max_possible_size + 1):
+        n_combos = 1
+        # Berechne Anzahl Kombinationen für Progress-Anzeige
+        eligible_count = len([r for r in candidates
+                               if r['filtered_stats']['total_pnl_pct'] > 0])
+        from math import comb as math_comb
+        n_combos = math_comb(min(eligible_count, 7), team_size)
 
-        for pair in remaining:
-            if pair['coin'] in selected_coins:
-                continue
-            # Nur Pairs mit positivem Einzel-PnL im gefilterten Zeitraum
-            if pair['filtered_stats'].get('total_pnl_pct', 0) <= 0:
-                continue
+        print(f"  Teste Teams mit {team_size} Coin(s) ({n_combos} Kombinationen) ...",
+              end='', flush=True)
 
-            trial   = selected + [pair]
-            metrics = simulate_portfolio(trial, capital, risk_pct)
+        metrics, combo = best_portfolio_for_size(
+            candidates, team_size, capital, risk_pct, max_dd_limit
+        )
 
-            if metrics['max_dd'] > max_dd_limit:
-                continue
-            if metrics['total_pnl_pct'] > best_pnl:
-                best_pnl  = metrics['total_pnl_pct']
-                best_pair = pair
-
-        if best_pair is None:
+        if combo is None:
+            print(f" {Y}kein gültiges Team (MaxDD-Limit zu eng){NC}")
             break
 
-        # Nur hinzufügen wenn Portfolio-PnL steigt
-        current_pnl = simulate_portfolio(selected, capital, risk_pct)['total_pnl_pct'] if selected else -1e9
-        if best_pnl <= current_pnl:
+        print(f" Bestes PnL: {G}+{metrics['total_pnl_pct']:.1f}%{NC}  MaxDD: {metrics['max_dd']:.1f}%")
+
+        if best_overall_metrics is None or metrics['total_pnl_pct'] > best_overall_metrics['total_pnl_pct']:
+            best_overall_metrics = metrics
+            best_overall_combo   = combo
+        else:
+            print(f"\n  {Y}Keine weitere Verbesserung durch mehr Coins. Optimierung beendet.{NC}")
             break
 
-        selected.append(best_pair)
-        selected_coins.add(best_pair['coin'])
-        remaining.remove(best_pair)
-
-    return selected
+    return best_overall_metrics, best_overall_combo
 
 
-def print_optimization_result(selected: list, portfolio_metrics: dict,
-                               capital: float, risk_pct: float, max_dd_limit: float):
+def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
+                 max_dd_limit: float):
     w = 72
     print(f"\n{'=' * w}")
     print(f"{B}  dnabot — Automatische Portfolio-Optimierung{NC}")
@@ -290,37 +260,26 @@ def print_optimization_result(selected: list, portfolio_metrics: dict,
         print(f"  → Erhöhe das Max-Drawdown-Limit oder führe zuerst Mode 1 aus.\n")
         return
 
-    n = len(selected)
-    sub_cap = capital / n
-    print(f"\n  {G}Optimales Portfolio — {n} Coin(s), je {sub_cap:.2f} USDT Kapital{NC}")
-    print(f"  Gesamt-Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}%/Sub-Kapital")
-    if n == 1:
-        print(f"  {Y}Hinweis: Portfolio-PnL = Einzel-PnL wenn nur 1 Coin gewählt wird.{NC}")
-        print(f"  {Y}Mehr Coins → niedrigerer Max-DD, aber auch niedrigerer PnL (Kapital wird aufgeteilt).{NC}")
-        print(f"  {Y}Für erzwungene Diversifikation: Max-DD-Limit senken (z.B. 5-10%).{NC}")
+    print(f"\n  {G}Optimales Portfolio — {len(selected)} Coin(s){NC}")
+    print(f"  Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}% (gemeinsamer Pool)")
     print(f"\n  {'Markt':<24} {'TF':<6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
     print(f"  {'-' * (w - 2)}")
 
-    for pr in sorted(selected, key=lambda x: x['filtered_stats'].get('total_pnl_pct', 0), reverse=True):
-        st  = pr['filtered_stats']  # gefilterte Stats (gleicher Zeitraum wie Portfolio)
-        n_t = st.get('total_trades', 0)
-        wr  = st.get('win_rate', 0)
-        pnl = st.get('total_pnl_pct', 0)
-        dd  = st.get('max_drawdown_pct', 0)
-        pnl_col = G if pnl > 0 else R
-        wr_col  = G if wr >= 0.50 else (Y if wr >= 0.43 else R)
-        sign = '+' if pnl >= 0 else ''
+    for pr in sorted(selected, key=lambda x: x['filtered_stats']['total_pnl_pct'], reverse=True):
+        st  = pr['filtered_stats']
+        pnl_col = G if st['total_pnl_pct'] > 0 else R
+        wr_col  = G if st['win_rate'] >= 0.50 else (Y if st['win_rate'] >= 0.43 else R)
+        sign = '+' if st['total_pnl_pct'] >= 0 else ''
         print(
-            f"  {pr['market']:<24} {pr['timeframe']:<6} {n_t:>7} "
-            f"{wr_col}{wr:>6.1%}{NC} "
-            f"{pnl_col}{sign}{pnl:>7.1f}%{NC} "
-            f"{dd:>7.1f}%"
+            f"  {pr['market']:<24} {pr['timeframe']:<6} {st['n_trades']:>7} "
+            f"{wr_col}{st['win_rate']:>6.1%}{NC} "
+            f"{pnl_col}{sign}{st['total_pnl_pct']:>7.1f}%{NC} "
+            f"{st['max_dd']:>7.1f}%"
         )
 
-    pm = portfolio_metrics
     pnl_col = G if pm['total_pnl_pct'] > 0 else R
     print(f"\n  {'─' * (w - 2)}")
-    print(f"  {B}Portfolio gesamt (kombinierte Equity-Simulation):{NC}")
+    print(f"  {B}Portfolio gesamt (gemeinsamer Kapital-Pool, alle Trades kompoundiert):{NC}")
     print(f"  Trades total:  {pm['n_trades']}")
     print(f"  Win-Rate:      {pm['win_rate']:.1%}")
     print(f"  PnL:           {pnl_col}{'+' if pm['total_pnl_pct'] >= 0 else ''}{pm['total_pnl_pct']:.1f}%{NC}")
@@ -341,9 +300,7 @@ def write_to_settings(selected: list):
         {"symbol": pr['market'], "timeframe": pr['timeframe'], "active": True}
         for pr in selected
     ]
-
-    live = settings.setdefault('live_trading_settings', {})
-    live['active_strategies'] = new_strategies
+    settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
 
     try:
         with open(SETTINGS_PATH, 'w') as f:
@@ -372,7 +329,7 @@ def main():
     print(f"\n{'─' * 72}")
     print(f"{B}  dnabot Automatische Portfolio-Optimierung{NC}")
     print(f"  Ziel: Maximaler Profit bei maximal {args.max_dd:.1f}% Drawdown.{date_range}")
-    print(f"  Modell: Kapital wird gleichmäßig auf alle Coins aufgeteilt")
+    print(f"  Modell: Gemeinsamer Kapital-Pool — alle Trades kompoundieren zusammen")
     print(f"  Constraint: max. 1 Timeframe pro Coin (Bitget-Regel)")
     print(f"{'─' * 72}\n")
 
@@ -384,34 +341,33 @@ def main():
         sys.exit(1)
 
     with_trades = [r for r in all_results if len(r['trades']) > 0]
-    coins_available = sorted(set(r['coin'] for r in with_trades))
-    print(f" {len(all_results)} Dateien, {len(with_trades)} mit Trades, {len(coins_available)} Coins.")
+    coins = sorted(set(r['coin'] for r in with_trades))
+    print(f" {len(all_results)} Dateien, {len(with_trades)} mit Trades, {len(coins)} Coins.")
+    print(f"\n  Optimiere Portfolio...\n")
 
-    print("  Optimiere Portfolio (Greedy, 1 TF/Coin) ...\n")
-    selected = greedy_optimize(with_trades, args.capital, args.risk, args.max_dd)
+    best_metrics, best_combo = optimize_portfolio(
+        with_trades, args.capital, args.risk, args.max_dd
+    )
 
-    if selected:
-        portfolio_metrics = simulate_portfolio(selected, args.capital, args.risk)
-    else:
-        portfolio_metrics = {
-            'total_pnl_pct': 0, 'final_equity': args.capital,
-            'max_dd': 0, 'n_trades': 0, 'win_rate': 0,
-        }
+    if not best_combo:
+        best_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
+                        'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
+        best_combo = []
 
-    print_optimization_result(selected, portfolio_metrics, args.capital, args.risk, args.max_dd)
+    print_result(best_combo, best_metrics, args.capital, args.risk, args.max_dd)
 
-    if not selected:
+    if not best_combo:
         sys.exit(0)
 
     if args.auto_write:
-        write_to_settings(selected)
+        write_to_settings(best_combo)
     else:
         try:
             ans = input("  Sollen die optimalen Ergebnisse automatisch in settings.json eingetragen werden? (j/n): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             ans = 'n'
         if ans in ('j', 'ja', 'y', 'yes'):
-            write_to_settings(selected)
+            write_to_settings(best_combo)
         else:
             print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
 

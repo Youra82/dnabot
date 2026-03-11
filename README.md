@@ -42,34 +42,40 @@ Der Bot handelt nur, wenn ein solches Genome im Live-Markt erkannt wird.
 
 ```
 dnabot/
-├── scan_and_learn.py          # Haupt-Lernprozess (Discovery + Evolver)
-├── master_runner.py           # Cronjob-Orchestrator für Live-Trading
-├── run_pipeline.sh            # Vollständige Pipeline (Discovery → Report)
-├── install.sh                 # Erstinstallation auf VPS
-├── update.sh                  # Git-Update (sichert secret.json)
-├── settings.json              # Konfiguration
-├── secret.json                # API-Keys (nicht in Git)
+├── scan_and_learn.py              # Haupt-Lernprozess (Discovery + Evolver)
+├── master_runner.py               # Cronjob-Orchestrator für Live-Trading
+├── run_pipeline.sh                # Vollständige Pipeline (Discovery → Report)
+├── show_results.sh                # Interaktive Analyse & Backtest-Menü
+├── auto_optimizer_scheduler.py    # Automatischer Wochentimer: Discovery + Portfolio-Opt.
+├── run_backtest.py                # Einzel-Backtest pro Pair
+├── run_portfolio_optimizer.py     # Automatische Portfolio-Optimierung (exhaustive)
+├── run_manual_portfolio.py        # Manuelle Portfolio-Simulation (Pair-Auswahl)
+├── install.sh                     # Erstinstallation auf VPS
+├── update.sh                      # Git-Update (sichert secret.json)
+├── settings.json                  # Konfiguration
+├── secret.json                    # API-Keys (nicht in Git)
 │
 └── src/dnabot/
     ├── genome/
-    │   ├── encoder.py         # Kerze → Gen-String
-    │   ├── database.py        # SQLite-Interface (Genome-Library)
-    │   ├── discovery.py       # Pattern-Mining aus Historien-Daten
-    │   └── evolver.py         # Scoring + Aktivierung/Deaktivierung
+    │   ├── encoder.py             # Kerze → Gen-String
+    │   ├── database.py            # SQLite-Interface (Genome-Library)
+    │   ├── discovery.py           # Pattern-Mining aus Historien-Daten
+    │   └── evolver.py             # Scoring + Aktivierung/Deaktivierung
     │
     ├── strategy/
-    │   ├── genome_logic.py    # Aktuelle Kerzen vs. DB → Signal
-    │   └── run.py             # Entry Point für eine Strategie
+    │   ├── genome_logic.py        # Aktuelle Kerzen vs. DB → Signal
+    │   └── run.py                 # Entry Point für eine Strategie
     │
     ├── analysis/
-    │   ├── backtester.py      # Historische Simulation
-    │   └── show_results.py    # Report: Genome-Library + Backtest
+    │   ├── backtester.py          # Historische Simulation
+    │   ├── interactive_chart.py   # Plotly Candlestick + Trade-Marker + Equity
+    │   └── show_results.py        # Report: Genome-Library + Backtest
     │
     └── utils/
-        ├── exchange.py        # Bitget CCXT Wrapper
-        ├── trade_manager.py   # Entry/TP/SL + Self-Learning
-        ├── telegram.py        # Telegram-Benachrichtigungen
-        └── guardian.py        # Crash-Schutz Decorator
+        ├── exchange.py            # Bitget CCXT Wrapper
+        ├── trade_manager.py       # Entry/TP/SL + Self-Learning
+        ├── telegram.py            # Telegram-Benachrichtigungen
+        └── guardian.py            # Crash-Schutz Decorator
 ```
 
 ---
@@ -104,7 +110,7 @@ Für jedes Regime (TREND / RANGE / NEUTRAL):
   Score_regime = winrate_regime × avg_move_pct × log(1 + occ_regime)
 
 Ein Regime wird aktiviert wenn:
-  - occ_regime  ≥ 100 Samples (statistisch belastbar)
+  - occ_regime  ≥ min_samples (statistisch belastbar)
   - winrate     ≥ 45%
   - score       ≥ 0.08
 
@@ -124,12 +130,6 @@ Decay-Weighting (Occurrence-Decay, volatilitätsadjustiert):
     vol_factor = 1.0 → half_life = 180d  (normal)
     vol_factor = 2.0 → half_life = 90d   (hohe Vol → schnellerer Decay)
     vol_factor = 0.5 → half_life = 360d  (niedrige Vol → langsamerer Decay)
-
-  age_days basiert auf last_seen (letzter echter Beobachtung in Discovery
-  oder Live-Trade). Evolver-Updates ändern last_seen NICHT.
-
-  Beispiel: 1000 Samples, 1 Jahr nicht gesehen (half_life=180d):
-    decay ≈ 0.13 → effective_occ ≈ 130 (wie ~130 frische Samples)
 ```
 
 **Beispiel:** Ein Genome mit 3 Regime-Profilen:
@@ -141,11 +141,6 @@ Decay-Weighting (Occurrence-Decay, volatilitätsadjustiert):
 | NEUTRAL | 180     | 52%     | 0.19   | **aktiv** |
 
 → `active_regimes = ["RANGE", "NEUTRAL"]` — wird nur in diesen Phasen gehandelt.
-
-> **Overfitting-Warnung:** Mit 96 möglichen Genen entstehen theoretisch 96⁴ ≈ 85 Mio.
-> mögliche 4er-Sequenzen. In der Praxis sind nur wenige Tausend tatsächlich beobachtbar.
-> Sequenzen mit weniger als 100 Samples werden grundsätzlich ignoriert.
-> Seltene Muster werden nicht gehandelt.
 
 ### Phase 3 — Live-Trading
 
@@ -196,11 +191,6 @@ NEUTRAL  — sonst               Übergangsphase, vorsichtiger Handel möglich
 kann im Trend 38% verlieren — und umgekehrt. Der Regime-Filter ist die
 wirksamste Einzelmaßnahme gegen Fehlsignale.
 
-> **Bekannte Einschränkung — ADX-Latenz:** ADX und ATR sind nachlaufende Indikatoren.
-> Wenn ein neuer Trend startet, ist der ADX noch zu niedrig — das System klassifiziert
-> die Situation als RANGE oder NEUTRAL. Das ist systemimmanent und unvermeidbar.
-> Vorteil: Es verhindert auch Fehlsignale am Anfang schwacher Trendbewegungen.
-
 ---
 
 ## Genome-Datenbank
@@ -225,33 +215,6 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `occ_neutral` / `wins_neutral` | `180` / `94` | Vorkommen + Wins im NEUTRAL-Regime |
 | `active_regimes` | `["RANGE","NEUTRAL"]` | Regime, in denen das Genome gehandelt wird |
 
-### Schema
-
-```sql
-CREATE TABLE genomes (
-    genome_id           TEXT PRIMARY KEY,
-    sequence            TEXT NOT NULL,
-    market              TEXT NOT NULL,
-    timeframe           TEXT NOT NULL,
-    direction           TEXT NOT NULL,
-    seq_length          INTEGER NOT NULL,
-    total_occurrences   INTEGER DEFAULT 0,
-    wins                INTEGER DEFAULT 0,
-    avg_move_pct        REAL DEFAULT 0.0,
-    score               REAL DEFAULT 0.0,
-    active              INTEGER DEFAULT 0,
-    occ_trend           INTEGER DEFAULT 0,
-    wins_trend          INTEGER DEFAULT 0,
-    occ_range           INTEGER DEFAULT 0,
-    wins_range          INTEGER DEFAULT 0,
-    occ_neutral         INTEGER DEFAULT 0,
-    wins_neutral        INTEGER DEFAULT 0,
-    active_regimes      TEXT DEFAULT '[]',
-    discovered_at       TEXT NOT NULL,
-    last_updated        TEXT NOT NULL
-);
-```
-
 ---
 
 ## Konfiguration (`settings.json`)
@@ -267,7 +230,7 @@ CREATE TABLE genomes (
     "scan_settings": {
         "discovery_horizon": 5,
         "move_threshold_pct": 1.0,
-        "min_samples_to_activate": 100
+        "min_samples_to_activate": 80
     },
     "genome_settings": {
         "sequence_lengths": [4, 5, 6],
@@ -280,41 +243,52 @@ CREATE TABLE genomes (
         "leverage": 5,
         "margin_mode": "isolated",
         "rr_ratio": 2.0
+    },
+    "optimization_settings": {
+        "enabled": true,
+        "schedule": {
+            "day_of_week": 6,
+            "hour": 3,
+            "minute": 0,
+            "interval": { "value": 7, "unit": "days" }
+        },
+        "start_capital": 1000,
+        "risk_pct": 1.0,
+        "max_drawdown_pct": 30,
+        "send_telegram_on_completion": true
     }
 }
 ```
 
-> **Automatische Ableitung:** `symbols`, `timeframes` und `history_days` müssen in `scan_settings` **nicht** definiert werden.
-> - Der Scanner übernimmt die (Symbol, Timeframe)-Paare direkt aus `active_strategies` — jede Strategie wird einzeln gescannt. Im Beispiel oben: BTC@4h und ETH@1h, **nicht** BTC@1h oder ETH@4h.
-> - Alle `scan_settings`-Felder werden automatisch nach Timeframe gewählt — nichts muss gesetzt werden:
+> **Automatische Ableitung:** `scan_settings`-Felder werden automatisch nach Timeframe gewählt — nichts muss gesetzt werden:
 >
 > | Parameter | 1h | 4h | 1d |
 > |---|---|---|---|
 > | `history_days` | 365d | 730d | 1095d |
 > | `discovery_horizon` | 24 Kerzen | 6 Kerzen | 3 Kerzen |
 > | `move_threshold_pct` | 0.5% | 1.0% | 2.0% |
-> | `min_samples_to_activate` | 100 | 80 | 50 |
+> | `min_samples_to_activate` | 8 | 5 | 3 |
 >
-> Sollen mehr Kombinationen gescannt werden als gehandelt werden, können `symbols`, `timeframes` und/oder
-> einzelne Parameter in `scan_settings` explizit gesetzt werden — dann gilt dieser Wert fest für alle Paare.
+> Die (Symbol, Timeframe)-Paare werden direkt aus `active_strategies` übernommen.
 
 | Parameter | Erklärung |
 |---|---|
-| `history_days` | **Auto nach Timeframe** (4h→730d, 1h→365d, 1d→1095d …). Explizit setzen für festen Wert. |
-| `discovery_horizon` | **Auto nach Timeframe** (~1 Tag Lookahead: 4h→6, 1h→24, 1d→3). |
-| `move_threshold_pct` | **Auto nach Timeframe** (4h→1.0%, 1h→0.5%, 1d→2.0%). |
-| `min_samples_to_activate` | **Auto nach Timeframe** (4h→80, 1h→100, 1d→50). |
-| `min_score` | Mindest-Score (nach Decay, 0.08 = guter Startpunkt) |
-| `min_winrate` | Mindest-Winrate (0.45 = 45%) |
-| `half_life_days` | Halbwertszeit für Score-Decay (180 = 6 Monate) |
-| `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade |
-| `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2) |
+| `history_days` | Auto nach Timeframe (4h→730d, 1h→365d, 1d→1095d). Explizit setzen für festen Wert. |
+| `discovery_horizon` | Auto nach Timeframe (~1 Tag Lookahead: 4h→6, 1h→24, 1d→3). |
+| `move_threshold_pct` | Auto nach Timeframe (4h→1.0%, 1h→0.5%, 1d→2.0%). |
+| `min_samples_to_activate` | Auto nach Timeframe (4h→5, 1h→8, 1d→3). |
+| `min_score` | Mindest-Score nach Decay (0.08 = guter Startpunkt). |
+| `min_winrate` | Mindest-Winrate (0.45 = 45%). |
+| `half_life_days` | Halbwertszeit für Score-Decay (180 = 6 Monate). |
+| `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade. |
+| `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2). |
+| `optimization_settings.enabled` | Automatische wöchentliche Neu-Optimierung ein/aus. |
+| `optimization_settings.schedule` | Wochentag + Uhrzeit + Intervall für den Auto-Optimizer. |
+| `optimization_settings.max_drawdown_pct` | Maximaler erlaubter Drawdown für Portfolio-Auswahl. |
 
 ---
 
 ## Installation 🚀
-
-Führe die folgenden Schritte auf einem frischen Ubuntu-Server (oder lokal) aus.
 
 #### 1. Projekt klonen
 
@@ -339,10 +313,6 @@ cp secret.json.example secret.json
 nano secret.json
 ```
 
-*(Achte darauf, dass der Hauptschlüssel `"dnabot"` heißt — siehe Struktur unten.)*
-
-Speichere mit `Strg + X`, dann `Y`, dann `Enter`.
-
 ```json
 {
     "dnabot": [
@@ -350,23 +320,19 @@ Speichere mit `Strg + X`, dann `Y`, dann `Enter`.
             "name": "Main-Account",
             "apiKey": "DEIN_API_KEY",
             "secret": "DEIN_SECRET",
-            "password": "DEIN_PASSPHRASE"
+            "password": "DEIN_PASSPHRASE",
+            "telegram_bot_token": "DEIN_BOT_TOKEN",
+            "telegram_chat_id": "DEINE_CHAT_ID"
         }
-    ],
-    "telegram": {
-        "bot_token": "DEIN_BOT_TOKEN",
-        "chat_id": "DEINE_CHAT_ID"
-    }
+    ]
 }
 ```
 
 ---
 
-## Konfiguration & Automatisierung
+## Workflow
 
 #### 1. Coins und Timeframes einstellen
-
-Bearbeite `settings.json` und trage deine gewünschten Handelspaare in `active_strategies` ein:
 
 ```bash
 nano settings.json
@@ -379,34 +345,40 @@ nano settings.json
 ]
 ```
 
-> Alle `scan_settings`-Parameter werden automatisch nach Timeframe abgeleitet — nichts weiter nötig.
-
 #### 2. Genome-Discovery starten (Pipeline)
 
 ```bash
 ./run_pipeline.sh
 ```
 
-Die Pipeline lädt historische Daten, entdeckt Muster und bewertet sie. Dauert je nach Märkten 10–30 Minuten.
+Die Pipeline lädt historische Daten, entdeckt Muster, bewertet sie und zeigt eine Zusammenfassung. Dauert je nach Anzahl der Märkte 10–30 Minuten.
 
-#### 3. Ergebnisse analysieren
+#### 3. Ergebnisse analysieren & Portfolio optimieren
 
 ```bash
 ./show_results.sh
 ```
 
-- **Modus 1:** Einzel-Backtest — simuliert jedes aktive Pair und zeigt WR, PnL, Drawdown.
-- **Modus 2:** Genome Bibliothek — Top-Patterns, Stats und Verteilung aus der DB.
-- **Modus 3:** Regime-Analyse — welches Markt-Regime (TREND/RANGE/NEUTRAL) wo am besten funktioniert.
-- **Modus 4:** Interaktive Charts — Candlestick + Entry/Exit-Marker + Equity-Kurve als HTML.
+| Modus | Funktion |
+|---|---|
+| **1) Einzel-Backtest** | Simuliert jedes Pair einzeln — zeigt WR, PnL, Drawdown pro Pair. |
+| **2) Manuelle Portfolio-Simulation** | Du wählst Pairs aus einer Liste (Nummern oder `alle`), der Bot simuliert das kombinierte Portfolio mit gemeinsamem Kapital-Pool und optionalem Telegram-Versand. |
+| **3) Automatische Portfolio-Opt.** | Exhaustive Suche über alle Pair-Kombinationen — der Bot wählt das Team mit maximalem PnL bei gegebenem Max-Drawdown. Schreibt Ergebnis in `settings.json`. Optional: kombinierten Portfolio-Equity-Chart via Telegram senden. |
+| **4) Genome Bibliothek** | Top-Patterns, Score-Verteilung und Statistiken aus der Genome-DB. |
+| **5) Interaktive Charts** | Candlestick + Entry/Exit-Marker + Equity-Kurve als HTML (Plotly). |
+
+**Portfolio-Simulation (Modus 2 & 3):**
+- Alle Trades aller gewählten Pairs werden **chronologisch zusammengeführt**
+- Jeder Trade riskiert `risk_pct%` des **aktuellen** Equity (Kompoundierung)
+- Constraint: max. 1 Timeframe pro Coin (Bitget erlaubt nur 1 offene Position pro Symbol)
 
 #### 4. Strategien live schalten
+
+Nach der Portfolio-Optimierung (Modus 3) werden die optimalen Strategien automatisch in `settings.json` eingetragen. Alternativ manuell:
 
 ```bash
 nano settings.json
 ```
-
-Setze für die gewünschten Pairs `"active": true`:
 
 ```json
 { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": true }
@@ -418,17 +390,60 @@ Setze für die gewünschten Pairs `"active": true`:
 crontab -e
 ```
 
-Füge passend zum Timeframe eine der folgenden Zeilen ein (Pfad anpassen):
-
 ```cron
-# 1h-Strategien: jede Stunde, 5 Min nach voll
-5 * * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
-
-# 4h-Strategien: alle 4 Stunden
+# 4h-Strategien: alle 4 Stunden, 5 Min nach voll
 5 */4 * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
 
-# Wöchentliches Relearning — neue Marktdaten einlernen (Sonntag 2 Uhr)
-0 2 * * 0 cd /root/dnabot && .venv/bin/python3 scan_and_learn.py >> /root/dnabot/logs/scan.log 2>&1
+# 1h-Strategien: jede Stunde, 5 Min nach voll
+5 * * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
+```
+
+> Der `master_runner.py` ruft beim Start automatisch den `auto_optimizer_scheduler.py` auf.
+> Dieser prüft ob eine Neu-Optimierung fällig ist und führt sie dann automatisch aus.
+> Ein separater Cronjob für wöchentliches Re-Learning ist **nicht nötig**.
+
+---
+
+## Automatische Wochentimer-Optimierung
+
+Der `auto_optimizer_scheduler.py` läuft non-blocking bei jedem `master_runner.py`-Aufruf:
+
+```
+master_runner.py startet
+    ↓
+auto_optimizer_scheduler.py prüft: Ist Optimierung fällig?
+    ├── Nein → sofort beendet (kein Overhead)
+    └── Ja →
+           scan_and_learn.py           (neue Genome discovern + evolven)
+               ↓
+           run_portfolio_optimizer.py --auto-write
+               (bestes Team ermitteln → settings.json aktualisieren)
+               ↓
+           Telegram: Start + Ende Benachrichtigung
+```
+
+Konfiguration in `settings.json` unter `optimization_settings`:
+
+```json
+"optimization_settings": {
+    "enabled": true,
+    "schedule": {
+        "day_of_week": 6,
+        "hour": 3,
+        "minute": 0,
+        "interval": { "value": 7, "unit": "days" }
+    },
+    "start_capital": 1000,
+    "risk_pct": 1.0,
+    "max_drawdown_pct": 30,
+    "send_telegram_on_completion": true
+}
+```
+
+Manuell erzwingen:
+
+```bash
+.venv/bin/python3 auto_optimizer_scheduler.py --force
 ```
 
 ---
@@ -447,6 +462,9 @@ grep -i "ERROR" logs/cron.log
 # Discovery-Log
 tail -f logs/scan_and_learn.log
 
+# Auto-Optimizer
+tail -f logs/auto_optimizer_trigger.log
+
 # Einzelnes Symbol
 tail -n 100 logs/dnabot_BTCUSDTUSDT_4h.log
 ```
@@ -457,7 +475,7 @@ tail -n 100 logs/dnabot_BTCUSDTUSDT_4h.log
 cd /root/dnabot && .venv/bin/python3 master_runner.py
 ```
 
-#### Genome-Discovery manuell neu starten
+#### Genome-Discovery manuell starten
 
 ```bash
 # Alle konfigurierten Pairs
@@ -491,8 +509,8 @@ rm artifacts/db/genome.db
 - `artifacts/db/genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
 - `artifacts/tracker/` ist **nicht in Git** — enthält den offenen Trade-Status pro Symbol
 - Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
-- Genome-Discovery sollte mindestens **1x pro Woche** wiederholt werden (neue Marktdaten)
-- Genome mit weniger als 80 Samples (4h) werden grundsätzlich nicht gehandelt
+- Genome-Discovery wird automatisch wöchentlich wiederholt (Auto-Optimizer)
+- Genome mit weniger als 5 Samples (4h) werden grundsätzlich nicht gehandelt
 
 ---
 
@@ -504,7 +522,6 @@ pandas==2.1.3    # Datenverarbeitung
 ta==0.11.0       # ATR-Berechnung (für Encoding + Regime)
 numpy            # Array-Operationen
 requests==2.31.0 # Telegram
-plotly           # Interaktive Charts (show_results.sh Modus 4)
-optuna==4.5.0    # Optional: Threshold-Optimierung
+plotly           # Interaktive Charts (show_results.sh Modus 5)
 sqlite3          # Built-in Python — keine Installation nötig
 ```

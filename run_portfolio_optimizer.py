@@ -265,6 +265,11 @@ def greedy_optimize(all_results: list, capital: float, risk_pct: float,
         if best_pair is None:
             break
 
+        # Nur hinzufügen wenn Portfolio-PnL steigt
+        current_pnl = simulate_portfolio(selected, capital, risk_pct)['total_pnl_pct'] if selected else -1e9
+        if best_pnl <= current_pnl:
+            break
+
         selected.append(best_pair)
         selected_coins.add(best_pair['coin'])
         remaining.remove(best_pair)
@@ -287,8 +292,12 @@ def print_optimization_result(selected: list, portfolio_metrics: dict,
 
     n = len(selected)
     sub_cap = capital / n
-    print(f"\n  {G}Optimales Portfolio — {n} Coins, je {sub_cap:.2f} USDT Kapital{NC}")
+    print(f"\n  {G}Optimales Portfolio — {n} Coin(s), je {sub_cap:.2f} USDT Kapital{NC}")
     print(f"  Gesamt-Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}%/Sub-Kapital")
+    if n == 1:
+        print(f"  {Y}Hinweis: Portfolio-PnL = Einzel-PnL wenn nur 1 Coin gewählt wird.{NC}")
+        print(f"  {Y}Mehr Coins → niedrigerer Max-DD, aber auch niedrigerer PnL (Kapital wird aufgeteilt).{NC}")
+        print(f"  {Y}Für erzwungene Diversifikation: Max-DD-Limit senken (z.B. 5-10%).{NC}")
     print(f"\n  {'Markt':<24} {'TF':<6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
     print(f"  {'-' * (w - 2)}")
 

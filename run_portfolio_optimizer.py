@@ -288,148 +288,168 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
     print(f"{'=' * w}\n")
 
 
-def generate_charts_for_portfolio(selected: list, start_date: str, end_date: str,
-                                   capital: float, risk_pct: float):
-    """Erstellt interaktive Charts für alle Pairs im Portfolio und sendet sie via Telegram."""
-    import json as _json
-    from datetime import datetime, timedelta, timezone
-
+def generate_portfolio_equity_chart(selected: list, pm: dict,
+                                     start_date: str, end_date: str,
+                                     capital: float, risk_pct: float):
+    """
+    Erstellt einen kombinierten Portfolio-Equity-Chart (alle Pairs zusammen)
+    und sendet ihn als einzelne HTML-Datei via Telegram.
+    """
     try:
-        import pandas as pd
+        import plotly.graph_objects as go
     except ImportError:
-        print(f"{R}  pandas nicht installiert — Charts übersprungen.{NC}")
+        print(f"{R}  plotly nicht installiert — Chart übersprungen.{NC}")
         return
-
-    # Settings + Secrets laden
-    try:
-        with open(SETTINGS_PATH) as f:
-            settings = _json.load(f)
-    except Exception as e:
-        print(f"{R}  settings.json nicht lesbar: {e}{NC}")
-        return
-
-    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
-    try:
-        with open(secret_path) as f:
-            secrets = _json.load(f)
-    except Exception as e:
-        print(f"{R}  secret.json nicht lesbar: {e}{NC}")
-        return
-
-    sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
-    try:
-        from dnabot.utils.exchange import Exchange
-        from dnabot.genome.database import GenomeDB
-        from dnabot.analysis.backtester import run_backtest
-        from dnabot.analysis.interactive_chart import create_chart
-        from scan_and_learn import resolve_history_days
-    except Exception as e:
-        print(f"{R}  Import-Fehler: {e}{NC}")
-        return
-
-    accounts = secrets.get('dnabot', [])
-    if not accounts:
-        print(f"{R}  Kein 'dnabot'-Account in secret.json.{NC}")
-        return
-    exchange = Exchange(accounts[0])
-
-    scan_cfg   = settings.get('scan_settings', {})
-    genome_cfg = settings.get('genome_settings', {})
-    risk_cfg   = settings.get('risk_settings', {})
-    db_path    = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
-
-    params = {
-        'genome': {
-            'min_score':        genome_cfg.get('min_score', 0.08),
-            'min_winrate':      genome_cfg.get('min_winrate', 0.45),
-            'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
-        },
-        'risk': {'rr_ratio': risk_cfg.get('rr_ratio', 2.0)},
-    }
 
     # Telegram-Credentials
-    tg          = accounts[0] if accounts else {}
-    bot_token   = tg.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
-    chat_id     = tg.get('telegram_chat_id', '')   or secrets.get('telegram', {}).get('chat_id', '')
-    send_tg     = bool(bot_token and chat_id)
+    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
+    bot_token, chat_id = '', ''
+    try:
+        with open(secret_path) as f:
+            secrets = json.load(f)
+        accounts  = secrets.get('dnabot', [])
+        tg        = accounts[0] if accounts else {}
+        bot_token = tg.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
+        chat_id   = tg.get('telegram_chat_id', '')   or secrets.get('telegram', {}).get('chat_id', '')
+    except Exception:
+        pass
 
-    generated = []
-    print()
-
+    # Alle Trades zusammenführen und chronologisch sortieren
+    all_trades = []
     for pr in selected:
-        symbol    = pr['market']
-        timeframe = pr['timeframe']
-        print(f"  Erstelle Chart: {symbol} ({timeframe}) ...", end='', flush=True)
+        for t in pr['trades']:
+            all_trades.append({
+                'market':     pr['market'],
+                'timeframe':  pr['timeframe'],
+                'outcome':    t.get('outcome', 'LOSS'),
+                'pnl_pct':    t.get('pnl_pct', 0.0),
+                'sl_pct':     t.get('sl_pct', 1.0),
+                'entry_time': str(t.get('entry_time', '')),
+            })
+    all_trades.sort(key=lambda t: t['entry_time'])
 
-        history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
-        fetch_end    = datetime.now(timezone.utc)
-        fetch_start  = fetch_end - timedelta(days=history_days)
+    # Equity-Kurve berechnen (identisch zu simulate_portfolio)
+    equity   = capital
+    peak     = equity
+    eq_times = [all_trades[0]['entry_time'] if all_trades else '']
+    eq_vals  = [equity]
+    wins     = 0
 
-        df = exchange.fetch_historical_ohlcv(
-            symbol, timeframe,
-            fetch_start.strftime('%Y-%m-%d'),
-            fetch_end.strftime('%Y-%m-%d'),
-        )
-        if df is None or df.empty:
-            print(f" {Y}keine Daten.{NC}")
-            continue
+    for t in all_trades:
+        risk_amount = equity * (risk_pct / 100.0)
+        outcome     = t['outcome']
+        sl_pct      = max(t['sl_pct'], 0.01)
 
-        db      = GenomeDB(db_path)
-        results = run_backtest(
-            df=df, market=symbol, timeframe=timeframe, db=db,
-            params=params, start_capital=capital,
-            risk_per_trade_pct=risk_pct,
-        )
-        db.close()
+        if outcome == 'WIN':
+            equity += risk_amount * RR_RATIO
+            wins   += 1
+        elif outcome == 'LOSS':
+            equity -= risk_amount
+        else:
+            equity += risk_amount * (t['pnl_pct'] / sl_pct)
 
-        trades      = results.get('trades', [])
-        stats       = results.get('stats', {})
-        trades_filt = trades
+        if equity > peak:
+            peak = equity
 
-        if start_date:
-            trades_filt = [t for t in trades_filt
-                           if str(t.get('entry_time', '')) >= start_date]
-        if end_date:
-            trades_filt = [t for t in trades_filt
-                           if str(t.get('entry_time', '')) <= end_date + ' 23:59:59']
+        eq_times.append(t['entry_time'])
+        eq_vals.append(round(equity, 2))
 
-        df_chart = df.copy()
-        if start_date:
-            try:
-                df_chart = df_chart[df_chart.index >= pd.Timestamp(start_date, tz='UTC')]
-            except Exception:
-                pass
-        if end_date:
-            try:
-                df_chart = df_chart[df_chart.index <= pd.Timestamp(end_date + ' 23:59:59', tz='UTC')]
-            except Exception:
-                pass
+    n       = len(all_trades)
+    wr      = wins / n if n > 0 else 0.0
+    pnl_pct = (equity - capital) / capital * 100.0 if capital > 0 else 0.0
+    max_dd  = pm['max_dd']
 
-        fig = create_chart(
-            symbol, timeframe, df_chart, trades_filt, stats, capital,
-            risk_pct=risk_pct,
-            rr_ratio=risk_cfg.get('rr_ratio', 2.0),
-        )
-        if fig is None:
-            print(f" {R}Fehler beim Erstellen.{NC}")
-            continue
+    date_range = f"{start_date or '...'} → {end_date or 'heute'}"
+    pairs_str  = ', '.join(f"{p['market'].split('/')[0]}/{p['timeframe']}" for p in selected)
+    sign       = '+' if pnl_pct >= 0 else ''
 
-        safe_name   = f"{symbol.replace('/', '').replace(':', '')}_{timeframe}"
-        output_file = f"/tmp/dnabot_{safe_name}.html"
-        fig.write_html(output_file)
-        generated.append((symbol, timeframe, output_file))
-        print(f" {G}✓{NC}")
+    title = (
+        f"dnabot Portfolio — {len(selected)} Coins ({pairs_str})<br>"
+        f"<sup>{date_range} | Kapital: {capital:.0f} USDT | Risiko: {risk_pct}% | "
+        f"Trades: {n} | WR: {wr:.1%} | PnL: {sign}{pnl_pct:.1f}% | "
+        f"Final Equity: {equity:.2f} USDT | MaxDD: {max_dd:.1f}%</sup>"
+    )
 
-    print(f"\n  {G}{len(generated)} Chart(s) erstellt.{NC}")
+    fig = go.Figure()
 
-    if send_tg and generated:
+    # Equity-Linie
+    fig.add_trace(go.Scatter(
+        x=eq_times, y=eq_vals,
+        mode='lines',
+        name='Portfolio Equity',
+        line=dict(color='#2563eb', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(37,99,235,0.08)',
+    ))
+
+    # Startkapital-Referenzlinie
+    fig.add_hline(
+        y=capital,
+        line=dict(color='rgba(100,100,100,0.4)', width=1, dash='dash'),
+        annotation_text=f'Start: {capital:.0f} USDT',
+        annotation_position='top left',
+    )
+
+    # Trade-Marker (WIN = grün, LOSS = rot) an Equity-Punkten
+    win_x  = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
+    win_y  = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
+    loss_x = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
+    loss_y = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
+    to_x   = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
+    to_y   = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
+
+    win_tips  = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
+    loss_tips = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
+    to_tips   = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
+
+    if win_x:
+        fig.add_trace(go.Scatter(
+            x=win_x, y=win_y, mode='markers',
+            marker=dict(color='#16a34a', symbol='triangle-up', size=10),
+            name='WIN', text=win_tips,
+            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>WIN</extra>',
+        ))
+    if loss_x:
+        fig.add_trace(go.Scatter(
+            x=loss_x, y=loss_y, mode='markers',
+            marker=dict(color='#ef4444', symbol='triangle-down', size=10),
+            name='LOSS', text=loss_tips,
+            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>LOSS</extra>',
+        ))
+    if to_x:
+        fig.add_trace(go.Scatter(
+            x=to_x, y=to_y, mode='markers',
+            marker=dict(color='#9ca3af', symbol='square', size=8),
+            name='TIMEOUT', text=to_tips,
+            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>TIMEOUT</extra>',
+        ))
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
+        height=600,
+        hovermode='x unified',
+        template='plotly_white',
+        xaxis=dict(rangeslider=dict(visible=True)),
+        yaxis=dict(title='Equity (USDT)'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+    )
+
+    output_file = '/tmp/dnabot_portfolio_equity.html'
+    fig.write_html(output_file)
+    print(f"\n  {G}✓ Portfolio-Chart erstellt: {output_file}{NC}")
+
+    if bot_token and chat_id:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
         from dnabot.utils.telegram import send_document
-        print(f"  Sende via Telegram ...")
-        for sym, tf, path in generated:
-            send_document(bot_token, chat_id, path, caption=f"dnabot Portfolio-Chart: {sym} {tf}")
-            print(f"  {G}✓ {sym} {tf} gesendet.{NC}")
-    elif generated:
-        print(f"  {Y}Telegram nicht konfiguriert — Charts nur lokal in /tmp/ gespeichert.{NC}")
+        caption = (
+            f"dnabot Portfolio-Equity\n"
+            f"{date_range} | {len(selected)} Coins | "
+            f"PnL: {sign}{pnl_pct:.1f}% | Equity: {equity:.2f} USDT | MaxDD: {max_dd:.1f}%"
+        )
+        send_document(bot_token, chat_id, output_file, caption=caption)
+        print(f"  {G}✓ Via Telegram gesendet.{NC}")
+    else:
+        print(f"  {Y}Telegram nicht konfiguriert — Chart nur lokal gespeichert.{NC}")
 
 
 def write_to_settings(selected: list):
@@ -521,8 +541,8 @@ def main():
     except (EOFError, KeyboardInterrupt):
         chart_ans = 'n'
     if chart_ans in ('j', 'ja', 'y', 'yes'):
-        generate_charts_for_portfolio(
-            best_combo, args.start_date, args.end_date, args.capital, args.risk
+        generate_portfolio_equity_chart(
+            best_combo, best_metrics, args.start_date, args.end_date, args.capital, args.risk
         )
 
 

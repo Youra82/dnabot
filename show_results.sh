@@ -18,11 +18,10 @@ echo -e "${YELLOW}Wähle einen Analyse-Modus:${NC}"
 echo "  1) Einzel-Backtest               (jedes Pair wird simuliert)"
 echo "  2) Genome Bibliothek             (Top-Patterns + Stats aus der DB)"
 echo "  3) Automatische Portfolio-Opt.   (Bot wählt das beste Team)"
-echo "  4) Regime-Analyse                (Welches Regime funktioniert wo)"
-echo "  5) Interaktive Charts            (Candlestick + Entry/Exit-Marker)"
-read -p "Auswahl (1-5) [Standard: 2]: " MODE
+echo "  4) Interaktive Charts            (Candlestick + Entry/Exit-Marker)"
+read -p "Auswahl (1-4) [Standard: 2]: " MODE
 
-if [[ ! "$MODE" =~ ^[1-5]?$ ]]; then
+if [[ ! "$MODE" =~ ^[1-4]?$ ]]; then
     echo -e "${RED}Ungültige Eingabe. Verwende Standard (2).${NC}"
     MODE=2
 fi
@@ -105,22 +104,17 @@ elif [ "$MODE" == "3" ]; then
         $DATE_ARGS
 
 # ─────────────────────────────────────────
-# Mode 5: Interaktive Charts
+# Mode 4: Interaktive Charts
 # ─────────────────────────────────────────
-elif [ "$MODE" == "5" ]; then
+elif [ "$MODE" == "4" ]; then
     echo ""
     python3 src/dnabot/analysis/show_results.py --mode 4
 
 # ─────────────────────────────────────────
 # Mode 2: Genome Bibliothek → --mode 1
-# Mode 4: Regime-Analyse    → --mode 2
 # ─────────────────────────────────────────
 else
-    if [ "$MODE" == "2" ]; then
-        python3 src/dnabot/analysis/show_results.py --mode 1
-    elif [ "$MODE" == "4" ]; then
-        python3 src/dnabot/analysis/show_results.py --mode 2
-    fi
+    python3 src/dnabot/analysis/show_results.py --mode 1
 fi
 
 deactivate

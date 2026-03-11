@@ -4,6 +4,10 @@
 # Liest gespeicherte Backtest-Ergebnisse, findet die beste
 # Kombination von Pairs die den maximalen Profit bei einem
 # vorgegebenen Drawdown-Limit liefert.
+#
+# Constraints:
+#   - Max. 1 Timeframe pro Coin (Bitget erlaubt nur 1 Position/Coin)
+#   - Kapital wird realistisch auf gleichzeitig offene Positionen aufgeteilt
 
 import os
 import sys
@@ -14,7 +18,7 @@ from datetime import datetime, timezone
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
-RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
+RESULTS_DIR   = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
 
 G   = '\033[0;32m'
@@ -25,6 +29,11 @@ B   = '\033[1;37m'
 NC  = '\033[0m'
 
 RR_RATIO = 2.0  # muss mit Backtester übereinstimmen
+
+
+def coin_from_symbol(symbol: str) -> str:
+    """Extrahiert den Coin-Namen aus einem Symbol (z.B. BTC/USDT:USDT → BTC)."""
+    return symbol.split('/')[0].upper()
 
 
 def load_all_results(start_date=None, end_date=None):
@@ -69,6 +78,7 @@ def load_all_results(start_date=None, end_date=None):
         results.append({
             'market':    data['market'],
             'timeframe': data['timeframe'],
+            'coin':      coin_from_symbol(data['market']),
             'trades':    trades,
             'stats':     data.get('stats', {}),
         })
@@ -78,24 +88,39 @@ def load_all_results(start_date=None, end_date=None):
 
 def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> dict:
     """
-    Simuliert ein Portfolio aus mehreren Pairs.
-    Trades werden chronologisch zusammengeführt.
-    Jeder Trade riskiert risk_pct% des aktuellen Equity.
+    Simuliert ein Portfolio aus mehreren Pairs (max. 1 TF pro Coin).
+
+    Gleichzeitig offene Positionen teilen das Kapital realistisch:
+    Das Risiko pro Trade = risk_pct / Anzahl_gleichzeitiger_offener_Positionen.
+    Das simuliert, dass das Kapital auf die Positionen aufgeteilt wird.
     """
+    # Alle Trades mit entry/exit Zeitstempeln sammeln
     all_trades = []
     for pr in pair_results:
         for t in pr['trades']:
+            et = t.get('entry_time', '')
+            xt = t.get('exit_time', et)
             all_trades.append({
-                'market':    pr['market'],
-                'timeframe': pr['timeframe'],
-                'outcome':   t.get('outcome', 'LOSS'),
-                'pnl_pct':   t.get('pnl_pct', 0.0),
-                'sl_pct':    t.get('sl_pct', 1.0),
-                'entry_time': t.get('entry_time', ''),
+                'market':     pr['market'],
+                'timeframe':  pr['timeframe'],
+                'outcome':    t.get('outcome', 'LOSS'),
+                'pnl_pct':    t.get('pnl_pct', 0.0),
+                'sl_pct':     t.get('sl_pct', 1.0),
+                'entry_time': str(et),
+                'exit_time':  str(xt),
             })
 
-    # Chronologisch sortieren
-    all_trades.sort(key=lambda t: str(t['entry_time']))
+    all_trades.sort(key=lambda t: t['entry_time'])
+
+    # Für jeden Trade: wie viele andere Trades überlappen mit ihm?
+    # Wir approximieren das durch: Anzahl der Pairs (max. gleichzeitig offen)
+    # Eine einfachere und faire Approximation:
+    # Wenn N Pairs im Portfolio, gehen wir davon aus, dass im Schnitt
+    # max N Positionen gleichzeitig offen sein können (1 pro Coin).
+    # Das Kapital pro Position = capital / N → risk_per_trade = risk_pct (von Teilkapital)
+    # = risk_pct / N von Gesamtkapital
+    n_pairs = len(pair_results)
+    effective_risk = risk_pct / max(n_pairs, 1)
 
     equity = capital
     peak   = equity
@@ -103,7 +128,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
     equity_curve = [equity]
 
     for t in all_trades:
-        risk_amount = equity * (risk_pct / 100.0)
+        risk_amount = equity * (effective_risk / 100.0)
         outcome     = t['outcome']
         sl_pct      = max(t['sl_pct'], 0.01)
 
@@ -112,7 +137,6 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
         elif outcome == 'LOSS':
             pnl = -risk_amount
         else:  # TIMEOUT
-            # pnl_pct enthält den tatsächlichen %-Gewinn relativ zum SL
             raw_pnl_pct = t['pnl_pct']
             pnl = risk_amount * (raw_pnl_pct / sl_pct)
 
@@ -138,6 +162,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
         'n_trades':      n_trades,
         'win_rate':      wr,
         'equity_curve':  equity_curve,
+        'effective_risk_pct': effective_risk,
     }
 
 
@@ -146,65 +171,75 @@ def greedy_optimize(all_results: list, capital: float, risk_pct: float,
     """
     Greedy-Suche: fügt nacheinander das Pair hinzu, das den Portfolio-PnL
     am meisten steigert, solange MaxDD unter max_dd_limit bleibt.
+
+    Constraint: max. 1 Timeframe pro Coin (Bitget-Regel).
     """
-    # Pairs mit mind. 1 Trade
     candidates = [r for r in all_results if len(r['trades']) > 0]
     if not candidates:
         return []
 
-    selected = []
-    remaining = list(candidates)
+    selected     = []
+    selected_coins = set()  # bereits verwendete Coins
+    remaining    = list(candidates)
 
     while remaining:
-        best_pair   = None
-        best_pnl    = -1e9
+        best_pair    = None
+        best_pnl     = -1e9
         best_metrics = None
 
         for pair in remaining:
-            trial = selected + [pair]
+            # Bitget-Constraint: pro Coin nur 1 TF
+            if pair['coin'] in selected_coins:
+                continue
+
+            trial   = selected + [pair]
             metrics = simulate_portfolio(trial, capital, risk_pct)
+
             if metrics['max_dd'] > max_dd_limit:
                 continue
             if metrics['total_pnl_pct'] > best_pnl:
-                best_pnl    = metrics['total_pnl_pct']
-                best_pair   = pair
+                best_pnl     = metrics['total_pnl_pct']
+                best_pair    = pair
                 best_metrics = metrics
 
         if best_pair is None:
-            break  # Kein weiteres Pair passt ohne DD-Verletzung
+            break
 
-        # Nur hinzufügen wenn es den PnL verbessert
-        current_metrics = simulate_portfolio(selected, capital, risk_pct) if selected else {'total_pnl_pct': -1e9}
-        if best_pnl <= current_metrics['total_pnl_pct'] and selected:
+        # Nur hinzufügen wenn es den PnL wirklich verbessert
+        current_pnl = simulate_portfolio(selected, capital, risk_pct)['total_pnl_pct'] if selected else -1e9
+        if best_pnl <= current_pnl and selected:
             break
 
         selected.append(best_pair)
+        selected_coins.add(best_pair['coin'])
         remaining.remove(best_pair)
 
     return selected
 
 
 def print_optimization_result(selected: list, portfolio_metrics: dict,
-                               capital: float, risk_pct: float):
-    w = 70
+                               capital: float, risk_pct: float, max_dd_limit: float):
+    w = 72
     print(f"\n{'=' * w}")
     print(f"{B}  dnabot — Automatische Portfolio-Optimierung{NC}")
+    print(f"  Ziel: Maximaler Profit bei maximal {max_dd_limit:.1f}% Drawdown.")
     print(f"{'=' * w}")
 
     if not selected:
         print(f"\n{R}  Kein Portfolio gefunden, das die Bedingungen erfüllt.{NC}")
-        print(f"  → Erhöhe das Max-Drawdown-Limit oder füge mehr Backtest-Daten hinzu.\n")
+        print(f"  → Erhöhe das Max-Drawdown-Limit oder führe zuerst Mode 1 aus.\n")
         return
 
-    print(f"\n  {G}Optimales Portfolio — {len(selected)} Pairs{NC}")
-    print(f"  Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}%")
+    eff_risk = portfolio_metrics.get('effective_risk_pct', risk_pct)
+    print(f"\n  {G}Optimales Portfolio — {len(selected)} Pairs (1 TF pro Coin){NC}")
+    print(f"  Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}% | Eff. Risiko: {eff_risk:.2f}%/Trade")
     print(f"\n  {'Markt':<24} {'TF':<6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
     print(f"  {'-' * (w - 2)}")
 
     for pr in selected:
-        st = pr['stats']
-        n  = st.get('total_trades', 0)
-        wr = st.get('win_rate', 0)
+        st  = pr['stats']
+        n   = st.get('total_trades', 0)
+        wr  = st.get('win_rate', 0)
         pnl = st.get('total_pnl_pct', 0)
         dd  = st.get('max_drawdown_pct', 0)
         pnl_col = G if pnl > 0 else R
@@ -220,12 +255,12 @@ def print_optimization_result(selected: list, portfolio_metrics: dict,
     pm = portfolio_metrics
     pnl_col = G if pm['total_pnl_pct'] > 0 else R
     print(f"\n  {'─' * (w - 2)}")
-    print(f"  {B}Portfolio gesamt:{NC}")
-    print(f"  Trades:   {pm['n_trades']}")
-    print(f"  Win-Rate: {pm['win_rate']:.1%}")
-    print(f"  PnL:      {pnl_col}{'+' if pm['total_pnl_pct'] >= 0 else ''}{pm['total_pnl_pct']:.1f}%{NC}")
-    print(f"  Final:    {pm['final_equity']:.2f} USDT")
-    print(f"  Max-DD:   {pm['max_dd']:.1f}%")
+    print(f"  {B}Portfolio gesamt (kombinierte Equity-Simulation):{NC}")
+    print(f"  Trades:        {pm['n_trades']}")
+    print(f"  Win-Rate:      {pm['win_rate']:.1%}")
+    print(f"  PnL:           {pnl_col}{'+' if pm['total_pnl_pct'] >= 0 else ''}{pm['total_pnl_pct']:.1f}%{NC}")
+    print(f"  Final Equity:  {pm['final_equity']:.2f} USDT")
+    print(f"  Max Drawdown:  {pm['max_dd']:.1f}%")
     print(f"{'=' * w}\n")
 
 
@@ -260,22 +295,21 @@ def main():
     parser = argparse.ArgumentParser(description="dnabot Portfolio Optimizer")
     parser.add_argument('--capital',    type=float, default=1000.0)
     parser.add_argument('--risk',       type=float, default=1.0)
-    parser.add_argument('--max-dd',     type=float, default=30.0,
-                        help="Maximaler Drawdown in %")
+    parser.add_argument('--max-dd',     type=float, default=30.0)
     parser.add_argument('--start-date', type=str,   default=None)
     parser.add_argument('--end-date',   type=str,   default=None)
-    parser.add_argument('--auto-write', action='store_true',
-                        help="Ohne Nachfrage direkt in settings.json schreiben")
+    parser.add_argument('--auto-write', action='store_true')
     args = parser.parse_args()
 
     date_range = ""
     if args.start_date or args.end_date:
         date_range = f" | {args.start_date or '...'} → {args.end_date or 'heute'}"
 
-    print(f"\n{'─' * 70}")
+    print(f"\n{'─' * 72}")
     print(f"{B}  dnabot Automatische Portfolio-Optimierung{NC}")
     print(f"  Ziel: Maximaler Profit bei maximal {args.max_dd:.1f}% Drawdown.{date_range}")
-    print(f"{'─' * 70}\n")
+    print(f"  Constraint: max. 1 Timeframe pro Coin (Bitget-Regel)")
+    print(f"{'─' * 72}\n")
 
     print("  Lade Backtest-Ergebnisse ...", end='', flush=True)
     all_results = load_all_results(args.start_date, args.end_date)
@@ -284,20 +318,26 @@ def main():
         print("  Zuerst Mode 1 (Einzel-Backtest) ausführen!\n")
         sys.exit(1)
 
-    # Nur Pairs mit Trades
     with_trades = [r for r in all_results if len(r['trades']) > 0]
     print(f" {len(all_results)} Dateien geladen ({len(with_trades)} mit Trades).")
 
-    print("  Optimiere Portfolio (Greedy-Suche) ...\n")
+    # Zeige verfügbare Coins
+    coins_available = sorted(set(r['coin'] for r in with_trades))
+    print(f"  Coins mit Daten: {', '.join(coins_available)}\n")
+
+    print("  Optimiere Portfolio (Greedy, 1 TF/Coin) ...\n")
     selected = greedy_optimize(with_trades, args.capital, args.risk, args.max_dd)
 
     if selected:
         portfolio_metrics = simulate_portfolio(selected, args.capital, args.risk)
     else:
-        portfolio_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
-                             'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
+        portfolio_metrics = {
+            'total_pnl_pct': 0, 'final_equity': args.capital,
+            'max_dd': 0, 'n_trades': 0, 'win_rate': 0,
+            'effective_risk_pct': args.risk,
+        }
 
-    print_optimization_result(selected, portfolio_metrics, args.capital, args.risk)
+    print_optimization_result(selected, portfolio_metrics, args.capital, args.risk, args.max_dd)
 
     if not selected:
         sys.exit(0)

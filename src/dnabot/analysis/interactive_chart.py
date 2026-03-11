@@ -108,6 +108,8 @@ def create_chart(
     trades: list[dict],
     stats: dict,
     start_capital: float,
+    risk_pct: float = 1.0,
+    rr_ratio: float = 2.0,
 ) -> object | None:
     try:
         import plotly.graph_objects as go
@@ -218,19 +220,40 @@ def create_chart(
             name='Exit Timeout',
         ), secondary_y=False)
 
-    # ── Equity-Kurve ────────────────────────────────────────────────────────
-    if trades:
-        eq_times = [pd.to_datetime(t['entry_time']) for t in trades]
-        eq_vals  = []
-        equity   = start_capital
-        for t in trades:
-            sl_pct = t.get('sl_pct', 0)
-            if sl_pct > 0:
-                risk_amt = equity * 0.01  # 1% Risiko
-                pos_size = risk_amt / (sl_pct / 100)
-                equity  += pos_size * (t['pnl_pct'] / 100)
-            eq_vals.append(equity)
+    # ── Equity-Kurve (aus sichtbaren Trades neu berechnet) ──────────────────
+    # Gleiche Formel wie Backtester: risk_pct% des aktuellen Equity pro Trade
+    sorted_trades = sorted(trades, key=lambda t: str(t.get('entry_time', '')))
+    equity    = start_capital
+    peak      = equity
+    chart_dd  = 0.0
+    eq_times  = []
+    eq_vals   = []
+    wins_vis  = 0
 
+    for t in sorted_trades:
+        risk_amount = equity * (risk_pct / 100.0)
+        outcome     = t.get('outcome', 'LOSS')
+        sl_pct_t    = max(t.get('sl_pct', 1.0), 0.01)
+
+        if outcome == 'WIN':
+            equity += risk_amount * rr_ratio
+            wins_vis += 1
+        elif outcome == 'LOSS':
+            equity -= risk_amount
+        else:  # TIMEOUT
+            equity += risk_amount * (t.get('pnl_pct', 0.0) / sl_pct_t)
+
+        if equity > peak:
+            peak = equity
+        if peak > 0:
+            dd_now = (peak - equity) / peak * 100.0
+            if dd_now > chart_dd:
+                chart_dd = dd_now
+
+        eq_times.append(pd.to_datetime(t['entry_time']))
+        eq_vals.append(equity)
+
+    if eq_vals:
         fig.add_trace(go.Scatter(
             x=eq_times, y=eq_vals,
             name='Equity',
@@ -238,11 +261,11 @@ def create_chart(
             opacity=0.75,
         ), secondary_y=True)
 
-    # ── Layout ──────────────────────────────────────────────────────────────
-    pnl_pct = stats.get('total_pnl_pct', 0)
-    wr      = stats.get('win_rate', 0)
-    dd      = stats.get('max_drawdown_pct', 0)
-    n       = stats.get('total_trades', 0)
+    # Stats aus den sichtbaren (gefilterten) Trades ableiten
+    n       = len(sorted_trades)
+    wr      = wins_vis / n if n > 0 else 0.0
+    pnl_pct = (equity - start_capital) / start_capital * 100.0 if start_capital > 0 else 0.0
+    dd      = chart_dd
 
     title = (
         f"{symbol} {timeframe} — dnabot Genome | "
@@ -370,7 +393,11 @@ def run_interactive_chart(settings: dict, secrets: dict):
                 pass
 
         print("  Erstelle Chart...")
-        fig = create_chart(symbol, timeframe, df_chart, trades_chart, stats, start_capital)
+        fig = create_chart(
+            symbol, timeframe, df_chart, trades_chart, stats, start_capital,
+            risk_pct=risk_cfg.get('risk_per_entry_pct', 1.0),
+            rr_ratio=risk_cfg.get('rr_ratio', 2.0),
+        )
         if fig is None:
             continue
 

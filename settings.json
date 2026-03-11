@@ -36,5 +36,23 @@
         "leverage": 5,
         "margin_mode": "isolated",
         "rr_ratio": 2.0
+    },
+    "optimization_settings": {
+        "enabled": true,
+        "schedule": {
+            "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format)",
+            "day_of_week": 6,
+            "hour": 3,
+            "minute": 0,
+            "interval": {
+                "_info": "Einheit: minutes | hours | days | weeks",
+                "value": 7,
+                "unit": "days"
+            }
+        },
+        "start_capital": 1000,
+        "risk_pct": 1.0,
+        "max_drawdown_pct": 30,
+        "send_telegram_on_completion": true
     }
 }

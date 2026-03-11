@@ -26,6 +26,23 @@ logging.basicConfig(
 )
 
 
+def _run_auto_optimizer():
+    """Startet den Auto-Optimizer-Scheduler (non-blocking, prüft nur ob fällig)."""
+    scheduler = os.path.join(SCRIPT_DIR, 'auto_optimizer_scheduler.py')
+    if not os.path.exists(scheduler):
+        return
+    python_exe = os.path.join(SCRIPT_DIR, '.venv', 'bin', 'python3')
+    try:
+        subprocess.Popen(
+            [python_exe, scheduler],
+            stdout=open(os.path.join(SCRIPT_DIR, 'logs', 'auto_optimizer_trigger.log'), 'a'),
+            stderr=subprocess.STDOUT,
+        )
+        logging.info("Auto-Optimizer-Scheduler gestartet (prüft ob fällig).")
+    except Exception as e:
+        logging.warning(f"Auto-Optimizer-Scheduler konnte nicht gestartet werden: {e}")
+
+
 def main():
     settings_file = os.path.join(SCRIPT_DIR, 'settings.json')
     secret_file = os.path.join(SCRIPT_DIR, 'secret.json')
@@ -39,6 +56,8 @@ def main():
     logging.info("=" * 55)
     logging.info("  dnabot Master Runner — Genome Trading System")
     logging.info("=" * 55)
+
+    _run_auto_optimizer()
 
     try:
         with open(settings_file, 'r') as f:

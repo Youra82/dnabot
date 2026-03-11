@@ -292,11 +292,15 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
                                      start_date: str, end_date: str,
                                      capital: float, risk_pct: float):
     """
-    Erstellt einen kombinierten Portfolio-Equity-Chart (alle Pairs zusammen)
-    und sendet ihn als einzelne HTML-Datei via Telegram.
+    Erstellt einen kombinierten Portfolio-Equity-Chart im gleichen Stil wie Option 5.
+    make_subplots(secondary_y=True):
+      - Primäre Y-Achse (links):  Einzel-Equity pro Pair (dünne Linien)
+      - Sekundäre Y-Achse (rechts): Kombinierte Portfolio-Equity (blaue Hauptlinie)
+      - WIN/LOSS/TIMEOUT-Marker auf der Portfolio-Equity (gleiche Symbole wie Option 5)
     """
     try:
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
     except ImportError:
         print(f"{R}  plotly nicht installiert — Chart übersprungen.{NC}")
         return
@@ -314,7 +318,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
     except Exception:
         pass
 
-    # Alle Trades zusammenführen und chronologisch sortieren
+    # ── Alle Trades zusammenführen & chronologisch sortieren ────────────────
     all_trades = []
     for pr in selected:
         for t in pr['trades']:
@@ -328,18 +332,21 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
             })
     all_trades.sort(key=lambda t: t['entry_time'])
 
-    # Equity-Kurve berechnen (identisch zu simulate_portfolio)
-    equity   = capital
-    peak     = equity
-    eq_times = [all_trades[0]['entry_time'] if all_trades else '']
-    eq_vals  = [equity]
-    wins     = 0
+    if not all_trades:
+        print(f"  {Y}Keine Trades vorhanden — Chart übersprungen.{NC}")
+        return
+
+    # ── Kombinierte Portfolio-Equity ────────────────────────────────────────
+    equity    = capital
+    peak      = equity
+    eq_times  = [all_trades[0]['entry_time']]
+    eq_vals   = [equity]
+    wins      = 0
 
     for t in all_trades:
         risk_amount = equity * (risk_pct / 100.0)
         outcome     = t['outcome']
         sl_pct      = max(t['sl_pct'], 0.01)
-
         if outcome == 'WIN':
             equity += risk_amount * RR_RATIO
             wins   += 1
@@ -347,10 +354,8 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
             equity -= risk_amount
         else:
             equity += risk_amount * (t['pnl_pct'] / sl_pct)
-
         if equity > peak:
             peak = equity
-
         eq_times.append(t['entry_time'])
         eq_vals.append(round(equity, 2))
 
@@ -358,81 +363,145 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
     wr      = wins / n if n > 0 else 0.0
     pnl_pct = (equity - capital) / capital * 100.0 if capital > 0 else 0.0
     max_dd  = pm['max_dd']
+    sign    = '+' if pnl_pct >= 0 else ''
 
+    # ── Einzel-Equity pro Pair (für primäre Y-Achse) ────────────────────────
+    PAIR_COLORS = [
+        '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6',
+        '#f97316', '#84cc16', '#06b6d4', '#a78bfa',
+    ]
+    pair_equity_traces = []
+    for idx, pr in enumerate(selected):
+        pair_trades = sorted(
+            [t for t in pr['trades']],
+            key=lambda t: str(t.get('entry_time', ''))
+        )
+        peq    = capital
+        ptimes = [str(pair_trades[0].get('entry_time', ''))] if pair_trades else []
+        pvals  = [peq]
+        for t in pair_trades:
+            ra  = peq * (risk_pct / 100.0)
+            out = t.get('outcome', 'LOSS')
+            slp = max(t.get('sl_pct', 1.0), 0.01)
+            if out == 'WIN':
+                peq += ra * RR_RATIO
+            elif out == 'LOSS':
+                peq -= ra
+            else:
+                peq += ra * (t.get('pnl_pct', 0.0) / slp)
+            ptimes.append(str(t.get('entry_time', '')))
+            pvals.append(round(peq, 2))
+        label = f"{pr['market'].split('/')[0]}/{pr['timeframe']}"
+        pair_equity_traces.append((ptimes, pvals, label, PAIR_COLORS[idx % len(PAIR_COLORS)]))
+
+    # ── Figure aufbauen (identischer Aufbau wie create_chart in Option 5) ───
     date_range = f"{start_date or '...'} → {end_date or 'heute'}"
     pairs_str  = ', '.join(f"{p['market'].split('/')[0]}/{p['timeframe']}" for p in selected)
-    sign       = '+' if pnl_pct >= 0 else ''
-
     title = (
-        f"dnabot Portfolio — {len(selected)} Coins ({pairs_str})<br>"
-        f"<sup>{date_range} | Kapital: {capital:.0f} USDT | Risiko: {risk_pct}% | "
-        f"Trades: {n} | WR: {wr:.1%} | PnL: {sign}{pnl_pct:.1f}% | "
-        f"Final Equity: {equity:.2f} USDT | MaxDD: {max_dd:.1f}%</sup>"
+        f"dnabot Portfolio — {len(selected)} Coins ({pairs_str}) | "
+        f"Trades: {n} | WR: {wr:.1%} | "
+        f"PnL: {sign}{pnl_pct:.1f}% | "
+        f"Final Equity: {equity:.2f} USDT | MaxDD: {max_dd:.1f}%"
     )
 
-    fig = go.Figure()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Equity-Linie
+    # Einzel-Equity-Linien (primäre Y-Achse, dünn)
+    for ptimes, pvals, label, color in pair_equity_traces:
+        fig.add_trace(go.Scatter(
+            x=ptimes, y=pvals,
+            mode='lines',
+            name=label,
+            line=dict(color=color, width=1),
+            opacity=0.55,
+        ), secondary_y=False)
+
+    # Startkapital-Referenzlinie
+    fig.add_hline(
+        y=capital,
+        line=dict(color='rgba(100,100,100,0.35)', width=1, dash='dash'),
+        annotation_text=f'Start {capital:.0f} USDT',
+        annotation_position='top left',
+    )
+
+    # ── WIN / LOSS / TIMEOUT Marker auf Portfolio-Equity (sekundäre Y) ──────
+    entry_long_x,  entry_long_y,  entry_long_txt  = [], [], []
+    entry_short_x, entry_short_y, entry_short_txt = [], [], []
+    exit_win_x,    exit_win_y    = [], []
+    exit_loss_x,   exit_loss_y   = [], []
+    exit_to_x,     exit_to_y     = [], []
+
+    for i, t in enumerate(all_trades):
+        eq_val = eq_vals[i + 1]
+        tip    = f"{t['market']} {t['timeframe']}<br>Equity: {eq_val:.2f} USDT"
+        # Alle Trades als Entry Long aufführen (kein direction im portfolio-trade)
+        entry_long_x.append(t['entry_time'])
+        entry_long_y.append(eq_val)
+        entry_long_txt.append(tip)
+        if t['outcome'] == 'WIN':
+            exit_win_x.append(t['entry_time']);  exit_win_y.append(eq_val)
+        elif t['outcome'] == 'LOSS':
+            exit_loss_x.append(t['entry_time']); exit_loss_y.append(eq_val)
+        else:
+            exit_to_x.append(t['entry_time']);   exit_to_y.append(eq_val)
+
+    # Portfolio-Equity-Kurve (sekundäre Y-Achse, blau wie Option 5)
     fig.add_trace(go.Scatter(
         x=eq_times, y=eq_vals,
         mode='lines',
         name='Portfolio Equity',
         line=dict(color='#2563eb', width=2),
-        fill='tozeroy',
-        fillcolor='rgba(37,99,235,0.08)',
-    ))
+        opacity=0.75,
+    ), secondary_y=True)
 
-    # Startkapital-Referenzlinie
-    fig.add_hline(
-        y=capital,
-        line=dict(color='rgba(100,100,100,0.4)', width=1, dash='dash'),
-        annotation_text=f'Start: {capital:.0f} USDT',
-        annotation_position='top left',
-    )
-
-    # Trade-Marker (WIN = grün, LOSS = rot) an Equity-Punkten
-    win_x  = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
-    win_y  = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
-    loss_x = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
-    loss_y = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
-    to_x   = [eq_times[i+1] for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
-    to_y   = [eq_vals[i+1]  for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
-
-    win_tips  = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'WIN']
-    loss_tips = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'LOSS']
-    to_tips   = [f"{all_trades[i]['market']} {all_trades[i]['timeframe']}" for i, t in enumerate(all_trades) if t['outcome'] == 'TIMEOUT']
-
-    if win_x:
+    # Entry-Marker (▲ grün / ▼ orange — gleiche Symbole wie Option 5)
+    if entry_long_x:
         fig.add_trace(go.Scatter(
-            x=win_x, y=win_y, mode='markers',
-            marker=dict(color='#16a34a', symbol='triangle-up', size=10),
-            name='WIN', text=win_tips,
-            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>WIN</extra>',
-        ))
-    if loss_x:
-        fig.add_trace(go.Scatter(
-            x=loss_x, y=loss_y, mode='markers',
-            marker=dict(color='#ef4444', symbol='triangle-down', size=10),
-            name='LOSS', text=loss_tips,
-            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>LOSS</extra>',
-        ))
-    if to_x:
-        fig.add_trace(go.Scatter(
-            x=to_x, y=to_y, mode='markers',
-            marker=dict(color='#9ca3af', symbol='square', size=8),
-            name='TIMEOUT', text=to_tips,
-            hovertemplate='%{text}<br>Equity: %{y:.2f}<extra>TIMEOUT</extra>',
-        ))
+            x=entry_long_x, y=entry_long_y, mode='markers',
+            marker=dict(color='#16a34a', symbol='triangle-up', size=14,
+                        line=dict(width=1, color='#0f5132')),
+            name='Entry ▲', text=entry_long_txt,
+            hovertemplate='%{text}<extra>Entry</extra>',
+        ), secondary_y=True)
 
+    # Exit WIN ● cyan
+    if exit_win_x:
+        fig.add_trace(go.Scatter(
+            x=exit_win_x, y=exit_win_y, mode='markers',
+            marker=dict(color='#22d3ee', symbol='circle', size=11,
+                        line=dict(width=1, color='#0e7490')),
+            name='Exit TP ✓',
+        ), secondary_y=True)
+
+    # Exit LOSS ✗ rot
+    if exit_loss_x:
+        fig.add_trace(go.Scatter(
+            x=exit_loss_x, y=exit_loss_y, mode='markers',
+            marker=dict(color='#ef4444', symbol='x', size=11,
+                        line=dict(width=2, color='#7f1d1d')),
+            name='Exit SL ✗',
+        ), secondary_y=True)
+
+    # Exit TIMEOUT ■ grau
+    if exit_to_x:
+        fig.add_trace(go.Scatter(
+            x=exit_to_x, y=exit_to_y, mode='markers',
+            marker=dict(color='#9ca3af', symbol='square', size=9),
+            name='Exit Timeout',
+        ), secondary_y=True)
+
+    # ── Layout — identisch zu create_chart() in Option 5 ────────────────────
     fig.update_layout(
         title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
-        height=600,
+        height=750,
         hovermode='x unified',
         template='plotly_white',
-        xaxis=dict(rangeslider=dict(visible=True)),
-        yaxis=dict(title='Equity (USDT)'),
+        dragmode='zoom',
+        xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
     )
+    fig.update_yaxes(title_text='Einzel-Equity (USDT)', secondary_y=False, fixedrange=False)
+    fig.update_yaxes(title_text='Portfolio-Equity (USDT)', secondary_y=True,  fixedrange=False)
 
     output_file = '/tmp/dnabot_portfolio_equity.html'
     fig.write_html(output_file)

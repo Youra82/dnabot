@@ -2,12 +2,19 @@
 # Interaktiver Candlestick-Chart mit Genome-Trade-Signalen
 #
 # Zeigt:
-#   - OHLCV-Candlesticks
+#   - OHLCV-Candlesticks + Regime-Hintergrund (TREND/RANGE/HIGH_VOL/NEUTRAL)
 #   - Entry-Marker (▲ LONG grün / ▼ SHORT orange)
-#   - Exit-Marker  (● WIN cyan / ◆ LOSS rot / ■ TIMEOUT grau)
+#   - Exit-Marker  (● WIN cyan / ✗ LOSS rot / ■ TIMEOUT grau)
 #   - SL- und TP-Linien pro Trade
 #   - Equity-Kurve (rechte Y-Achse)
 #   - Genome-Sequenz als Hover-Text
+#
+# Bot-spezifische Panels:
+#   - Volume
+#   - ATR + ATR-MA (Volatilitätsspikes als HIGH_VOL erkennbar)
+#   - ADX + Trend/Range-Schwellen
+#   - Genome Score (Signalqualität pro Entry)
+#   - Body/ATR Ratio (Encoder-Perspektive)
 #
 # Output: HTML-Datei in /tmp/ (öffnet im Browser)
 
@@ -98,6 +105,55 @@ def select_pairs() -> list[tuple[str, str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Indikator-Berechnung (dnabot-spezifisch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_dna_panels(df: pd.DataFrame) -> tuple:
+    """
+    Berechnet alle dnabot-spezifischen Panel-Indikatoren:
+      - ATR (14) und ATR-MA (50)
+      - ADX (14)
+      - Body/ATR Ratio (was der Encoder sieht)
+      - Per-Kerzen-Regime (TREND / RANGE / HIGH_VOL / NEUTRAL)
+
+    Gibt zurück: (atr, atr_ma, adx, body_ratio, regimes)
+    """
+    import ta
+
+    atr = ta.volatility.AverageTrueRange(
+        high=df['high'], low=df['low'], close=df['close'],
+        window=14, fillna=True,
+    ).average_true_range()
+
+    atr_ma = atr.rolling(window=50, min_periods=10).mean().fillna(atr)
+    atr_ratio = (atr / atr_ma.replace(0, float('nan'))).fillna(1.0)
+
+    adx = ta.trend.ADXIndicator(
+        high=df['high'], low=df['low'], close=df['close'],
+        window=14, fillna=True,
+    ).adx()
+
+    body = abs(df['close'] - df['open'])
+    body_ratio = (body / atr.replace(0, float('nan'))).fillna(0.0).clip(upper=3.0)
+
+    # Per-Kerzen-Regime
+    regimes = []
+    for i in range(len(df)):
+        ar  = float(atr_ratio.iloc[i])
+        adx_v = float(adx.iloc[i])
+        if ar >= 1.5:
+            regimes.append('HIGH_VOL')
+        elif adx_v >= 25.0:
+            regimes.append('TREND')
+        elif adx_v <= 20.0:
+            regimes.append('RANGE')
+        else:
+            regimes.append('NEUTRAL')
+
+    return atr, atr_ma, adx, body_ratio, regimes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Chart-Erstellung
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -118,17 +174,67 @@ def create_chart(
         logger.error("plotly nicht installiert. Bitte: pip install plotly")
         return None
 
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # ── Indikatoren berechnen ────────────────────────────────────────────────
+    atr, atr_ma, adx, body_ratio, regimes = _compute_dna_panels(df)
 
-    # ── Candlesticks ────────────────────────────────────────────────────────
+    # ── Subplots: 6 Panels ───────────────────────────────────────────────────
+    fig = make_subplots(
+        rows=6, cols=1,
+        shared_xaxes=True,
+        specs=[
+            [{'secondary_y': True}],
+            [{'secondary_y': False}],
+            [{'secondary_y': False}],
+            [{'secondary_y': False}],
+            [{'secondary_y': False}],
+            [{'secondary_y': False}],
+        ],
+        vertical_spacing=0.022,
+        row_heights=[0.38, 0.10, 0.13, 0.13, 0.13, 0.13],
+        subplot_titles=[
+            '',
+            'Volumen',
+            'ATR  |  Volatilitäts-Ratio',
+            'ADX  (Trendstärke)',
+            'Genome Score  (Signalqualität)',
+            'Body/ATR Ratio  (Encoder-Perspektive)',
+        ],
+    )
+
+    # ── Regime-Hintergrund (Panel 1: Candlestick) ────────────────────────────
+    _regime_fill = {
+        'TREND':    'rgba(38,166,154,0.28)',
+        'RANGE':    'rgba(255,167,38,0.22)',
+        'HIGH_VOL': 'rgba(239,83,80,0.30)',
+        'NEUTRAL':  None,
+    }
+    prev_reg, blk_start = None, None
+    for ts_idx, reg in zip(df.index, regimes):
+        if reg != prev_reg:
+            if prev_reg and _regime_fill.get(prev_reg) and blk_start is not None:
+                fig.add_vrect(
+                    x0=blk_start, x1=ts_idx,
+                    fillcolor=_regime_fill[prev_reg],
+                    layer='below', line_width=0, row=1, col=1,
+                )
+            blk_start, prev_reg = ts_idx, reg
+    if prev_reg and _regime_fill.get(prev_reg) and blk_start is not None:
+        fig.add_vrect(
+            x0=blk_start, x1=df.index[-1],
+            fillcolor=_regime_fill[prev_reg],
+            layer='below', line_width=0, row=1, col=1,
+        )
+
+    # ── Panel 1: Candlesticks ────────────────────────────────────────────────
     fig.add_trace(go.Candlestick(
         x=df.index,
         open=df['open'], high=df['high'],
-        low=df['low'], close=df['close'],
+        low=df['low'],   close=df['close'],
         name='OHLC',
-        increasing_line_color='#16a34a',
-        decreasing_line_color='#dc2626',
-    ), secondary_y=False)
+        increasing_line_color='#26a69a',
+        decreasing_line_color='#ef5350',
+        showlegend=True,
+    ), row=1, col=1, secondary_y=False)
 
     # ── Trade-Marker & SL/TP-Linien ─────────────────────────────────────────
     entry_long_x,  entry_long_y,  entry_long_txt  = [], [], []
@@ -138,12 +244,15 @@ def create_chart(
     exit_to_x,     exit_to_y     = [], []
 
     for t in trades:
-        et = pd.to_datetime(t['entry_time'])
-        xt = pd.to_datetime(t['exit_time'])
-        seq  = t.get('genome_id', '')[:8]
-        wr   = f"{t.get('genome_winrate', 0):.1%}"
-        sc   = f"{t.get('genome_score', 0):.3f}"
-        tip  = f"Seq: {seq}<br>Score: {sc} | WR: {wr}<br>SL: {t['sl_price']:.4f} | TP: {t['tp_price']:.4f}"
+        et  = pd.to_datetime(t['entry_time'])
+        xt  = pd.to_datetime(t['exit_time'])
+        seq = t.get('genome_id', '')[:8]
+        wr  = f"{t.get('genome_winrate', 0):.1%}"
+        sc  = f"{t.get('genome_score', 0):.3f}"
+        tip = (
+            f"Seq: {seq}<br>Score: {sc} | WR: {wr}<br>"
+            f"SL: {t['sl_price']:.4f} | TP: {t['tp_price']:.4f}"
+        )
 
         if t['direction'] == 'LONG':
             entry_long_x.append(et)
@@ -163,77 +272,84 @@ def create_chart(
 
         # SL-Linie
         fig.add_shape(
-            type='line',
-            x0=et, x1=xt,
+            type='line', x0=et, x1=xt,
             y0=t['sl_price'], y1=t['sl_price'],
-            line=dict(color='rgba(239,68,68,0.5)', width=1, dash='dot'),
+            line=dict(color='rgba(239,68,68,0.45)', width=1, dash='dot'),
         )
         # TP-Linie
         fig.add_shape(
-            type='line',
-            x0=et, x1=xt,
+            type='line', x0=et, x1=xt,
             y0=t['tp_price'], y1=t['tp_price'],
-            line=dict(color='rgba(34,197,94,0.5)', width=1, dash='dot'),
+            line=dict(color='rgba(34,197,94,0.45)', width=1, dash='dot'),
         )
 
-    # Entry Long
     if entry_long_x:
         fig.add_trace(go.Scatter(
             x=entry_long_x, y=entry_long_y, mode='markers',
-            marker=dict(color='#16a34a', symbol='triangle-up', size=14,
-                        line=dict(width=1, color='#0f5132')),
-            name='Entry Long', text=entry_long_txt, hovertemplate='%{text}<extra>Entry Long</extra>',
-        ), secondary_y=False)
+            marker=dict(color='#26a69a', symbol='triangle-up', size=14,
+                        line=dict(width=1, color='#ffffff')),
+            name='Entry Long',
+            text=entry_long_txt,
+            hovertemplate='%{text}<extra>Entry Long</extra>',
+        ), row=1, col=1, secondary_y=False)
 
-    # Entry Short
     if entry_short_x:
         fig.add_trace(go.Scatter(
             x=entry_short_x, y=entry_short_y, mode='markers',
-            marker=dict(color='#f59e0b', symbol='triangle-down', size=14,
-                        line=dict(width=1, color='#92400e')),
-            name='Entry Short', text=entry_short_txt, hovertemplate='%{text}<extra>Entry Short</extra>',
-        ), secondary_y=False)
+            marker=dict(color='#ffa726', symbol='triangle-down', size=14,
+                        line=dict(width=1, color='#ffffff')),
+            name='Entry Short',
+            text=entry_short_txt,
+            hovertemplate='%{text}<extra>Entry Short</extra>',
+        ), row=1, col=1, secondary_y=False)
 
-    # Exit WIN
     if exit_win_x:
         fig.add_trace(go.Scatter(
             x=exit_win_x, y=exit_win_y, mode='markers',
-            marker=dict(color='#22d3ee', symbol='circle', size=11,
-                        line=dict(width=1, color='#0e7490')),
+            marker=dict(color='#00bcd4', symbol='circle', size=11,
+                        line=dict(width=1, color='#ffffff')),
             name='Exit TP ✓',
-        ), secondary_y=False)
+        ), row=1, col=1, secondary_y=False)
 
-    # Exit LOSS
     if exit_loss_x:
         fig.add_trace(go.Scatter(
             x=exit_loss_x, y=exit_loss_y, mode='markers',
-            marker=dict(color='#ef4444', symbol='x', size=11,
-                        line=dict(width=2, color='#7f1d1d')),
+            marker=dict(color='#ef5350', symbol='x', size=11,
+                        line=dict(width=2, color='#ef5350')),
             name='Exit SL ✗',
-        ), secondary_y=False)
+        ), row=1, col=1, secondary_y=False)
 
-    # Exit TIMEOUT
     if exit_to_x:
         fig.add_trace(go.Scatter(
             x=exit_to_x, y=exit_to_y, mode='markers',
-            marker=dict(color='#9ca3af', symbol='square', size=9),
+            marker=dict(color='#9e9e9e', symbol='square', size=9),
             name='Exit Timeout',
-        ), secondary_y=False)
+        ), row=1, col=1, secondary_y=False)
 
-    # ── Equity-Kurve (aus sichtbaren Trades neu berechnet) ──────────────────
-    # Gleiche Formel wie Backtester: risk_pct% des aktuellen Equity pro Trade
+    # Dummy-Traces für Regime-Legende
+    for label, color in [
+        ('Trend',    '#26a69a'),
+        ('Range',    '#ffa726'),
+        ('High Vol', '#ef5350'),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode='markers',
+            marker=dict(symbol='square', size=10, color=color),
+            name=label, showlegend=True,
+        ), row=1, col=1, secondary_y=False)
+
+    # ── Equity-Kurve (rechte Y-Achse) ───────────────────────────────────────
     sorted_trades = sorted(trades, key=lambda t: str(t.get('entry_time', '')))
-    equity    = start_capital
-    peak      = equity
-    chart_dd  = 0.0
-    eq_times  = []
-    eq_vals   = []
-    wins_vis  = 0
+    equity   = start_capital
+    peak     = equity
+    chart_dd = 0.0
+    eq_times = [df.index[0]]
+    eq_vals  = [start_capital]
+    wins_vis = 0
 
     for t in sorted_trades:
         risk_amount = equity * (risk_pct / 100.0)
         outcome     = t.get('outcome', 'LOSS')
-        sl_pct_t    = max(t.get('sl_pct', 1.0), 0.01)
 
         if outcome == 'WIN':
             equity += risk_amount * rr_ratio
@@ -241,7 +357,8 @@ def create_chart(
         elif outcome == 'LOSS':
             equity -= risk_amount
         else:  # TIMEOUT
-            equity += risk_amount * (t.get('pnl_pct', 0.0) / sl_pct_t)
+            sl_pct_t = max(t.get('sl_pct', 1.0), 0.01)
+            equity  += risk_amount * (t.get('pnl_pct', 0.0) / sl_pct_t)
 
         if equity > peak:
             peak = equity
@@ -253,39 +370,185 @@ def create_chart(
         eq_times.append(pd.to_datetime(t['entry_time']))
         eq_vals.append(equity)
 
-    if eq_vals:
+    if len(eq_vals) > 1:
         fig.add_trace(go.Scatter(
             x=eq_times, y=eq_vals,
             name='Equity',
-            line=dict(color='#2563eb', width=2),
-            opacity=0.75,
-        ), secondary_y=True)
+            line=dict(color='#5c9bd6', width=1.5),
+            hovertemplate='Equity: %{y:.2f} USDT<extra></extra>',
+        ), row=1, col=1, secondary_y=True)
 
-    # Stats aus den sichtbaren (gefilterten) Trades ableiten
+    # ── Panel 2: Volumen ─────────────────────────────────────────────────────
+    if 'volume' in df.columns:
+        vol_colors = ['#26a69a' if c >= o else '#ef5350'
+                      for c, o in zip(df['close'], df['open'])]
+        fig.add_trace(go.Bar(
+            x=df.index, y=df['volume'],
+            marker_color=vol_colors,
+            name='Volumen', showlegend=False, opacity=0.65,
+            hovertemplate='Vol: %{y:,.0f}<extra></extra>',
+        ), row=2, col=1)
+
+    # ── Panel 3: ATR + ATR-MA ────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df.index, y=atr_ma,
+        mode='lines', line=dict(color='rgba(255,167,38,0.5)', width=1.2, dash='dot'),
+        name='ATR-MA(50)', showlegend=False,
+        hovertemplate='ATR-MA: %{y:.4f}<extra></extra>',
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=atr,
+        mode='lines', line=dict(color='#42a5f5', width=1.5),
+        fill='tonexty', fillcolor='rgba(66,165,245,0.08)',
+        name='ATR(14)', showlegend=False,
+        hovertemplate='ATR: %{y:.4f}<extra></extra>',
+    ), row=3, col=1)
+    # HIGH_VOL-Marker auf ATR-Panel (wo ATR/ATR-MA >= 1.5)
+    hv_mask = [r == 'HIGH_VOL' for r in regimes]
+    hv_times = df.index[hv_mask]
+    hv_atr   = atr[hv_mask]
+    if len(hv_times) > 0:
+        fig.add_trace(go.Scatter(
+            x=hv_times, y=hv_atr,
+            mode='markers',
+            marker=dict(symbol='circle', size=5, color='#ef5350', opacity=0.7),
+            showlegend=False,
+            hovertemplate='HIGH_VOL<extra></extra>',
+        ), row=3, col=1)
+    # Signal-Punkte auf ATR
+    if trades:
+        sig_times = [pd.to_datetime(t['entry_time']) for t in trades]
+        sig_atr = []
+        for ts in sig_times:
+            try:
+                sig_atr.append(float(atr.asof(ts)))
+            except Exception:
+                sig_atr.append(float(atr.mean()))
+        fig.add_trace(go.Scatter(
+            x=sig_times, y=sig_atr, mode='markers',
+            marker=dict(symbol='circle-open', size=9, color='#42a5f5',
+                        line=dict(width=2)),
+            showlegend=False,
+            hovertemplate='Signal<br>%{x}<extra></extra>',
+        ), row=3, col=1)
+
+    # ── Panel 4: ADX + Schwellen ─────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df.index, y=adx,
+        mode='lines', line=dict(color='#ce93d8', width=1.5),
+        fill='tozeroy', fillcolor='rgba(206,147,216,0.08)',
+        name='ADX(14)', showlegend=False,
+        hovertemplate='ADX: %{y:.2f}<extra></extra>',
+    ), row=4, col=1)
+    # Trend-Schwelle (25)
+    fig.add_hline(y=25.0, line_dash='dot', line_color='rgba(38,166,154,0.55)',
+                  row=4, col=1)
+    # Range-Schwelle (20)
+    fig.add_hline(y=20.0, line_dash='dot', line_color='rgba(255,167,38,0.55)',
+                  row=4, col=1)
+    # Signal-Punkte auf ADX
+    if trades:
+        sig_adx = []
+        for ts in sig_times:
+            try:
+                sig_adx.append(float(adx.asof(ts)))
+            except Exception:
+                sig_adx.append(float(adx.mean()))
+        fig.add_trace(go.Scatter(
+            x=sig_times, y=sig_adx, mode='markers',
+            marker=dict(symbol='circle-open', size=9, color='#ce93d8',
+                        line=dict(width=2)),
+            showlegend=False,
+            hovertemplate='Signal<br>ADX: %{y:.2f}<extra></extra>',
+        ), row=4, col=1)
+
+    # ── Panel 5: Genome Score ────────────────────────────────────────────────
+    if trades:
+        score_times  = [pd.to_datetime(t['entry_time']) for t in trades]
+        score_vals   = [t.get('genome_score', 0.0) for t in trades]
+        score_colors = ['#26a69a' if t['direction'] == 'LONG' else '#ffa726'
+                        for t in trades]
+        outcome_txt  = [
+            f"Score: {t.get('genome_score', 0):.4f}<br>"
+            f"WR: {t.get('genome_winrate', 0):.1%}<br>"
+            f"Dir: {t['direction']} | {t['outcome']}"
+            for t in trades
+        ]
+        fig.add_trace(go.Bar(
+            x=score_times, y=score_vals,
+            marker_color=score_colors,
+            opacity=0.75,
+            name='Genome Score', showlegend=False,
+            text=outcome_txt,
+            hovertemplate='%{text}<extra></extra>',
+        ), row=5, col=1)
+        # Referenzlinie: Mindest-Score (Mittelwert)
+        if score_vals:
+            fig.add_hline(y=float(pd.Series(score_vals).mean()),
+                          line_dash='dot',
+                          line_color='rgba(255,255,255,0.3)',
+                          row=5, col=1)
+    else:
+        # Leeres Panel mit Hinweis
+        fig.add_trace(go.Scatter(
+            x=df.index, y=[0] * len(df),
+            mode='lines', line=dict(color='rgba(0,0,0,0)'),
+            showlegend=False,
+        ), row=5, col=1)
+
+    # ── Panel 6: Body/ATR Ratio ──────────────────────────────────────────────
+    body_colors = ['#26a69a' if c >= o else '#ef5350'
+                   for c, o in zip(df['close'], df['open'])]
+    fig.add_trace(go.Bar(
+        x=df.index, y=body_ratio,
+        marker_color=body_colors,
+        opacity=0.65,
+        name='Body/ATR', showlegend=False,
+        hovertemplate='Body/ATR: %{y:.3f}<extra></extra>',
+    ), row=6, col=1)
+    # Schwellen: klein (<0.30), mittel (<0.80), groß (>0.80)
+    for lvl, col in [(0.30, 'rgba(255,167,38,0.4)'), (0.80, 'rgba(38,166,154,0.4)')]:
+        fig.add_hline(y=lvl, line_dash='dot', line_color=col, row=6, col=1)
+
+    # ── Stats aus sichtbaren Trades ──────────────────────────────────────────
     n       = len(sorted_trades)
     wr      = wins_vis / n if n > 0 else 0.0
     pnl_pct = (equity - start_capital) / start_capital * 100.0 if start_capital > 0 else 0.0
-    dd      = chart_dd
 
     title = (
         f"{symbol} {timeframe} — dnabot Genome | "
         f"Trades: {n} | WR: {wr:.1%} | "
         f"PnL: {'+' if pnl_pct >= 0 else ''}{pnl_pct:.1f}% | "
-        f"MaxDD: {dd:.1f}%"
+        f"MaxDD: {chart_dd:.1f}%"
     )
 
+    # ── Layout ───────────────────────────────────────────────────────────────
     fig.update_layout(
         title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
-        height=750,
+        height=1150,
         hovermode='x unified',
-        template='plotly_white',
+        template='plotly_dark',
         dragmode='zoom',
-        xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
-        yaxis=dict(fixedrange=False),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation='h', yanchor='bottom', y=1.01,
+                    xanchor='center', x=0.5, font=dict(size=11)),
+        margin=dict(l=60, r=70, t=80, b=40),
+        barmode='overlay',
+        yaxis2=dict(title='Equity (USDT)', showgrid=False,
+                    tickfont=dict(color='#5c9bd6'),
+                    title_font=dict(color='#5c9bd6')),
     )
-    fig.update_yaxes(title_text='Preis (USDT)', secondary_y=False)
-    fig.update_yaxes(title_text='Equity (USDT)', secondary_y=True)
+
+    fig.update_yaxes(title_text='Preis',     row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text='Vol',       row=2, col=1)
+    fig.update_yaxes(title_text='ATR',       row=3, col=1)
+    fig.update_yaxes(title_text='ADX',       row=4, col=1, tickformat='.1f')
+    fig.update_yaxes(title_text='Score',     row=5, col=1, tickformat='.4f')
+    fig.update_yaxes(title_text='B/ATR',     row=6, col=1, tickformat='.2f')
+
+    # X-Achsen: Rangeslider nur auf unterster deaktivieren
+    for row in range(1, 7):
+        fig.update_xaxes(rangeslider_visible=False, row=row, col=1)
 
     return fig
 

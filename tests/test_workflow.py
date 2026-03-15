@@ -137,6 +137,13 @@ def test_full_dnabot_workflow_on_bitget(test_setup):
     tracker_path = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker', 'test_PEPEUSDTUSDT_4h.json')
     os.makedirs(os.path.dirname(tracker_path), exist_ok=True)
 
+    # Sicherstellen dass isolated gesetzt ist BEVOR place_entry_orders aufgerufen wird
+    print(f'-> Setze Margin-Modus: isolated | Leverage: 5x')
+    exchange.set_margin_mode(symbol, 'isolated')
+    time.sleep(0.5)
+    exchange.set_leverage(symbol, 5, 'isolated')
+    time.sleep(0.5)
+
     print(f'\n[Schritt 1/3] Mocke Genome-Signal und oeffne Position...')
     print(f'-> Signal: LONG PEPE @ {price:.8f} | SL={sl_price:.8f} | TP={tp_price:.8f}')
 

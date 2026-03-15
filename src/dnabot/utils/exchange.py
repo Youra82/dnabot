@@ -246,36 +246,47 @@ class Exchange:
         return count
 
     def set_margin_mode(self, symbol, margin_mode='isolated'):
-        if not self.markets:
+        if not self.markets: return
+        margin_mode_lower = margin_mode.lower()
+        if margin_mode_lower not in ['isolated', 'cross']:
+            logger.error(f"Ungültiger Margin-Modus: {margin_mode}.")
             return
         try:
             params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
-            self.exchange.set_margin_mode(margin_mode.lower(), symbol, params=params)
-            logger.info(f"Margin-Modus: {margin_mode} für {symbol}")
+            self.exchange.set_margin_mode(margin_mode_lower, symbol, params=params)
+            logger.info(f"Margin-Modus für {symbol} auf '{margin_mode_lower}' gesetzt.")
         except ccxt.ExchangeError as e:
-            if any(x in str(e) for x in ['Margin mode is the same', '40051']):
-                pass
+            if 'Margin mode is the same' in str(e) or 'margin mode is not changed' in str(e).lower() or '40051' in str(e):
+                logger.debug(f"Margin-Modus für {symbol} ist bereits '{margin_mode_lower}'.")
             else:
-                logger.error(f"Fehler set_margin_mode: {e}")
+                logger.error(f"Fehler beim Setzen des Margin-Modus für {symbol}: {e}")
+        except Exception as e:
+            logger.error(f"Unerwarteter Fehler beim Setzen des Margin-Modus für {symbol}: {e}")
 
     def set_leverage(self, symbol, leverage, margin_mode='isolated'):
-        if not self.markets:
-            return
+        if not self.markets: return
         try:
             leverage = int(leverage)
             params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
             if margin_mode.lower() == 'isolated':
-                for side in ['long', 'short']:
-                    self.exchange.set_leverage(leverage, symbol, params={**params, 'holdSide': side})
-                    time.sleep(0.2)
+                params_long = {**params, 'holdSide': 'long'}
+                self.exchange.set_leverage(leverage, symbol, params=params_long)
+                logger.debug(f"Isolated Leverage für {symbol} (Long) auf {leverage}x gesetzt.")
+                time.sleep(0.2)
+                params_short = {**params, 'holdSide': 'short'}
+                self.exchange.set_leverage(leverage, symbol, params=params_short)
+                logger.debug(f"Isolated Leverage für {symbol} (Short) auf {leverage}x gesetzt.")
             else:
                 self.exchange.set_leverage(leverage, symbol, params=params)
-            logger.info(f"Leverage {leverage}x für {symbol}")
+                logger.debug(f"Cross Leverage für {symbol} auf {leverage}x gesetzt.")
+            logger.info(f"Hebel für {symbol} ({margin_mode}) auf {leverage}x gesetzt.")
         except ccxt.ExchangeError as e:
-            if any(x in str(e) for x in ['Leverage not changed', '40052']):
-                pass
+            if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
+                logger.debug(f"Hebel für {symbol} ist bereits {leverage}x.")
             else:
-                logger.error(f"Fehler set_leverage: {e}")
+                logger.error(f"Fehler beim Setzen des Hebels für {symbol}: {e}")
+        except Exception as e:
+            logger.error(f"Unerwarteter Fehler beim Setzen des Hebels für {symbol}: {e}")
 
     def place_market_order(self, symbol: str, side: str, amount: float, reduce: bool = False, params={}):
         if not self.markets:

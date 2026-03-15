@@ -353,7 +353,7 @@ def place_entry_orders(
     """
     Platziert einen Entry-Trade basierend auf dem Genome-Signal.
 
-    Entry: Trigger-Limit-Order knapp über/unter aktuellem Preis
+    Entry: Market-Order (sofort, da Sequenz bereits abgeschlossen ist)
     SL: Aus der Sequenz-Struktur (Low/High der Genome-Kerzen)
     TP: 2:1 R:R vom Entry
     """
@@ -415,22 +415,16 @@ def place_entry_orders(
     except Exception as e:
         logger.warning(f"Konnte Margin/Leverage nicht setzen: {e}")
 
-    # Entry-Trigger: 0.05% Delta für quasi-sofortige Ausführung
-    delta = 0.0005
     if side == 'long':
         order_side = 'buy'
-        entry_trigger = entry_price * (1 - delta)
-        entry_limit = entry_price * (1 - delta * 2)
         tp_side = sl_side = 'sell'
     else:
         order_side = 'sell'
-        entry_trigger = entry_price * (1 + delta)
-        entry_limit = entry_price * (1 + delta * 2)
         tp_side = sl_side = 'buy'
 
     logger.info(
         f"[Entry] {side.upper()} {amount_coins:.6f} {symbol} | "
-        f"Entry~{entry_trigger:.4f} | SL={sl_price:.4f} ({sl_pct:.2f}%) | "
+        f"Market @ ~{entry_price:.4f} | SL={sl_price:.4f} ({sl_pct:.2f}%) | "
         f"TP={tp_price:.4f} | Score={genome_signal['score']:.3f}"
     )
 
@@ -452,11 +446,9 @@ def place_entry_orders(
         logger.info(f"SL gesetzt @ {sl_price:.4f}")
         time.sleep(0.2)
 
-        # 3. Entry-Trigger-Limit
-        exchange.place_trigger_limit_order(
-            symbol, order_side, amount_coins, entry_trigger, entry_limit, reduce=False
-        )
-        logger.info(f"Entry-Order platziert: {order_side.upper()} @ trigger {entry_trigger:.4f}")
+        # 3. Entry Market-Order (Sequenz ist abgeschlossen → sofort einsteigen)
+        exchange.place_market_order(symbol, order_side, amount_coins, reduce=False)
+        logger.info(f"Entry Market-Order platziert: {order_side.upper()} @ ~{entry_price:.4f}")
 
     except ccxt.InsufficientFunds as e:
         logger.error(f"Nicht genug Guthaben: {e}")

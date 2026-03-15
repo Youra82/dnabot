@@ -267,18 +267,8 @@ class Exchange:
         if not self.markets: return
         try:
             leverage = int(leverage)
-            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
-            if margin_mode.lower() == 'isolated':
-                params_long = {**params, 'holdSide': 'long'}
-                self.exchange.set_leverage(leverage, symbol, params=params_long)
-                logger.debug(f"Isolated Leverage für {symbol} (Long) auf {leverage}x gesetzt.")
-                time.sleep(0.2)
-                params_short = {**params, 'holdSide': 'short'}
-                self.exchange.set_leverage(leverage, symbol, params=params_short)
-                logger.debug(f"Isolated Leverage für {symbol} (Short) auf {leverage}x gesetzt.")
-            else:
-                self.exchange.set_leverage(leverage, symbol, params=params)
-                logger.debug(f"Cross Leverage für {symbol} auf {leverage}x gesetzt.")
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT', 'marginMode': margin_mode.lower()}
+            self.exchange.set_leverage(leverage, symbol, params=params)
             logger.info(f"Hebel für {symbol} ({margin_mode}) auf {leverage}x gesetzt.")
         except ccxt.ExchangeError as e:
             if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
@@ -288,11 +278,11 @@ class Exchange:
         except Exception as e:
             logger.error(f"Unerwarteter Fehler beim Setzen des Hebels für {symbol}: {e}")
 
-    def place_market_order(self, symbol: str, side: str, amount: float, reduce: bool = False, params={}):
+    def place_market_order(self, symbol: str, side: str, amount: float, reduce: bool = False, margin_mode: str = 'isolated', params={}):
         if not self.markets:
             return None
         try:
-            p = {'reduceOnly': reduce, 'productType': 'USDT-FUTURES', **params}
+            p = {'reduceOnly': reduce, 'productType': 'USDT-FUTURES', 'marginCoin': 'USDT', 'marginMode': margin_mode, **params}
             amount_str = self.amount_to_precision(symbol, amount)
             logger.info(f"Market Order: {side.upper()} {amount_str} {symbol}")
             return self.exchange.create_order(symbol, 'market', side, float(amount_str), params=p)

@@ -447,7 +447,8 @@ def place_entry_orders(
         time.sleep(0.2)
 
         # 3. Entry Market-Order (Sequenz ist abgeschlossen → sofort einsteigen)
-        exchange.place_market_order(symbol, order_side, amount_coins, reduce=False)
+        exchange.place_market_order(symbol, order_side, amount_coins, reduce=False,
+                                    margin_mode=risk.get('margin_mode', 'isolated'))
         logger.info(f"Entry Market-Order platziert: {order_side.upper()} @ ~{entry_price:.4f}")
 
     except ccxt.InsufficientFunds as e:

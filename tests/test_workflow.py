@@ -42,10 +42,10 @@ def test_setup():
     params = {
         'market': {'symbol': symbol, 'timeframe': timeframe},
         'risk': {
-            'leverage':          5,
-            'margin_mode':       'isolated',
-            'risk_per_entry_pct': 5.0,
-            'rr_ratio':          2.0,
+            'leverage':           5,
+            'margin_mode':        'isolated',
+            'risk_per_entry_pct': 0.1,   # SEHR KLEINES Risiko fuer den Test!
+            'rr_ratio':           2.0,
         },
         'behavior': {'use_longs': True, 'use_shorts': True},
     }
@@ -109,10 +109,12 @@ def test_full_dnabot_workflow_on_bitget(test_setup):
     if bal < 5.0:
         pytest.skip(f'Zu wenig Guthaben ({bal:.2f} USDT < 5 USDT) fuer Live-Test.')
 
+    simulated_balance = 50.0  # Fixer Testwert – unabhaengig vom echten Kontostand
+
     # Aktuellen Preis holen und daraus ein realistisches Genome-Signal bauen
     ticker      = exchange.exchange.fetch_ticker(symbol)
     price       = float(ticker['last'])
-    sl_pct      = 5.0
+    sl_pct      = 0.8   # Klein genug damit Notional > 5 USDT (50 * 0.1% / 0.8% = 6.25 USDT)
     sl_price    = price * (1 - sl_pct / 100)
     tp_price    = price * (1 + sl_pct * 2 / 100)  # 2:1 R:R
 
@@ -143,7 +145,7 @@ def test_full_dnabot_workflow_on_bitget(test_setup):
             exchange=exchange,
             genome_signal=mock_signal,
             params=params,
-            balance=bal,
+            balance=simulated_balance,
             tracker_path=tracker_path,
             telegram_config=telegram_config,
             logger=logger,

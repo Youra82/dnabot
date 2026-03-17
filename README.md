@@ -472,6 +472,48 @@ tail -n 100 logs/dnabot_BTCUSDTUSDT_4h.log
 tail -n 200 logs/cron.log
 ```
 
+#### Telegram-Listener (GenCode-Abfrage per Nachricht)
+
+Der `telegram_listener.py` ist ein dauerhaft laufender Dienst, der auf Telegram-Nachrichten reagiert.
+
+**Befehl:** Sende einfach das Wort `Gen` an den Bot.
+
+**Antwort:** Für jede aktive Strategie erhältst du:
+- Die **letzten 4 kodierten Kerzen** (GenCode) mit lesbarer Beschreibung (Richtung, Körpergröße, Volatilität, Wick, Volumen)
+- Den **wahrscheinlichsten nächsten GenCode** — basierend auf historischen DB-Mustern (die letzten 3 Gene als Prefix → häufigstes 4. Gen in der DB)
+- Anzahl der historischen Fälle + Datenlage-Bewertung
+
+**Beispielausgabe:**
+```
+🧬 dnabot GenCode-Report
+17.03.2026 22:45
+
+────────────────────────────────
+📊 DOGE (2h) · Regime: RANGE
+  -3  S1L-DL      🔴 Bearish · klein · Vola↓ · ↓Wick · vol↓
+  -2  B3H-UH      🟢 Bullish · groß · Vola↑ · ↑Wick · vol↑
+  -1  S2L-BL      🔴 Bearish · mittel · Vola↓ · ↕Wick · vol↓
+  »   S3H-UH      🔴 Bearish · groß · Vola↑ · ↑Wick · vol↑  ← jetzt
+🔮 Nächste Kerze:
+     B2H-NH      🟢 Bullish · mittel · Vola↑ · kein Wick · vol↑
+     47 Fälle in DB · starke Basis
+```
+
+**Start (in screen/tmux, damit er dauerhaft läuft):**
+
+```bash
+screen -S telegram
+python3 telegram_listener.py
+# Ctrl+A, D zum Detachen
+```
+
+**Log:**
+```bash
+tail -f logs/telegram_listener.log
+```
+
+---
+
 #### Manueller Start (Test)
 
 ```bash

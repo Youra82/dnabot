@@ -135,6 +135,7 @@ def _predict_next_gene(db: GenomeDB, current_genes: list[str], market: str, time
 
 
 _BODY    = {'1': 'klein',  '2': 'mittel', '3': 'groß'}
+_VOLAT   = {'H': 'Vola↑',  'L': 'Vola↓'}
 _WICK    = {'U': '↑Wick', 'D': '↓Wick',  'B': '↕Wick', 'N': 'kein Wick'}
 _VOL     = {'H': 'vol↑',  'L': 'vol↓'}
 _DIR     = {'B': ('🟢', 'Bullish'), 'S': ('🔴', 'Bearish')}
@@ -143,15 +144,16 @@ _DIR     = {'B': ('🟢', 'Bullish'), 'S': ('🔴', 'Bearish')}
 def _decode_gene(gene: str) -> str:
     """
     Dekodiert einen Gen-String zu einer kurzen lesbaren Beschreibung.
-    Beispiel: "B2H-NH" → "🟢 Bullish · mittel · kein Wick · vol↑"
+    Beispiel: "B2H-NH" → "🟢 Bullish · mittel · Vola↑ · kein Wick · vol↑"
     """
     try:
         main, ext = gene.split('-')
         emoji, direction = _DIR.get(main[0], ('?', '?'))
-        body = _BODY.get(main[1], main[1])
-        wick = _WICK.get(ext[0], ext[0])
-        vol  = _VOL.get(ext[1], ext[1])
-        return f"{emoji} {direction} · {body} · {wick} · {vol}"
+        body  = _BODY.get(main[1], main[1])
+        volat = _VOLAT.get(main[2], main[2])
+        wick  = _WICK.get(ext[0], ext[0])
+        vol   = _VOL.get(ext[1], ext[1])
+        return f"{emoji} {direction} · {body} · {volat} · {wick} · {vol}"
     except Exception:
         return gene
 

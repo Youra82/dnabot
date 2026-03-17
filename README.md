@@ -391,11 +391,8 @@ crontab -e
 ```
 
 ```cron
-# 4h-Strategien: alle 4 Stunden, 5 Min nach voll
-5 */4 * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
-
-# 1h-Strategien: jede Stunde, 5 Min nach voll
-5 * * * * /usr/bin/flock -n /root/dnabot/dnabot.lock /bin/sh -c "cd /root/dnabot && .venv/bin/python3 master_runner.py >> /root/dnabot/logs/cron.log 2>&1"
+# dnabot -> offset 60s (startet auch den Telegram-Listener falls nicht aktiv)
+*/15 * * * * /usr/bin/flock -n /home/matola/dnabot/dnabot.lock /bin/sh -c "sleep 60; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 cd /home/matola/dnabot && pgrep -f 'telegram_listener.py' > /dev/null || nohup /home/matola/dnabot/.venv/bin/python3 /home/matola/dnabot/telegram_listener.py >> /home/matola/dnabot/logs/telegram_listener.log 2>&1 & /home/matola/dnabot/.venv/bin/python3 master_runner.py >> /home/matola/dnabot/logs/cron.log 2>&1"
 ```
 
 > Der `master_runner.py` ruft beim Start automatisch den `auto_optimizer_scheduler.py` auf.

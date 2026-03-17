@@ -244,28 +244,32 @@ def notify_new_position(exchange: Exchange, position: dict, params: dict,
             f"n={active_genome.get('total_occurrences', 0)}"
         )
 
+    direction_emoji = "🟢" if side == 'long' else "🔴"
     side_label = "LONG" if side == 'long' else "SHORT"
+    tp_pct  = abs(tp_price - entry_price) / entry_price * 100 if tp_price else 0.0
+    sl_pct  = abs(sl_price - entry_price) / entry_price * 100 if sl_price else 0.0
+    rr      = abs(tp_price - entry_price) / abs(entry_price - sl_price) if tp_price and sl_price and sl_price != entry_price else 0.0
+
     msg = (
-        f"NEUE POSITION: {side_label}\n\n"
-        f"Symbol: {symbol} | TF: {params['market']['timeframe']}\n"
-        f"Menge: {contracts:.4f} | Entry: {entry_price:.4f} USDT\n"
-        f"Hebel: {leverage}x"
+        f"🚀 dnabot SIGNAL: {symbol} ({params['market']['timeframe']})\n"
+        f"{'─' * 32}\n"
+        f"{direction_emoji} Richtung: {side_label}\n"
+        f"💰 Entry:   ${entry_price:.6f}\n"
     )
-    if tp_price:
-        tp_pct = abs(tp_price - entry_price) / entry_price * 100
-        msg += f"\nTP: {tp_price:.4f} (+{tp_pct:.2f}%)"
     if sl_price:
-        sl_pct = abs(sl_price - entry_price) / entry_price * 100
-        msg += f"\nSL: {sl_price:.4f} (-{sl_pct:.2f}%)"
-    if tp_price and sl_price:
-        rr = abs(tp_price - entry_price) / abs(entry_price - sl_price)
-        msg += f"\nR:R 1:{rr:.2f}"
-    msg += f"\nP&L: {unrealized_pnl:.2f} USDT"
-    if liq_price:
-        msg += f"\nLiq: {liq_price:.4f} USDT"
+        msg += f"🛑 SL:      ${sl_price:.6f} (-{sl_pct:.2f}%)\n"
+    if tp_price:
+        msg += f"🎯 TP:      ${tp_price:.6f} (+{tp_pct:.2f}%)\n"
+    if rr > 0:
+        msg += f"📊 R:R:     1:{rr:.1f}\n"
+    msg += (
+        f"⚙️ Hebel:   {leverage}x\n"
+        f"📦 Kontr.:  {contracts:.4f}\n"
+        f"💹 P&L:     {unrealized_pnl:.2f} USDT\n"
+    )
     if genome_info:
-        msg += genome_info
-    msg += f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        msg += f"{'─' * 32}\n🧬 Genome:{genome_info}\n"
+    msg += f"{'─' * 32}"
 
     send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
 
@@ -482,6 +486,36 @@ def place_entry_orders(
 
     logger.info(f"Entry-Orders erfolgreich platziert für {symbol} ({side.upper()}).")
 
+    # --- Telegram-Benachrichtigung ---
+    try:
+        timeframe   = params['market']['timeframe']
+        direction_emoji = "🟢" if side == 'long' else "🔴"
+        sl_dist_pct = abs(entry_price - sl_price) / entry_price * 100
+        tp_dist_pct = abs(tp_price - entry_price) / entry_price * 100
+        rr_ratio    = tp_dist_pct / sl_dist_pct if sl_dist_pct > 0 else 0
+        risk_usdt   = balance * risk_pct / 100.0
+        msg = (
+            f"🚀 dnabot SIGNAL: {symbol} ({timeframe})\n"
+            f"{'─' * 32}\n"
+            f"{direction_emoji} Richtung: {side.upper()}\n"
+            f"💰 Entry:   ${entry_price:.6f}\n"
+            f"🛑 SL:      ${sl_price:.6f} (-{sl_dist_pct:.2f}%)\n"
+            f"🎯 TP:      ${tp_price:.6f} (+{tp_dist_pct:.2f}%)\n"
+            f"📊 R:R:     1:{rr_ratio:.1f}\n"
+            f"⚙️ Hebel:   {leverage}x\n"
+            f"🛡️ Risiko:  {risk_pct:.1f}% ({risk_usdt:.2f} USDT)\n"
+            f"📦 Kontr.:  {amount_coins:.4f}\n"
+            f"{'─' * 32}\n"
+            f"🧬 Genome:  {genome_signal['genome_id'][:8]}... | "
+            f"Score: {genome_signal['score']:.3f} | "
+            f"WR: {genome_signal['winrate']:.1%} | "
+            f"n={genome_signal['total_occurrences']}\n"
+            f"🔢 Sequenz: {genome_signal['sequence']}"
+        )
+        send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
+    except Exception as e:
+        logger.warning(f"Telegram-Benachrichtigung fehlgeschlagen: {e}")
+
 
 # ─── Self-Learning Update ─────────────────────────────────────────────────────
 
@@ -642,6 +676,10 @@ def full_trade_cycle(
             db.close()
             return
 
+        if genome_signal is None:
+            logger.info("Kein Genome-Signal → kein Entry.")
+            db.close()
+            return
         place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger)
 
     db.close()

@@ -496,13 +496,14 @@ Der `telegram_listener.py` ist ein dauerhaft laufender Dienst, der auf Telegram-
      47 Fälle in DB · starke Basis
 ```
 
-**Start (in screen/tmux, damit er dauerhaft läuft):**
+**Start (einmalig manuell, danach übernimmt der Cronjob):**
 
 ```bash
-screen -S telegram
-python3 telegram_listener.py
-# Ctrl+A, D zum Detachen
+cd ~/dnabot && nohup .venv/bin/python3 telegram_listener.py >> logs/telegram_listener.log 2>&1 &
 ```
+
+> **Hinweis:** Der Cronjob startet den Listener automatisch beim nächsten Lauf (alle 15 Min).
+> Nach einem Neustart des VPS also bis zu 15 Minuten warten — oder obigen Befehl manuell ausführen.
 
 **Log:**
 ```bash

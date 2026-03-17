@@ -467,6 +467,11 @@ tail -f logs/auto_optimizer_trigger.log
 
 # Einzelnes Symbol
 tail -n 100 logs/dnabot_BTCUSDTUSDT_4h.log
+
+# Alle Symbole der letzten N Minuten (z.B. 30)
+find logs/ -name "dnabot_*.log" -newer /tmp/.dnabot_ref \
+  -exec echo "=== {} ===" \; -exec tail -n 20 {} \;
+# Hilfreich: Referenz-Timestamp setzen mit: touch -d "30 minutes ago" /tmp/.dnabot_ref
 ```
 
 #### Manueller Start (Test)

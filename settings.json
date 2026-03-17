@@ -3,19 +3,34 @@
         "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
         "active_strategies": [
             {
-                "symbol": "BTC/USDT:USDT",
-                "timeframe": "4h",
-                "active": false
+                "symbol": "DOGE/USDT:USDT",
+                "timeframe": "2h",
+                "active": true
             },
             {
                 "symbol": "ETH/USDT:USDT",
-                "timeframe": "4h",
-                "active": false
+                "timeframe": "2h",
+                "active": true
+            },
+            {
+                "symbol": "XRP/USDT:USDT",
+                "timeframe": "2h",
+                "active": true
             },
             {
                 "symbol": "SOL/USDT:USDT",
+                "timeframe": "30m",
+                "active": true
+            },
+            {
+                "symbol": "ADA/USDT:USDT",
                 "timeframe": "4h",
-                "active": false
+                "active": true
+            },
+            {
+                "symbol": "AAVE/USDT:USDT",
+                "timeframe": "6h",
+                "active": true
             }
         ]
     },

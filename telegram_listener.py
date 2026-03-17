@@ -134,9 +134,34 @@ def _predict_next_gene(db: GenomeDB, current_genes: list[str], market: str, time
     return {'gene': best_gene, **best_stats}
 
 
-def _direction_arrow(gene: str) -> str:
-    """B = bullish (grün), S = bearish (rot)."""
-    return '▲' if gene.startswith('B') else '▼'
+_BODY    = {'1': 'klein',  '2': 'mittel', '3': 'groß'}
+_WICK    = {'U': '↑Wick', 'D': '↓Wick',  'B': '↕Wick', 'N': 'kein Wick'}
+_VOL     = {'H': 'vol↑',  'L': 'vol↓'}
+_DIR     = {'B': ('🟢', 'Bullish'), 'S': ('🔴', 'Bearish')}
+
+
+def _decode_gene(gene: str) -> str:
+    """
+    Dekodiert einen Gen-String zu einer kurzen lesbaren Beschreibung.
+    Beispiel: "B2H-NH" → "🟢 Bullish · mittel · kein Wick · vol↑"
+    """
+    try:
+        main, ext = gene.split('-')
+        emoji, direction = _DIR.get(main[0], ('?', '?'))
+        body = _BODY.get(main[1], main[1])
+        wick = _WICK.get(ext[0], ext[0])
+        vol  = _VOL.get(ext[1], ext[1])
+        return f"{emoji} {direction} · {body} · {wick} · {vol}"
+    except Exception:
+        return gene
+
+
+def _confidence(n: int) -> str:
+    if n >= 50:
+        return "starke Basis"
+    if n >= 15:
+        return "moderate Basis"
+    return "wenig Daten"
 
 
 def _handle_gen(bot_token: str, chat_id: str):
@@ -169,52 +194,62 @@ def _handle_gen(bot_token: str, chat_id: str):
     exchange = Exchange(accounts[0])
     db = GenomeDB(DB_PATH)
 
-    lines = ["🧬 dnabot GenCode-Report", "─" * 30]
+    from datetime import datetime
+    header = f"🧬 dnabot GenCode-Report\n{datetime.now().strftime('%d.%m.%Y %H:%M')}"
+
+    blocks = [header]
 
     for strat in strategies:
         symbol    = strat['symbol']
         timeframe = strat['timeframe']
+        coin      = symbol.split('/')[0]
 
         try:
             df = exchange.fetch_recent_ohlcv(symbol, timeframe, limit=200)
             if df is None or len(df) < 20:
-                lines.append(f"\n{symbol} ({timeframe}): Keine Daten")
+                blocks.append(f"\n{symbol} ({timeframe}): Keine Daten")
                 continue
 
             genes  = encode_dataframe(df)
-            last6  = genes[-6:]
+            last4  = genes[-4:]
             regime = detect_regime(df)
 
-            # Aktuelle Gene formatiert
-            seq_display = "  ".join(
-                f"{_direction_arrow(g)} {g}" for g in last6
-            )
+            # Kerzen-Sequenz (letzte 4, älteste zuerst)
+            seq_lines = []
+            labels = ['  -3', '  -2', '  -1', '  »']
+            for i, (label, g) in enumerate(zip(labels, last4)):
+                marker = ' ← jetzt' if i == 3 else ''
+                seq_lines.append(f"{label}  {g:10s}  {_decode_gene(g)}{marker}")
 
-            # Nächster wahrscheinlichster GenCode
-            prediction = _predict_next_gene(db, last6, symbol, timeframe)
+            # Prediction
+            prediction = _predict_next_gene(db, last4, symbol, timeframe)
             if prediction:
-                pred_arrow = _direction_arrow(prediction['gene'])
-                pred_text = (
-                    f"{pred_arrow} {prediction['gene']} "
-                    f"(n={prediction['occ']}, Score: {prediction['score']:.3f})"
+                conf  = _confidence(prediction['occ'])
+                pred_decoded = _decode_gene(prediction['gene'])
+                pred_block = (
+                    f"🔮 Nächste Kerze:\n"
+                    f"     {prediction['gene']:10s}  {pred_decoded}\n"
+                    f"     {prediction['occ']} Fälle in DB · {conf}"
                 )
             else:
-                pred_text = "Keine Prediction (zu wenig Daten)"
+                pred_block = "🔮 Nächste Kerze: keine Prediction (zu wenig Daten)"
 
-            lines.append(
-                f"\n{symbol} ({timeframe}) | Regime: {regime}\n"
-                f"Letzte 6 Gene:\n{seq_display}\n"
-                f"Nächster:  {pred_text}"
+            block = (
+                f"\n{'─' * 32}\n"
+                f"📊 {coin} ({timeframe}) · Regime: {regime}\n"
+                + "\n".join(seq_lines)
+                + f"\n{pred_block}"
             )
+            blocks.append(block)
 
         except Exception as e:
             logger.error(f"Fehler bei {symbol}: {e}", exc_info=True)
-            lines.append(f"\n{symbol} ({timeframe}): Fehler — {e}")
+            blocks.append(f"\n{symbol} ({timeframe}): Fehler — {e}")
 
         time.sleep(0.3)
 
     db.close()
-    send_message(bot_token, chat_id, "\n".join(lines))
+    send_message(bot_token, chat_id, "\n".join(blocks))
     logger.info("Gen-Report gesendet.")
 
 

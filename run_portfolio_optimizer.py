@@ -552,6 +552,135 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         print(f"  {Y}Telegram nicht konfiguriert — Chart nur lokal gespeichert.{NC}")
 
 
+def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: float):
+    """Erstellt eine Excel-Tabelle mit allen Einzeltrades des optimalen Portfolios."""
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        print(f"  {Y}openpyxl nicht installiert — Excel übersprungen. (pip install openpyxl){NC}")
+        return None
+
+    # Alle Trades zusammenführen und chronologisch sortieren
+    all_trades = []
+    for pr in selected:
+        for t in pr['trades']:
+            all_trades.append({
+                'market':     pr['market'],
+                'timeframe':  pr['timeframe'],
+                'coin':       pr['market'].split('/')[0],
+                'direction':  t.get('direction', '?'),
+                'outcome':    t.get('outcome', 'LOSS'),
+                'pnl_pct':    t.get('pnl_pct', 0.0),
+                'sl_pct':     t.get('sl_pct', 1.0),
+                'entry_time': str(t.get('entry_time', '')),
+                'exit_time':  str(t.get('exit_time', '')),
+            })
+    all_trades.sort(key=lambda t: t['entry_time'])
+
+    # Equity-Verlauf berechnen
+    equity = capital
+    rows = []
+    for i, t in enumerate(all_trades):
+        risk_amount = equity * (risk_pct / 100.0)
+        sl_pct      = max(t['sl_pct'], 0.01)
+        outcome     = t['outcome']
+        if outcome == 'WIN':
+            pnl = risk_amount * RR_RATIO
+        elif outcome == 'LOSS':
+            pnl = -risk_amount
+        else:
+            pnl = risk_amount * (t['pnl_pct'] / sl_pct)
+        equity += pnl
+
+        ergebnis = 'TP erreicht' if outcome == 'WIN' else ('SL erreicht' if outcome == 'LOSS' else 'Timeout')
+        rows.append({
+            'Nr':             i + 1,
+            'Datum':          t['entry_time'][:16].replace('T', ' '),
+            'Coin':           t['coin'],
+            'Timeframe':      t['timeframe'],
+            'Richtung':       t['direction'],
+            'Ergebnis':       ergebnis,
+            'Eingesetzt (USDT)': round(risk_amount, 4),
+            'PnL (USDT)':     round(pnl, 4),
+            'Gesamtkapital':  round(equity, 4),
+        })
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Trades'
+
+    # Farben
+    header_fill  = PatternFill('solid', fgColor='1E3A5F')
+    win_fill     = PatternFill('solid', fgColor='D6F4DC')
+    loss_fill    = PatternFill('solid', fgColor='FAD7D7')
+    timeout_fill = PatternFill('solid', fgColor='FFF3CC')
+    alt_fill     = PatternFill('solid', fgColor='F2F2F2')
+    thin_border  = Border(
+        left=Side(style='thin', color='CCCCCC'),
+        right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'),
+        bottom=Side(style='thin', color='CCCCCC'),
+    )
+
+    headers = list(rows[0].keys()) if rows else []
+    col_widths = {
+        'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
+        'Richtung': 10, 'Ergebnis': 14, 'Eingesetzt (USDT)': 18,
+        'PnL (USDT)': 14, 'Gesamtkapital': 16,
+    }
+
+    # Header
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill      = header_fill
+        cell.font      = Font(bold=True, color='FFFFFF', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border    = thin_border
+        ws.column_dimensions[get_column_letter(col)].width = col_widths.get(h, 14)
+    ws.row_dimensions[1].height = 22
+
+    # Datenzeilen
+    for r_idx, row in enumerate(rows, 2):
+        outcome_val = row['Ergebnis']
+        if outcome_val == 'TP erreicht':
+            fill = win_fill
+        elif outcome_val == 'SL erreicht':
+            fill = loss_fill
+        else:
+            fill = timeout_fill if r_idx % 2 == 0 else alt_fill
+
+        for col, key in enumerate(headers, 1):
+            cell = ws.cell(row=r_idx, column=col, value=row[key])
+            cell.fill      = fill
+            cell.border    = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if key in ('Eingesetzt (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
+                cell.number_format = '#,##0.0000'
+        ws.row_dimensions[r_idx].height = 18
+
+    # Zusammenfassung unten
+    summary_row = len(rows) + 3
+    ws.cell(row=summary_row, column=1, value='Zusammenfassung').font = Font(bold=True, size=11)
+    for label, value in [
+        ('Trades gesamt', pm['n_trades']),
+        ('Win-Rate', f"{pm['win_rate']:.1%}"),
+        ('PnL', f"+{pm['total_pnl_pct']:.1f}%"),
+        ('Final Equity', f"{pm['final_equity']:.2f} USDT"),
+        ('Max Drawdown', f"{pm['max_dd']:.1f}%"),
+        ('Risiko/Trade', f"{risk_pct}%"),
+    ]:
+        ws.cell(row=summary_row, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=summary_row, column=2, value=value)
+        summary_row += 1
+
+    output_file = '/tmp/dnabot_trades.xlsx'
+    wb.save(output_file)
+    print(f"  {G}✓ Excel-Tabelle erstellt: {output_file}{NC}")
+    return output_file
+
+
 def write_to_settings(selected: list, risk_pct: float = None):
     try:
         with open(SETTINGS_PATH) as f:
@@ -705,11 +834,24 @@ def main():
         else:
             print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
 
-    # Charts: bei --auto-write automatisch, sonst interaktiv fragen
+    # Charts + Excel: bei --auto-write automatisch, sonst interaktiv fragen
     if args.auto_write:
         generate_portfolio_equity_chart(
             best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
         )
+        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
+        if excel_file:
+            bot_token, chat_id = _get_telegram_credentials()
+            if bot_token and chat_id:
+                sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
+                from dnabot.utils.telegram import send_document
+                send_document(
+                    bot_token, chat_id, excel_file,
+                    caption=f"dnabot Trades-Tabelle | {len(best_combo)} Coins | "
+                            f"Risiko: {best_risk}% | {best_metrics['n_trades']} Trades | "
+                            f"WR: {best_metrics['win_rate']:.1%} | Final: {best_metrics['final_equity']:.2f} USDT"
+                )
+                print(f"  {G}✓ Excel via Telegram gesendet.{NC}")
     else:
         try:
             chart_ans = input("  Interaktive Charts für diese Zusammenstellung erstellen & via Telegram senden? (j/n): ").strip().lower()
@@ -719,6 +861,7 @@ def main():
             generate_portfolio_equity_chart(
                 best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
             )
+            generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
 
 
 if __name__ == '__main__':

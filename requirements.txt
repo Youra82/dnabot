@@ -20,4 +20,7 @@ plotly
 matplotlib
 seaborn==0.13.2
 
+# Excel Export (für Portfolio-Trades-Tabelle)
+openpyxl
+
 # SQLite ist in Python built-in — kein Paket nötig

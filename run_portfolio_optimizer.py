@@ -604,15 +604,20 @@ def main():
         else:
             print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
 
-    # Charts für das Portfolio anbieten
-    try:
-        chart_ans = input("  Interaktive Charts für diese Zusammenstellung erstellen & via Telegram senden? (j/n): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        chart_ans = 'n'
-    if chart_ans in ('j', 'ja', 'y', 'yes'):
+    # Charts: bei --auto-write automatisch, sonst interaktiv fragen
+    if args.auto_write:
         generate_portfolio_equity_chart(
             best_combo, best_metrics, args.start_date, args.end_date, args.capital, args.risk
         )
+    else:
+        try:
+            chart_ans = input("  Interaktive Charts für diese Zusammenstellung erstellen & via Telegram senden? (j/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            chart_ans = 'n'
+        if chart_ans in ('j', 'ja', 'y', 'yes'):
+            generate_portfolio_equity_chart(
+                best_combo, best_metrics, args.start_date, args.end_date, args.capital, args.risk
+            )
 
 
 if __name__ == '__main__':

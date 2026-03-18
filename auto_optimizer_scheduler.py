@@ -119,9 +119,11 @@ def _get_telegram_credentials():
         with open(SECRET_FILE, 'r') as f:
             secrets = json.load(f)
         accounts = secrets.get('dnabot', [])
-        if accounts:
-            acc = accounts[0]
-            return acc.get('telegram_bot_token'), acc.get('telegram_chat_id')
+        acc = accounts[0] if accounts else {}
+        bot_token = acc.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
+        chat_id   = acc.get('telegram_chat_id', '')   or secrets.get('telegram', {}).get('chat_id', '')
+        if bot_token and chat_id:
+            return bot_token, chat_id
     except Exception:
         pass
     return None, None

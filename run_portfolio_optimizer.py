@@ -552,7 +552,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         print(f"  {Y}Telegram nicht konfiguriert — Chart nur lokal gespeichert.{NC}")
 
 
-def write_to_settings(selected: list):
+def write_to_settings(selected: list, risk_pct: float = None):
     try:
         with open(SETTINGS_PATH) as f:
             settings = json.load(f)
@@ -566,10 +566,14 @@ def write_to_settings(selected: list):
     ]
     settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
 
+    if risk_pct is not None:
+        settings.setdefault('risk_settings', {})['risk_per_entry_pct'] = risk_pct
+
     try:
         with open(SETTINGS_PATH, 'w') as f:
             json.dump(settings, f, indent=2)
-        print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen.{NC}\n")
+        risk_info = f" | Risiko/Trade: {risk_pct}%" if risk_pct is not None else ""
+        print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen{risk_info}.{NC}\n")
         return True
     except Exception as e:
         print(f"{R}Fehler beim Schreiben von settings.json: {e}{NC}")
@@ -677,7 +681,7 @@ def main():
         print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
 
     if args.auto_write:
-        write_to_settings(best_combo)
+        write_to_settings(best_combo, best_risk)
         _send_telegram(
             f"dnabot Auto-Optimizer — Portfolio aktualisiert\n"
             f"Equity: {current_equity:.2f} → {best_equity:.2f} USDT (+{((best_equity/current_equity)-1)*100:.1f}%)\n"
@@ -690,7 +694,7 @@ def main():
         except (EOFError, KeyboardInterrupt):
             ans = 'n'
         if ans in ('j', 'ja', 'y', 'yes'):
-            write_to_settings(best_combo)
+            write_to_settings(best_combo, best_risk)
         else:
             print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
 

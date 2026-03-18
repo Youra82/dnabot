@@ -576,18 +576,31 @@ def main():
     with_trades = [r for r in all_results if len(r['trades']) > 0]
     coins = sorted(set(r['coin'] for r in with_trades))
     print(f" {len(all_results)} Dateien, {len(with_trades)} mit Trades, {len(coins)} Coins.")
-    print(f"\n  Optimiere Portfolio...\n")
 
-    best_metrics, best_combo = optimize_portfolio(
-        with_trades, args.capital, args.risk, args.max_dd
-    )
+    # Risiko 1%–5% (Schritte 0.5%) ausprobieren, bestes Final Equity unter MaxDD-Limit wählen
+    risk_levels = [r / 10 for r in range(10, 55, 5)]  # 1.0, 1.5, 2.0, ... 5.0
+    print(f"\n  Suche optimales Risiko ({risk_levels[0]}%–{risk_levels[-1]}%, MaxDD ≤ {args.max_dd:.0f}%)...\n")
+
+    best_metrics   = None
+    best_combo     = None
+    best_risk      = args.risk
+    best_equity    = 0.0
+
+    for risk_pct in risk_levels:
+        m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd)
+        if combo and m and m['max_dd'] <= args.max_dd and m['final_equity'] > best_equity:
+            best_metrics = m
+            best_combo   = combo
+            best_risk    = risk_pct
+            best_equity  = m['final_equity']
 
     if not best_combo:
         best_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
                         'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
         best_combo = []
 
-    print_result(best_combo, best_metrics, args.capital, args.risk, args.max_dd)
+    print(f"\n  {G}Bestes Risiko: {best_risk}% → Final Equity: {best_equity:.2f} USDT{NC}\n")
+    print_result(best_combo, best_metrics, args.capital, best_risk, args.max_dd)
 
     if not best_combo:
         sys.exit(0)
@@ -607,7 +620,7 @@ def main():
     # Charts: bei --auto-write automatisch, sonst interaktiv fragen
     if args.auto_write:
         generate_portfolio_equity_chart(
-            best_combo, best_metrics, args.start_date, args.end_date, args.capital, args.risk
+            best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
         )
     else:
         try:
@@ -616,7 +629,7 @@ def main():
             chart_ans = 'n'
         if chart_ans in ('j', 'ja', 'y', 'yes'):
             generate_portfolio_equity_chart(
-                best_combo, best_metrics, args.start_date, args.end_date, args.capital, args.risk
+                best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
             )
 
 

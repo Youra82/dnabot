@@ -37,6 +37,37 @@ NC  = '\033[0m'
 RR_RATIO = 2.0
 
 
+def _get_telegram_credentials():
+    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
+    try:
+        with open(secret_path) as f:
+            secrets = json.load(f)
+        accounts  = secrets.get('dnabot', [])
+        acc       = accounts[0] if accounts else {}
+        bot_token = acc.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
+        chat_id   = acc.get('telegram_chat_id', '')   or secrets.get('telegram', {}).get('chat_id', '')
+        if bot_token and chat_id:
+            return bot_token, chat_id
+    except Exception:
+        pass
+    return None, None
+
+
+def _send_telegram(message: str):
+    bot_token, chat_id = _get_telegram_credentials()
+    if not bot_token or not chat_id:
+        return
+    try:
+        import requests
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data={'chat_id': chat_id, 'text': message},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def coin_from_symbol(symbol: str) -> str:
     return symbol.split('/')[0].upper()
 
@@ -627,15 +658,32 @@ def main():
     except Exception:
         pass
 
+    new_pairs_str = ', '.join(
+        f"{p['market'].split('/')[0]} ({p['timeframe']})" for p in best_combo
+    )
+
     if current_equity > 0:
         print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
         if best_equity <= current_equity:
             print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
+            if args.auto_write:
+                _send_telegram(
+                    f"dnabot Auto-Optimizer — Keine Änderung\n"
+                    f"Neues Portfolio ({best_equity:.2f} USDT) ist nicht besser als aktuelles ({current_equity:.2f} USDT).\n"
+                    f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}%\n"
+                    f"settings.json bleibt unverändert."
+                )
             sys.exit(0)
         print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
 
     if args.auto_write:
         write_to_settings(best_combo)
+        _send_telegram(
+            f"dnabot Auto-Optimizer — Portfolio aktualisiert\n"
+            f"Equity: {current_equity:.2f} → {best_equity:.2f} USDT (+{((best_equity/current_equity)-1)*100:.1f}%)\n"
+            f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}% | WR: {best_metrics['win_rate']:.1%}\n"
+            f"Neue Coins:\n{new_pairs_str}"
+        )
     else:
         try:
             ans = input("  Sollen die optimalen Ergebnisse automatisch in settings.json eingetragen werden? (j/n): ").strip().lower()

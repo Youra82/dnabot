@@ -642,9 +642,11 @@ def main():
 
     # Aktuelles Portfolio aus settings.json simulieren zum Vergleich
     current_equity = 0.0
+    current_capital = None
     try:
         with open(SETTINGS_PATH) as f:
             current_settings = json.load(f)
+        current_capital = current_settings.get('optimization_settings', {}).get('start_capital')
         current_strategies = current_settings.get('live_trading_settings', {}).get('active_strategies', [])
         if current_strategies:
             current_pairs = []
@@ -666,7 +668,10 @@ def main():
         f"{p['market'].split('/')[0]} ({p['timeframe']})" for p in best_combo
     )
 
-    if current_equity > 0:
+    # Kapitaländerung = immer überschreiben
+    capital_changed = current_capital is not None and float(current_capital) != float(args.capital)
+
+    if current_equity > 0 and not capital_changed:
         print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
         if best_equity <= current_equity:
             print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
@@ -679,6 +684,8 @@ def main():
                 )
             sys.exit(0)
         print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
+    elif capital_changed:
+        print(f"  {Y}Kapital geändert ({current_capital} → {args.capital} USDT) → überschreibe settings.json.{NC}\n")
 
     if args.auto_write:
         write_to_settings(best_combo, best_risk)

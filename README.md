@@ -514,9 +514,31 @@ tail -f logs/telegram_listener.log
 
 #### Manueller Start (Test)
 
+Einmalig manuell ausführen — nützlich zum Testen oder nach einem Update:
+
 ```bash
-cd /root/dnabot && .venv/bin/python3 master_runner.py
+cd ~/dnabot && .venv/bin/python3 master_runner.py
 ```
+
+#### Auto-Optimizer: Status & manueller Start
+
+Prüfen wann der Auto-Optimizer zuletzt lief und wann er wieder fällig ist:
+
+```bash
+# Letzter Optimierungszeitpunkt
+cat ~/dnabot/artifacts/cache/.last_optimization_run
+
+# Optimizer-Log (läuft er? überspringt er? Fehler?)
+tail -f ~/dnabot/logs/auto_optimizer_trigger.log
+
+# Optimierung sofort erzwingen (ignoriert den Zeitplan)
+cd ~/dnabot && .venv/bin/python3 auto_optimizer_scheduler.py --force
+```
+
+> **Intervall:** Standardmäßig alle 7 Tage (konfigurierbar in `optimization_settings.schedule`).
+> Der Optimizer testet automatisch Risikowerte von 1%–5% und wählt das Portfolio
+> mit dem höchsten Final Equity — solange MaxDD unter dem konfigurierten Limit bleibt.
+> `settings.json` wird **nur überschrieben wenn das neue Ergebnis besser als das aktuelle ist.**
 
 #### Genome-Discovery manuell starten
 

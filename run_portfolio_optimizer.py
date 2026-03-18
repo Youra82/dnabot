@@ -800,41 +800,55 @@ def main():
     # Kapitaländerung = immer überschreiben
     capital_changed = current_capital is not None and float(current_capital) != float(args.capital)
 
+    # settings.json Entscheidung
+    settings_updated = False
     if current_equity > 0 and not capital_changed:
         print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
         if best_equity <= current_equity:
             print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
+        else:
+            print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
             if args.auto_write:
-                _send_telegram(
-                    f"dnabot Auto-Optimizer — Keine Änderung\n"
-                    f"Neues Portfolio ({best_equity:.2f} USDT) ist nicht besser als aktuelles ({current_equity:.2f} USDT).\n"
-                    f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}%\n"
-                    f"settings.json bleibt unverändert."
-                )
-            sys.exit(0)
-        print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
+                write_to_settings(best_combo, best_risk)
+                settings_updated = True
+            else:
+                try:
+                    ans = input("  Sollen die optimalen Ergebnisse automatisch in settings.json eingetragen werden? (j/n): ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    ans = 'n'
+                if ans in ('j', 'ja', 'y', 'yes'):
+                    write_to_settings(best_combo, best_risk)
+                    settings_updated = True
+                else:
+                    print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
     elif capital_changed:
         print(f"  {Y}Kapital geändert ({current_capital} → {args.capital} USDT) → überschreibe settings.json.{NC}\n")
-
-    if args.auto_write:
-        write_to_settings(best_combo, best_risk)
-        _send_telegram(
-            f"dnabot Auto-Optimizer — Portfolio aktualisiert\n"
-            f"Equity: {current_equity:.2f} → {best_equity:.2f} USDT (+{((best_equity/current_equity)-1)*100:.1f}%)\n"
-            f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}% | WR: {best_metrics['win_rate']:.1%}\n"
-            f"Neue Coins:\n{new_pairs_str}"
-        )
-    else:
-        try:
-            ans = input("  Sollen die optimalen Ergebnisse automatisch in settings.json eingetragen werden? (j/n): ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            ans = 'n'
-        if ans in ('j', 'ja', 'y', 'yes'):
+        if args.auto_write:
             write_to_settings(best_combo, best_risk)
-        else:
-            print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
+            settings_updated = True
+    else:
+        if args.auto_write:
+            write_to_settings(best_combo, best_risk)
+            settings_updated = True
 
-    # Charts + Excel: bei --auto-write automatisch, sonst interaktiv fragen
+    # Telegram: Ergebnis der settings-Entscheidung
+    if args.auto_write:
+        if settings_updated:
+            _send_telegram(
+                f"dnabot Auto-Optimizer — Portfolio aktualisiert\n"
+                f"Equity: {current_equity:.2f} → {best_equity:.2f} USDT (+{((best_equity/max(current_equity,0.01))-1)*100:.1f}%)\n"
+                f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}% | WR: {best_metrics['win_rate']:.1%}\n"
+                f"Neue Coins:\n{new_pairs_str}"
+            )
+        else:
+            _send_telegram(
+                f"dnabot Auto-Optimizer — Keine Änderung\n"
+                f"Neues Portfolio ({best_equity:.2f} USDT) ist nicht besser als aktuelles ({current_equity:.2f} USDT).\n"
+                f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}%\n"
+                f"settings.json bleibt unverändert."
+            )
+
+    # Charts + Excel: bei --auto-write immer, sonst interaktiv fragen
     if args.auto_write:
         generate_portfolio_equity_chart(
             best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk

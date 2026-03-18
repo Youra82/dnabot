@@ -605,6 +605,35 @@ def main():
     if not best_combo:
         sys.exit(0)
 
+    # Aktuelles Portfolio aus settings.json simulieren zum Vergleich
+    current_equity = 0.0
+    try:
+        with open(SETTINGS_PATH) as f:
+            current_settings = json.load(f)
+        current_strategies = current_settings.get('live_trading_settings', {}).get('active_strategies', [])
+        if current_strategies:
+            current_pairs = []
+            for strat in current_strategies:
+                sym = strat.get('symbol', '')
+                tf  = strat.get('timeframe', '')
+                match = next((r for r in with_trades if r['market'] == sym and r['timeframe'] == tf), None)
+                if match:
+                    current_pairs.append(match)
+            if current_pairs:
+                for r in current_pairs:
+                    r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk)
+                sim = simulate_portfolio(current_pairs, args.capital, best_risk)
+                current_equity = sim['final_equity']
+    except Exception:
+        pass
+
+    if current_equity > 0:
+        print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
+        if best_equity <= current_equity:
+            print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
+            sys.exit(0)
+        print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
+
     if args.auto_write:
         write_to_settings(best_combo)
     else:

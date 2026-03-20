@@ -223,9 +223,8 @@ def check_tp_triggered(exchange: Exchange, symbol: str, tracker_path: str,
 
 def notify_new_position(exchange: Exchange, position: dict, params: dict,
                          tracker_path: str, telegram_config: dict, logger: logging.Logger):
-    """Sendet Telegram-Benachrichtigung wenn neue Position erkannt wird."""
+    """Tracker aktualisieren wenn Position erkannt wird (Telegram kommt bereits von place_entry_orders)."""
     tracker = read_tracker(tracker_path)
-    symbol = params['market']['symbol']
     entry_price = float(position.get('entryPrice', 0))
     side = position.get('side', '')
 
@@ -238,76 +237,10 @@ def notify_new_position(exchange: Exchange, position: dict, params: dict,
         side != last_side
     )
 
-    if not is_new:
-        return
-
-    try:
-        contracts = float(position.get('contracts', 0))
-        leverage = position.get('leverage', params['risk'].get('leverage', 1))
-        unrealized_pnl = position.get('unrealizedPnl', 0)
-        liq_price = position.get('liquidationPrice', 0)
-
-        tp_price = sl_price = None
-        for o in exchange.fetch_open_trigger_orders(symbol):
-            if o.get('reduceOnly'):
-                tp_val = o.get('triggerPrice') or o.get('stopPrice')
-                if tp_val:
-                    tp_val = float(tp_val)
-                    if side == 'long' and tp_val > entry_price:
-                        tp_price = tp_val
-                    elif side == 'long' and tp_val < entry_price:
-                        sl_price = tp_val
-                    elif side == 'short' and tp_val < entry_price:
-                        tp_price = tp_val
-                    elif side == 'short' and tp_val > entry_price:
-                        sl_price = tp_val
-    except Exception:
-        pass
-
-    # Genome-Info aus Tracker
-    active_genome = tracker.get('active_genome', {})
-    genome_info = ""
-    if active_genome:
-        genome_info = (
-            f"\nGenome: {active_genome.get('genome_id', '?')[:8]}...\n"
-            f"Sequenz: {active_genome.get('sequence', '?')}\n"
-            f"Score: {active_genome.get('score', 0):.3f} | "
-            f"WR: {active_genome.get('winrate', 0):.1%} | "
-            f"n={active_genome.get('total_occurrences', 0)}"
-        )
-
-    direction_emoji = "🟢" if side == 'long' else "🔴"
-    side_label = "LONG" if side == 'long' else "SHORT"
-    tp_pct  = abs(tp_price - entry_price) / entry_price * 100 if tp_price else 0.0
-    sl_pct  = abs(sl_price - entry_price) / entry_price * 100 if sl_price else 0.0
-    rr      = abs(tp_price - entry_price) / abs(entry_price - sl_price) if tp_price and sl_price and sl_price != entry_price else 0.0
-
-    msg = (
-        f"🚀 dnabot SIGNAL: {symbol} ({params['market']['timeframe']})\n"
-        f"{'─' * 32}\n"
-        f"{direction_emoji} Richtung: {side_label}\n"
-        f"💰 Entry:   ${entry_price:.6f}\n"
-    )
-    if sl_price:
-        msg += f"🛑 SL:      ${sl_price:.6f} (-{sl_pct:.2f}%)\n"
-    if tp_price:
-        msg += f"🎯 TP:      ${tp_price:.6f} (+{tp_pct:.2f}%)\n"
-    if rr > 0:
-        msg += f"📊 R:R:     1:{rr:.1f}\n"
-    msg += (
-        f"⚙️ Hebel:   {leverage}x\n"
-        f"📦 Kontr.:  {contracts:.4f}\n"
-        f"💹 P&L:     {unrealized_pnl:.2f} USDT\n"
-    )
-    if genome_info:
-        msg += f"{'─' * 32}\n🧬 Genome:{genome_info}\n"
-    msg += f"{'─' * 32}"
-
-    send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
-
-    tracker['last_notified_entry_price'] = entry_price
-    tracker['last_notified_side'] = side
-    _write_tracker(tracker_path, tracker)
+    if is_new:
+        tracker['last_notified_entry_price'] = entry_price
+        tracker['last_notified_side'] = side
+        _write_tracker(tracker_path, tracker)
 
 
 def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,

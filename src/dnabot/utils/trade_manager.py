@@ -677,38 +677,59 @@ def full_trade_cycle(
         tracker = read_tracker(tracker_path)
         status = tracker.get('status', 'ok_to_trade')
 
-        # Trailing-Stop-Erkennung: Position weg, aber weder SL noch TP erkannt
-        # → nativer Bitget Trailing Stop hat ausgelöst (nicht in fetchClosedOrders)
+        # Unbekannter Trade-Abschluss: Position weg, weder SL noch TP erkannt
+        # → Bitget Plan-Orders landen nicht immer in fetchClosedOrders
+        # Heuristik: Preis vs. Entry bestimmt ob WIN oder LOSS
         if not sl_triggered and not tp_triggered:
             had_tp_ids = bool(tracker.get('take_profit_ids'))
             had_sl_ids = bool(tracker.get('stop_loss_ids'))
             if had_tp_ids or had_sl_ids:
-                logger.info(f"Position verschwunden ohne SL/TP-Erkennung → Trailing Stop ausgelöst → WIN")
-                record_trade_result(tracker_path, 'win', logger)
-                try:
-                    last_price = float(df['close'].iloc[-1])
-                    self_learn_from_closed_trade(tracker_path, db, 'WIN', last_price, logger)
-                except Exception as e:
-                    logger.error(f"Self-Learning Fehler nach Trailing Stop: {e}")
-                try:
-                    send_message(
-                        telegram_config.get('bot_token'),
-                        telegram_config.get('chat_id'),
-                        f"✅ dnabot Trailing Stop ausgelöst: {symbol} ({timeframe})\n"
-                        f"Genome aktualisiert → WIN"
+                active_genome = tracker.get('active_genome') or {}
+                entry_price = active_genome.get('entry_price', 0)
+                last_side = tracker.get('last_side', 'long')
+                last_price = float(df['close'].iloc[-1])
+
+                outcome = None
+                if entry_price > 0:
+                    if last_side == 'long':
+                        outcome = 'win' if last_price >= entry_price else 'loss'
+                    else:
+                        outcome = 'win' if last_price <= entry_price else 'loss'
+                    outcome_label = 'WIN' if outcome == 'win' else 'LOSS'
+                    reason = "Trailing Stop" if outcome == 'win' else "Stop Loss (nicht detektiert)"
+                    logger.info(
+                        f"Trade-Abschluss ohne API-Erkennung → {reason} → {outcome_label} "
+                        f"(Entry: {entry_price:.4f}, aktuell: {last_price:.4f})"
                     )
-                except Exception:
-                    pass
+                    record_trade_result(tracker_path, outcome, logger)
+                    try:
+                        self_learn_from_closed_trade(tracker_path, db, outcome_label, last_price, logger)
+                    except Exception as e:
+                        logger.error(f"Self-Learning Fehler: {e}")
+                    emoji = "✅" if outcome == 'win' else "🛑"
+                    try:
+                        send_message(
+                            telegram_config.get('bot_token'),
+                            telegram_config.get('chat_id'),
+                            f"{emoji} dnabot {reason}: {symbol} ({timeframe})\n"
+                            f"Genome aktualisiert → {outcome_label}"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(f"Trade-Abschluss ohne Entry-Preis in Tracker — kein Self-Learning möglich.")
+
                 tracker = read_tracker(tracker_path)
+                new_status = 'stop_loss_triggered' if outcome == 'loss' else 'ok_to_trade'
                 tracker.update({
                     "stop_loss_ids": [],
                     "take_profit_ids": [],
-                    "status": "ok_to_trade",
+                    "status": new_status,
                 })
                 tracker.pop('last_notified_entry_price', None)
                 tracker.pop('last_notified_side', None)
                 _write_tracker(tracker_path, tracker)
-                status = 'ok_to_trade'
+                status = new_status
 
         if status == 'stop_loss_triggered':
             # Cooldown: Erst wieder handeln wenn Genome-Signal die Gegenrichtung signalisiert

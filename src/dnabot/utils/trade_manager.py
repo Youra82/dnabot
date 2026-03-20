@@ -302,8 +302,9 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     tp_ids = set(tracker.get('take_profit_ids', []))
     sl_ids = set(tracker.get('stop_loss_ids', []))
 
-    # TP = Trailing Stop → Erkennung über Tracker-IDs
-    tp_exists = bool(tp_ids & trigger_ids) if tp_ids else False
+    # TP = Trailing Stop → Tracker-IDs als Wahrheit (Bitget gibt Trailing Orders
+    # nicht über fetchOpenOrders zurück, daher kein API-Check möglich)
+    tp_exists = bool(tp_ids)
 
     # SL = fester Trigger → Tracker-IDs, Fallback: Preis-Richtung
     if sl_ids:

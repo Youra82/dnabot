@@ -323,12 +323,15 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     logger.warning(f"Trailing Stop={tp_exists}, SL={sl_exists} fehlen — nachtragen...")
 
     contracts = float(position.get('contracts', 0))
-    if contracts == 0 or not genome_signal:
+    if contracts == 0:
         return
 
-    tp_price = genome_signal.get('tp_price')
-    sl_price = genome_signal.get('sl_price')
+    # Preise aus Signal — Fallback auf gespeichertes active_genome im Tracker
+    active_genome = tracker.get('active_genome') or {}
+    tp_price = (genome_signal.get('tp_price') if genome_signal else None) or active_genome.get('tp_price')
+    sl_price = (genome_signal.get('sl_price') if genome_signal else None) or active_genome.get('sl_price')
     if not tp_price or not sl_price:
+        logger.warning("Kein tp_price/sl_price verfügbar (weder Signal noch Tracker) — Nachtragen nicht möglich.")
         return
 
     trailing_callback = params['risk'].get('trailing_callback_rate_pct', 1.0) / 100.0

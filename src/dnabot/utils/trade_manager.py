@@ -111,8 +111,20 @@ def should_skip_trading(path: str) -> tuple[bool, str]:
 def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
                          tracker_path: str = None):
     """Storniert alle offenen Limit- und nicht-reduceOnly Trigger-Orders."""
+    # TP/SL-Order-IDs aus Tracker schützen (Bitget gibt reduceOnly oft nicht zurück)
+    protected_ids: set = set()
+    if tracker_path:
+        try:
+            t = read_tracker(tracker_path)
+            protected_ids.update(t.get('take_profit_ids', []))
+            protected_ids.update(t.get('stop_loss_ids', []))
+        except Exception:
+            pass
+
     count = 0
     for order in exchange.fetch_open_orders(symbol):
+        if order['id'] in protected_ids:
+            continue
         try:
             exchange.cancel_order(order['id'], symbol)
             count += 1
@@ -123,7 +135,7 @@ def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
             logger.warning(f"Konnte Order {order['id']} nicht stornieren: {e}")
 
     for order in exchange.fetch_open_trigger_orders(symbol):
-        if order.get('reduceOnly'):
+        if order.get('reduceOnly') or order['id'] in protected_ids:
             continue
         try:
             exchange.cancel_trigger_order(order['id'], symbol)
@@ -145,9 +157,8 @@ def check_sl_triggered(exchange: Exchange, symbol: str, tracker_path: str,
         return False
     try:
         params = {'stop': True, 'productType': 'USDT-FUTURES'}
-        all_orders = exchange.exchange.fetchOrders(symbol, limit=20, params=params)
-        closed = [o for o in all_orders if o.get('stopPrice') and o['status'] in ['closed', 'canceled']]
-        for o in closed:
+        closed_orders = exchange.exchange.fetchClosedOrders(symbol, limit=20, params=params)
+        for o in closed_orders:
             if o['id'] in sl_ids and o.get('status') == 'closed':
                 logger.warning(f"STOP LOSS ausgelöst für {symbol}! Order: {o['id']}")
                 pos_side = 'long' if o['side'] == 'sell' else 'short'
@@ -174,9 +185,8 @@ def check_tp_triggered(exchange: Exchange, symbol: str, tracker_path: str,
         return False
     try:
         params = {'stop': True, 'productType': 'USDT-FUTURES'}
-        all_orders = exchange.exchange.fetchOrders(symbol, limit=20, params=params)
-        closed = [o for o in all_orders if o.get('stopPrice') and o['status'] in ['closed', 'canceled']]
-        for o in closed:
+        closed_orders = exchange.exchange.fetchClosedOrders(symbol, limit=20, params=params)
+        for o in closed_orders:
             if o['id'] in tp_ids and o.get('status') == 'closed':
                 logger.info(f"TAKE PROFIT ausgelöst für {symbol}!")
                 tracker.update({"status": "take_profit_triggered", "take_profit_ids": []})
@@ -470,6 +480,8 @@ def place_entry_orders(
     tracker['take_profit_ids'] = new_tp_ids
     tracker['last_side'] = side
     tracker['status'] = 'ok_to_trade'
+    tracker['last_notified_entry_price'] = entry_price
+    tracker['last_notified_side'] = side
     tracker['active_genome'] = {
         "genome_id": genome_signal['genome_id'],
         "sequence": genome_signal['sequence'],
@@ -632,7 +644,7 @@ def full_trade_cycle(
             logger.error(f"Self-Learning Fehler nach TP: {e}")
 
     # 4. Alte Entry-Orders stornieren
-    cancel_entry_orders(exchange, symbol, logger)
+    cancel_entry_orders(exchange, symbol, logger, tracker_path)
 
     # 5. Position prüfen
     open_positions = exchange.fetch_open_positions(symbol)

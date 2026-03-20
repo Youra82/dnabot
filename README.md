@@ -149,9 +149,9 @@ Jeder Cronjob-Lauf:
   1. Letzte 6 Kerzen codieren
   2. Sequenzen der Länge 4/5/6 gegen DB prüfen
   3. Bestes aktives Genome (höchster Score) → Signal
-  4. Entry: Trigger-Limit-Order (±0.05% Delta)
-  5. SL: Low/High der Sequenz-Kerzen
-  6. TP: 2:1 R:R
+  4. Entry: Market-Order (sofort bei Sequenz-Abschluss)
+  5. SL: Low/High der Sequenz-Kerzen (fester Trigger)
+  6. Trailing Stop: aktiviert bei 2:1 R:R, Callback 1% (Bitget nativ)
 
 Nach Trade-Abschluss:
   → Self-Learning: Trade-Ergebnis in Genome-DB schreiben
@@ -242,7 +242,8 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
         "risk_per_entry_pct": 1.0,
         "leverage": 5,
         "margin_mode": "isolated",
-        "rr_ratio": 2.0
+        "rr_ratio": 2.0,
+        "trailing_callback_rate_pct": 1.0
     },
     "optimization_settings": {
         "enabled": true,
@@ -281,7 +282,8 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `min_winrate` | Mindest-Winrate (0.45 = 45%). |
 | `half_life_days` | Halbwertszeit für Score-Decay (180 = 6 Monate). |
 | `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade. |
-| `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2). |
+| `rr_ratio` | Risk-Reward-Ratio (2.0 = 1:2) — bestimmt Aktivierungspreis des Trailing Stops. |
+| `trailing_callback_rate_pct` | Trailing Stop Callback in % (1.0 = 1% Rückzug vom Peak löst aus). |
 | `optimization_settings.enabled` | Automatische wöchentliche Neu-Optimierung ein/aus. |
 | `optimization_settings.schedule` | Wochentag + Uhrzeit + Intervall für den Auto-Optimizer. |
 | `optimization_settings.max_drawdown_pct` | Maximaler erlaubter Drawdown für Portfolio-Auswahl. |
@@ -549,6 +551,14 @@ cd ~/dnabot && .venv/bin/python3 auto_optimizer_scheduler.py --force
 # Nur ein bestimmtes Pair
 .venv/bin/python3 scan_and_learn.py --symbol BTC/USDT:USDT --timeframe 4h
 ```
+
+#### Tests ausführen
+
+```bash
+./run_tests.sh
+```
+
+Führt alle Pytest-Tests aus (Sicherheitscheck vor dem Live-Betrieb).
 
 #### Bot aktualisieren
 

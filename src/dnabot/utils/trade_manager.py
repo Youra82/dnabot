@@ -586,32 +586,12 @@ def full_trade_cycle(
     else:
         logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
 
-    # 3. SL/TP Trigger prüfen
     current_price = float(df['close'].iloc[-1])
-    sl_triggered = check_sl_triggered(exchange, symbol, tracker_path, logger, current_price)
-    if sl_triggered:
-        logger.warning(f"SL ausgelöst für {symbol}.")
-        record_trade_result(tracker_path, 'loss', logger)
-        # Self-Learning: Genome als Verlust markieren
-        try:
-            self_learn_from_closed_trade(tracker_path, db, 'LOSS', current_price, logger)
-        except Exception as e:
-            logger.error(f"Self-Learning Fehler nach SL: {e}")
 
-    tp_triggered = check_tp_triggered(exchange, symbol, tracker_path, logger, current_price)
-    if tp_triggered:
-        logger.info(f"TP ausgelöst für {symbol}.")
-        record_trade_result(tracker_path, 'win', logger)
-        # Self-Learning: Genome als Gewinn markieren
-        try:
-            self_learn_from_closed_trade(tracker_path, db, 'WIN', current_price, logger)
-        except Exception as e:
-            logger.error(f"Self-Learning Fehler nach TP: {e}")
-
-    # 4. Alte Entry-Orders stornieren
+    # 3. Entry-Orders stornieren (SL/TP bleiben durch protected_ids + reduceOnly geschützt)
     cancel_entry_orders(exchange, symbol, logger, tracker_path)
 
-    # 5. Position prüfen
+    # 4. Position prüfen
     open_positions = exchange.fetch_open_positions(symbol)
 
     if open_positions:
@@ -628,60 +608,52 @@ def full_trade_cycle(
         ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, logger)
 
     else:
+        # Position weg — prüfen ob ein aktiver Trade im Tracker war
         tracker = read_tracker(tracker_path)
-        status = tracker.get('status', 'ok_to_trade')
+        had_tp_ids = bool(tracker.get('take_profit_ids'))
+        had_sl_ids = bool(tracker.get('stop_loss_ids'))
 
-        # Unbekannter Trade-Abschluss: Position weg, weder SL noch TP erkannt
-        # → Bitget Plan-Orders landen nicht immer in fetchClosedOrders
-        # Heuristik: Preis vs. Entry bestimmt ob WIN oder LOSS
-        if not sl_triggered and not tp_triggered:
-            had_tp_ids = bool(tracker.get('take_profit_ids'))
-            had_sl_ids = bool(tracker.get('stop_loss_ids'))
-            if had_tp_ids or had_sl_ids:
-                active_genome = tracker.get('active_genome') or {}
-                entry_price = active_genome.get('entry_price', 0)
-                last_side = tracker.get('last_side', 'long')
-                last_price = float(df['close'].iloc[-1])
+        if had_tp_ids or had_sl_ids:
+            # Trade wurde geschlossen — Preis-Heuristik: Long↑=WIN, Short↓=WIN
+            active_genome = tracker.get('active_genome') or {}
+            entry_price = active_genome.get('entry_price', 0)
+            last_side = tracker.get('last_side', 'long')
 
-                outcome = None
-                if entry_price > 0:
-                    if last_side == 'long':
-                        outcome = 'win' if last_price >= entry_price else 'loss'
-                    else:
-                        outcome = 'win' if last_price <= entry_price else 'loss'
-                    outcome_label = 'WIN' if outcome == 'win' else 'LOSS'
-                    reason = "Trailing Stop" if outcome == 'win' else "Stop Loss (nicht detektiert)"
-                    logger.info(
-                        f"Trade-Abschluss ohne API-Erkennung → {reason} → {outcome_label} "
-                        f"(Entry: {entry_price:.4f}, aktuell: {last_price:.4f})"
-                    )
-                    record_trade_result(tracker_path, outcome, logger)
-                    try:
-                        self_learn_from_closed_trade(tracker_path, db, outcome_label, last_price, logger)
-                    except Exception as e:
-                        logger.error(f"Self-Learning Fehler: {e}")
-                    emoji = "✅" if outcome == 'win' else "🛑"
-                    try:
-                        send_message(
-                            telegram_config.get('bot_token'),
-                            telegram_config.get('chat_id'),
-                            f"{emoji} dnabot {reason}: {symbol} ({timeframe})\n"
-                            f"Genome aktualisiert → {outcome_label}"
-                        )
-                    except Exception:
-                        pass
+            outcome = None
+            if entry_price > 0:
+                if last_side == 'long':
+                    outcome = 'win' if current_price >= entry_price else 'loss'
                 else:
-                    logger.warning(f"Trade-Abschluss ohne Entry-Preis in Tracker — kein Self-Learning möglich.")
+                    outcome = 'win' if current_price <= entry_price else 'loss'
+                outcome_label = 'WIN' if outcome == 'win' else 'LOSS'
+                reason = "Trailing Stop" if outcome == 'win' else "Stop Loss"
+                logger.info(
+                    f"Trade geschlossen → {reason} → {outcome_label} "
+                    f"(Entry: {entry_price:.4f}, aktuell: {current_price:.4f})"
+                )
+                record_trade_result(tracker_path, outcome, logger)
+                try:
+                    self_learn_from_closed_trade(tracker_path, db, outcome_label, current_price, logger)
+                except Exception as e:
+                    logger.error(f"Self-Learning Fehler: {e}")
+                emoji = "✅" if outcome == 'win' else "🛑"
+                try:
+                    send_message(
+                        telegram_config.get('bot_token'),
+                        telegram_config.get('chat_id'),
+                        f"{emoji} dnabot {reason}: {symbol} ({timeframe})\n"
+                        f"Genome aktualisiert → {outcome_label}"
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.warning("Trade geschlossen, kein Entry-Preis im Tracker — kein Self-Learning.")
 
-                tracker = read_tracker(tracker_path)
-                tracker.update({
-                    "stop_loss_ids": [],
-                    "take_profit_ids": [],
-                    "status": "ok_to_trade",
-                })
-                tracker.pop('last_notified_entry_price', None)
-                tracker.pop('last_notified_side', None)
-                _write_tracker(tracker_path, tracker)
+            tracker = read_tracker(tracker_path)
+            tracker.update({"stop_loss_ids": [], "take_profit_ids": [], "status": "ok_to_trade"})
+            tracker.pop('last_notified_entry_price', None)
+            tracker.pop('last_notified_side', None)
+            _write_tracker(tracker_path, tracker)
 
         balance = exchange.fetch_balance_usdt()
         logger.info(f"Guthaben: {balance:.2f} USDT")

@@ -290,32 +290,37 @@ def notify_new_position(exchange: Exchange, position: dict, params: dict,
 
 def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
                   params: dict, tracker_path: str, logger: logging.Logger):
-    """Setzt TP/SL nach wenn sie fehlen (Sicherheitsnetz)."""
+    """Setzt Trailing Stop / SL nach wenn sie fehlen (Sicherheitsnetz)."""
     symbol = params['market']['symbol']
     pos_side = position['side']
-
-    triggers = exchange.fetch_open_trigger_orders(symbol)
     entry_price = float(position.get('entryPrice', 0))
 
-    tp_exists = any(
-        o.get('reduceOnly') and (
-            (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) > entry_price) or
-            (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) < entry_price)
+    triggers = exchange.fetch_open_trigger_orders(symbol)
+    trigger_ids = {o['id'] for o in triggers}
+
+    tracker = read_tracker(tracker_path)
+    tp_ids = set(tracker.get('take_profit_ids', []))
+    sl_ids = set(tracker.get('stop_loss_ids', []))
+
+    # TP = Trailing Stop → Erkennung über Tracker-IDs
+    tp_exists = bool(tp_ids & trigger_ids) if tp_ids else False
+
+    # SL = fester Trigger → Tracker-IDs, Fallback: Preis-Richtung
+    if sl_ids:
+        sl_exists = bool(sl_ids & trigger_ids)
+    else:
+        sl_exists = any(
+            o.get('reduceOnly') and (
+                (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) < entry_price) or
+                (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) > entry_price)
+            )
+            for o in triggers
         )
-        for o in triggers
-    )
-    sl_exists = any(
-        o.get('reduceOnly') and (
-            (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) < entry_price) or
-            (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) > entry_price)
-        )
-        for o in triggers
-    )
 
     if tp_exists and sl_exists:
         return
 
-    logger.warning(f"TP={tp_exists}, SL={sl_exists} fehlen — nachtragen...")
+    logger.warning(f"Trailing Stop={tp_exists}, SL={sl_exists} fehlen — nachtragen...")
 
     contracts = float(position.get('contracts', 0))
     if contracts == 0 or not genome_signal:
@@ -326,27 +331,27 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     if not tp_price or not sl_price:
         return
 
-    tracker = read_tracker(tracker_path)
-    new_tp_ids = tracker.get('take_profit_ids', [])
-    new_sl_ids = tracker.get('stop_loss_ids', [])
+    trailing_callback = params['risk'].get('trailing_callback_rate_pct', 1.0) / 100.0
+    new_tp_ids = list(tp_ids)
+    new_sl_ids = list(sl_ids)
 
     try:
         if not tp_exists and tp_price:
-            tp_side = 'sell' if pos_side == 'long' else 'buy'
-            o = exchange.place_trigger_market_order(symbol, tp_side, contracts, tp_price, reduce=True)
+            trail_side = 'sell' if pos_side == 'long' else 'buy'
+            o = exchange.place_trailing_stop_order(symbol, trail_side, contracts, tp_price, trailing_callback)
             if o and 'id' in o:
-                new_tp_ids.append(o['id'])
-            logger.info(f"TP nachgetragen @ {tp_price:.4f}")
+                new_tp_ids = [o['id']]
+            logger.info(f"Trailing Stop nachgetragen (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
             time.sleep(0.2)
 
         if not sl_exists and sl_price:
             sl_side = 'sell' if pos_side == 'long' else 'buy'
             o = exchange.place_trigger_market_order(symbol, sl_side, contracts, sl_price, reduce=True)
             if o and 'id' in o:
-                new_sl_ids.append(o['id'])
+                new_sl_ids = [o['id']]
             logger.info(f"SL nachgetragen @ {sl_price:.4f}")
     except Exception as e:
-        logger.error(f"Fehler beim Nachtragen von TP/SL: {e}", exc_info=True)
+        logger.error(f"Fehler beim Nachtragen von Trailing Stop/SL: {e}", exc_info=True)
 
     tracker['take_profit_ids'] = new_tp_ids
     tracker['stop_loss_ids'] = new_sl_ids
@@ -388,6 +393,7 @@ def place_entry_orders(
     risk = params['risk']
     leverage = risk['leverage']
     risk_pct = risk.get('risk_per_entry_pct', 1.0)
+    trailing_callback = risk.get('trailing_callback_rate_pct', 1.0) / 100.0
 
     # Risiko-Reduktion bei schlechter Performance
     skip, reason = should_skip_trading(tracker_path)
@@ -446,11 +452,11 @@ def place_entry_orders(
     new_sl_ids = []
 
     try:
-        # 1. TP (reduceOnly)
-        tp_order = exchange.place_trigger_market_order(symbol, tp_side, amount_coins, tp_price, reduce=True)
+        # 1. Trailing Stop (aktiviert @ TP-Preis = 2:1 R:R, dann trailing)
+        tp_order = exchange.place_trailing_stop_order(symbol, tp_side, amount_coins, tp_price, trailing_callback)
         if tp_order and 'id' in tp_order:
             new_tp_ids.append(tp_order['id'])
-        logger.info(f"TP gesetzt @ {tp_price:.4f}")
+        logger.info(f"Trailing Stop gesetzt (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
         time.sleep(0.2)
 
         # 2. SL (reduceOnly)
@@ -510,13 +516,14 @@ def place_entry_orders(
             f"🚀 dnabot SIGNAL: {symbol} ({timeframe})\n"
             f"{'─' * 32}\n"
             f"{direction_emoji} Richtung: {side.upper()}\n"
-            f"💰 Entry:   ${entry_price:.6f}\n"
-            f"🛑 SL:      ${sl_price:.6f} (-{sl_dist_pct:.2f}%)\n"
-            f"🎯 TP:      ${tp_price:.6f} (+{tp_dist_pct:.2f}%)\n"
-            f"📊 R:R:     1:{rr_ratio:.1f}\n"
-            f"⚙️ Hebel:   {leverage}x\n"
-            f"🛡️ Risiko:  {risk_pct:.1f}% ({risk_usdt:.2f} USDT)\n"
-            f"📦 Kontr.:  {amount_coins:.4f}\n"
+            f"💰 Entry:        ${entry_price:.6f}\n"
+            f"🛑 SL:           ${sl_price:.6f} (-{sl_dist_pct:.2f}%)\n"
+            f"🎯 Trailing (ab): ${tp_price:.6f} (+{tp_dist_pct:.2f}%)\n"
+            f"🔁 Callback:     {trailing_callback*100:.1f}%\n"
+            f"📊 Min R:R:      1:{rr_ratio:.1f}\n"
+            f"⚙️ Hebel:        {leverage}x\n"
+            f"🛡️ Risiko:       {risk_pct:.1f}% ({risk_usdt:.2f} USDT)\n"
+            f"📦 Kontr.:       {amount_coins:.4f}\n"
             f"{'─' * 32}\n"
             f"🧬 Genome:  {genome_signal['genome_id'][:8]}... | "
             f"Score: {genome_signal['score']:.3f} | "

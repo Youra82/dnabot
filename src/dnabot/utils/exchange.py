@@ -304,6 +304,28 @@ class Exchange:
             logger.error(f"Fehler trigger market {symbol}: {e}", exc_info=True)
             raise
 
+    def place_trailing_stop_order(self, symbol: str, side: str, amount: float,
+                                   activation_price: float, callback_rate_decimal: float, params={}):
+        """Bitget nativer Trailing Stop. callback_rate_decimal: z.B. 0.01 = 1%."""
+        if not self.markets:
+            return None
+        try:
+            amount_str = self.amount_to_precision(symbol, amount)
+            activation_str = self.price_to_precision(symbol, activation_price)
+            callback_pct = round(callback_rate_decimal * 100, 4)
+            p = {
+                'trailingTriggerPrice': activation_str,
+                'trailingPercent': callback_pct,
+                'reduceOnly': True,
+                'productType': 'USDT-FUTURES',
+                **params
+            }
+            logger.info(f"Trailing Stop: {side.upper()} {amount_str} {symbol} | Aktivierung @ {activation_str} | Callback {callback_pct:.2f}%")
+            return self.exchange.create_order(symbol, 'market', side, float(amount_str), params=p)
+        except Exception as e:
+            logger.error(f"Fehler trailing stop {symbol}: {e}", exc_info=True)
+            raise
+
     def place_trigger_limit_order(self, symbol: str, side: str, amount: float,
                                    trigger_price: float, price: float, reduce: bool = False, params={}):
         if not self.markets:

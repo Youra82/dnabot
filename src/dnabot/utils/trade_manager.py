@@ -183,7 +183,7 @@ def check_sl_triggered(exchange: Exchange, symbol: str, tracker_path: str,
         if sl_hit:
             logger.warning(f"STOP LOSS ausgelöst für {symbol}! (Preis {current_price:.4f} ≤ SL {sl_price:.4f})")
             tracker.update({
-                "status": "stop_loss_triggered",
+                "status": "ok_to_trade",
                 "last_side": last_side,
                 "stop_loss_ids": [],
                 "take_profit_ids": [],
@@ -741,30 +741,14 @@ def full_trade_cycle(
                     logger.warning(f"Trade-Abschluss ohne Entry-Preis in Tracker — kein Self-Learning möglich.")
 
                 tracker = read_tracker(tracker_path)
-                new_status = 'stop_loss_triggered' if outcome == 'loss' else 'ok_to_trade'
                 tracker.update({
                     "stop_loss_ids": [],
                     "take_profit_ids": [],
-                    "status": new_status,
+                    "status": "ok_to_trade",
                 })
                 tracker.pop('last_notified_entry_price', None)
                 tracker.pop('last_notified_side', None)
                 _write_tracker(tracker_path, tracker)
-                status = new_status
-
-        if status == 'stop_loss_triggered':
-            # Cooldown: Erst wieder handeln wenn Genome-Signal die Gegenrichtung signalisiert
-            last_side = tracker.get('last_side')
-            current_side = genome_signal.get('side') if genome_signal else None
-
-            if last_side and current_side and current_side != last_side:
-                logger.info(f"Cooldown beendet: Signal {current_side} (letzter SL war {last_side}).")
-                tracker['status'] = 'ok_to_trade'
-                _write_tracker(tracker_path, tracker)
-            else:
-                logger.info(f"Cooldown aktiv nach SL ({last_side}). Signal: {current_side}. Warte...")
-                db.close()
-                return
 
         balance = exchange.fetch_balance_usdt()
         logger.info(f"Guthaben: {balance:.2f} USDT")

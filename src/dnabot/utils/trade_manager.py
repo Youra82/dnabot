@@ -150,50 +150,72 @@ def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
 
 
 def check_sl_triggered(exchange: Exchange, symbol: str, tracker_path: str,
-                        logger: logging.Logger) -> bool:
+                        logger: logging.Logger, current_price: float = 0.0) -> bool:
+    """
+    SL ausgelöst wenn SL-ID nicht mehr unter offenen Trigger-Orders
+    UND aktueller Preis unter dem SL-Preis liegt (unterscheidet SL von TP-Storno).
+    """
     tracker = read_tracker(tracker_path)
     sl_ids = tracker.get('stop_loss_ids', [])
     if not sl_ids:
         return False
     try:
-        params = {'stop': True, 'productType': 'USDT-FUTURES'}
-        closed_orders = exchange.exchange.fetchClosedOrders(symbol, limit=20, params=params)
-        for o in closed_orders:
-            if o['id'] in sl_ids and o.get('status') == 'closed':
-                logger.warning(f"STOP LOSS ausgelöst für {symbol}! Order: {o['id']}")
-                pos_side = 'long' if o['side'] == 'sell' else 'short'
-                tracker.update({
-                    "status": "stop_loss_triggered",
-                    "last_side": pos_side,
-                    "stop_loss_ids": [],
-                    "take_profit_ids": [],
-                })
-                tracker.pop('last_notified_entry_price', None)
-                tracker.pop('last_notified_side', None)
-                _write_tracker(tracker_path, tracker)
-                return True
+        open_trigger_ids = {o['id'] for o in exchange.fetch_open_trigger_orders(symbol)}
+        gone = [oid for oid in sl_ids if oid not in open_trigger_ids]
+        if not gone:
+            return False
+
+        # Preis-Check: SL-Order weg wegen Auslösung oder wegen TP-Storno?
+        active_genome = tracker.get('active_genome') or {}
+        sl_price = active_genome.get('sl_price', 0)
+        last_side = tracker.get('last_side', 'long')
+
+        sl_hit = False
+        if sl_price > 0 and current_price > 0:
+            if last_side == 'long' and current_price <= sl_price:
+                sl_hit = True
+            elif last_side == 'short' and current_price >= sl_price:
+                sl_hit = True
+        else:
+            # Kein Preisvergleich möglich → annehmen dass SL ausgelöst wurde
+            sl_hit = True
+
+        if sl_hit:
+            logger.warning(f"STOP LOSS ausgelöst für {symbol}! (Preis {current_price:.4f} ≤ SL {sl_price:.4f})")
+            tracker.update({
+                "status": "stop_loss_triggered",
+                "last_side": last_side,
+                "stop_loss_ids": [],
+                "take_profit_ids": [],
+            })
+            tracker.pop('last_notified_entry_price', None)
+            tracker.pop('last_notified_side', None)
+            _write_tracker(tracker_path, tracker)
+            return True
+        else:
+            logger.info(f"SL-Order verschwunden, aber Preis ({current_price:.4f}) > SL ({sl_price:.4f}) → TP hat ausgelöst, SL wurde storniert.")
     except Exception as e:
         logger.error(f"Fehler beim Prüfen des SL: {e}", exc_info=True)
     return False
 
 
 def check_tp_triggered(exchange: Exchange, symbol: str, tracker_path: str,
-                        logger: logging.Logger) -> bool:
+                        logger: logging.Logger, current_price: float = 0.0) -> bool:
+    """TP/Trailing Stop ausgelöst wenn TP-ID nicht mehr unter offenen Trigger-Orders."""
     tracker = read_tracker(tracker_path)
     tp_ids = tracker.get('take_profit_ids', [])
     if not tp_ids:
         return False
     try:
-        params = {'stop': True, 'productType': 'USDT-FUTURES'}
-        closed_orders = exchange.exchange.fetchClosedOrders(symbol, limit=20, params=params)
-        for o in closed_orders:
-            if o['id'] in tp_ids and o.get('status') == 'closed':
-                logger.info(f"TAKE PROFIT ausgelöst für {symbol}!")
-                tracker.update({"status": "take_profit_triggered", "take_profit_ids": []})
-                tracker.pop('last_notified_entry_price', None)
-                tracker.pop('last_notified_side', None)
-                _write_tracker(tracker_path, tracker)
-                return True
+        open_trigger_ids = {o['id'] for o in exchange.fetch_open_trigger_orders(symbol)}
+        gone = [oid for oid in tp_ids if oid not in open_trigger_ids]
+        if gone:
+            logger.info(f"TAKE PROFIT / Trailing Stop ausgelöst für {symbol}!")
+            tracker.update({"status": "ok_to_trade", "take_profit_ids": [], "stop_loss_ids": []})
+            tracker.pop('last_notified_entry_price', None)
+            tracker.pop('last_notified_side', None)
+            _write_tracker(tracker_path, tracker)
+            return True
     except Exception as e:
         logger.error(f"Fehler beim Prüfen des TP: {e}", exc_info=True)
     return False
@@ -632,25 +654,24 @@ def full_trade_cycle(
         logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
 
     # 3. SL/TP Trigger prüfen
-    sl_triggered = check_sl_triggered(exchange, symbol, tracker_path, logger)
+    current_price = float(df['close'].iloc[-1])
+    sl_triggered = check_sl_triggered(exchange, symbol, tracker_path, logger, current_price)
     if sl_triggered:
         logger.warning(f"SL ausgelöst für {symbol}.")
         record_trade_result(tracker_path, 'loss', logger)
         # Self-Learning: Genome als Verlust markieren
         try:
-            last_price = float(df['close'].iloc[-1])
-            self_learn_from_closed_trade(tracker_path, db, 'LOSS', last_price, logger)
+            self_learn_from_closed_trade(tracker_path, db, 'LOSS', current_price, logger)
         except Exception as e:
             logger.error(f"Self-Learning Fehler nach SL: {e}")
 
-    tp_triggered = check_tp_triggered(exchange, symbol, tracker_path, logger)
+    tp_triggered = check_tp_triggered(exchange, symbol, tracker_path, logger, current_price)
     if tp_triggered:
         logger.info(f"TP ausgelöst für {symbol}.")
         record_trade_result(tracker_path, 'win', logger)
         # Self-Learning: Genome als Gewinn markieren
         try:
-            last_price = float(df['close'].iloc[-1])
-            self_learn_from_closed_trade(tracker_path, db, 'WIN', last_price, logger)
+            self_learn_from_closed_trade(tracker_path, db, 'WIN', current_price, logger)
         except Exception as e:
             logger.error(f"Self-Learning Fehler nach TP: {e}")
 

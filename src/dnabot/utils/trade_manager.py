@@ -677,6 +677,39 @@ def full_trade_cycle(
         tracker = read_tracker(tracker_path)
         status = tracker.get('status', 'ok_to_trade')
 
+        # Trailing-Stop-Erkennung: Position weg, aber weder SL noch TP erkannt
+        # → nativer Bitget Trailing Stop hat ausgelöst (nicht in fetchClosedOrders)
+        if not sl_triggered and not tp_triggered:
+            had_tp_ids = bool(tracker.get('take_profit_ids'))
+            had_sl_ids = bool(tracker.get('stop_loss_ids'))
+            if had_tp_ids or had_sl_ids:
+                logger.info(f"Position verschwunden ohne SL/TP-Erkennung → Trailing Stop ausgelöst → WIN")
+                record_trade_result(tracker_path, 'win', logger)
+                try:
+                    last_price = float(df['close'].iloc[-1])
+                    self_learn_from_closed_trade(tracker_path, db, 'WIN', last_price, logger)
+                except Exception as e:
+                    logger.error(f"Self-Learning Fehler nach Trailing Stop: {e}")
+                try:
+                    send_message(
+                        telegram_config.get('bot_token'),
+                        telegram_config.get('chat_id'),
+                        f"✅ dnabot Trailing Stop ausgelöst: {symbol} ({timeframe})\n"
+                        f"Genome aktualisiert → WIN"
+                    )
+                except Exception:
+                    pass
+                tracker = read_tracker(tracker_path)
+                tracker.update({
+                    "stop_loss_ids": [],
+                    "take_profit_ids": [],
+                    "status": "ok_to_trade",
+                })
+                tracker.pop('last_notified_entry_price', None)
+                tracker.pop('last_notified_side', None)
+                _write_tracker(tracker_path, tracker)
+                status = 'ok_to_trade'
+
         if status == 'stop_loss_triggered':
             # Cooldown: Erst wieder handeln wenn Genome-Signal die Gegenrichtung signalisiert
             last_side = tracker.get('last_side')

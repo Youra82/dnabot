@@ -589,6 +589,62 @@ rm artifacts/db/genome.db
 
 ---
 
+## Coin & Timeframe Empfehlungen
+
+DNABot ist eine **Genome-basierte Pattern-Strategie** — er kodiert Kerzen als Gen-Strings (z.B. `B3H-UH`) und sucht in der Datenbank nach 4/5/6-Kerzen-Sequenzen mit statistisch valider Win-Rate. Benötigt: Coins mit wiederkehrenden, lernbaren Kerzenmustern und ausreichend historische Daten für die Genome-Datenbank.
+
+### Effektive Zeitspannen der Sequenz-Fenster
+
+| TF | 4-Kerzen-Sequenz | 6-Kerzen-Sequenz | Muster-Qualität | Geeignet |
+|---|---|---|---|---|
+| 15m | 1h | 1.5h | Noise-dominiert | ❌ |
+| 30m | 2h | 3h | Marginal | ⚠️ |
+| 1h | 4h | 6h | Intraday-Session | ✅ |
+| **2h** | **8h** | **12h** | **Mehrere Sessions** | **✅✅** |
+| **4h** | **16h** | **24h** | **Voller Handelstag** | **✅✅** |
+| **6h** | **24h** | **36h** | **1.5 Tage — Swing** | **✅✅** |
+| 1d | 4d | 6d | Wochen-Muster | ✅ |
+
+Auf 15m/30m sind 4-6 Kerzen nur 1-3 Stunden — zu kurz für statistisch bedeutsame wiederkehrende Muster. Ab 2h deckt eine Sequenz komplette Handelssessions ab. Die Genome-Datenbank braucht außerdem ausreichend historische Kerzen für die Discovery-Phase.
+
+### Coin-Eignung
+
+| Coin | Kerzenmuster-Qualität | Wiederholbarkeit | DB-Datenbasis | Bewertung |
+|---|---|---|---|---|
+| **BTC** | Exzellent — institutionelle Muster | Sehr hoch durch globale Beobachtung | Längste Historie, beste Basis | ✅✅ Beste Wahl |
+| **ETH** | Exzellent — klare, strukturierte Kerzen | Sehr hoch | Sehr gute Datenbasis | ✅✅ Sehr gut |
+| **SOL** | Sehr gut — klare Richtungskerzen | Hoch | Gute Datenbasis ab 2020 | ✅ Gut |
+| **BNB** | Gut — stabile, wiederholende Muster | Gut | Lange Datenbasis | ✅ Gut |
+| **XRP** | Gut — klare Kerzenstruktur | Gut, besonders in Range-Phasen | Sehr lange Datenbasis | ✅ Gut |
+| **AVAX** | Gut — ordentliche Kerzenformen | Mittel-hoch | Ausreichend ab 2020 | ✅ Gut |
+| **LTC** | Gut — BTC-korreliert | Gut | Lange Datenbasis | ✅ Gut |
+| **ADA** | Mittel — wenig Körper in Seitwärts | Mittel | Gute Datenbasis | ⚠️ Mittel |
+| **ARB** | Mittel — junge Datenbasis | Noch aufbauend | Kurze Datenbasis (ab 2023) | ⚠️ Mittel |
+| **DOT** | Mittel — oft indifferente Kerzen | Gering | Ausreichend | ⚠️ Mittel |
+| **LINK** | Mittel — explosiv in Bull, träge sonst | Ungleichmäßig | Ausreichend | ⚠️ Mittel |
+| **DOGE** | Schlecht — sentiment-getriebene Muster | Niedrig, nicht statistisch | Vorhanden aber unbrauchbar | ❌ Schlecht |
+| **SHIB/PEPE** | Nicht lernbar — Pump-Candles | Keine Wiederholbarkeit | Zu kurze Datenbasis | ❌❌ Nicht geeignet |
+
+### Empfohlene Kombinationen (Ranking)
+
+| Rang | Kombination | Begründung |
+|---|---|---|
+| 🥇 1 | **BTC 4h / 6h** | Beste institutionelle Kerzenmuster, längste Datenbasis für DB |
+| 🥇 1 | **ETH 4h / 6h** | Ähnlich BTC, exzellente Sequenz-Qualität |
+| 🥈 2 | **BTC 2h / ETH 2h** | Mehr Sequenzen für schnelleres DB-Befüllen |
+| 🥉 3 | **SOL 4h** | Klare Directional-Candles, gute Sequenzabdeckung |
+| 4 | **BNB 4h** | Stabile, wiederholende Muster |
+| 4 | **XRP 4h** | Gute Sequenzen in Range- und Trendphasen |
+| 4 | **LTC 4h** | BTC-Muster, gute Datenbasis |
+| 5 | **AVAX 4h** | Gute Bullmarkt-Sequenzen |
+| ❌ | **Alles auf 15m / 30m** | Sequenzen zu kurz, kein statistischer Wert |
+| ❌ | **DOGE / SHIB** | Muster nicht wiederholbar, kein Lerneffekt |
+
+> **Hinweis:** Das Self-Learning greift nach jedem Trade. Je mehr Trades auf einem Coin/TF-Paar, desto besser wird die Genome-DB. BTC 4h liefert die schnellste und zuverlässigste DB-Reife.
+
+
+---
+
 ## Abhängigkeiten
 
 ```

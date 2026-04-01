@@ -875,7 +875,19 @@ def main():
             generate_portfolio_equity_chart(
                 best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
             )
-            generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
+            excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
+            if excel_file:
+                bot_token, chat_id = _get_telegram_credentials()
+                if bot_token and chat_id:
+                    sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
+                    from dnabot.utils.telegram import send_document
+                    send_document(
+                        bot_token, chat_id, excel_file,
+                        caption=f"dnabot Trades-Tabelle | {len(best_combo)} Coins | "
+                                f"Risiko: {best_risk}% | {best_metrics['n_trades']} Trades | "
+                                f"WR: {best_metrics['win_rate']:.1%} | Final: {best_metrics['final_equity']:.2f} USDT"
+                    )
+                    print(f"  {G}✓ Excel via Telegram gesendet.{NC}")
 
 
 if __name__ == '__main__':

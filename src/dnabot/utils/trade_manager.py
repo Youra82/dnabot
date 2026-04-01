@@ -614,26 +614,60 @@ def full_trade_cycle(
         had_sl_ids = bool(tracker.get('stop_loss_ids'))
 
         if had_tp_ids or had_sl_ids:
-            # Trade wurde geschlossen — Preis-Heuristik: Long↑=WIN, Short↓=WIN
+            # Trade wurde geschlossen — echte Ausführung via API ermitteln
             active_genome = tracker.get('active_genome') or {}
             entry_price = active_genome.get('entry_price', 0)
             last_side = tracker.get('last_side', 'long')
+            sl_price = active_genome.get('sl_price', 0)
 
+            # Bitget Trailing Stop führt eine Market-Order aus → in fetchClosedOrders(stop=False)
+            fill_price = None
             outcome = None
-            if entry_price > 0:
+            try:
+                closed_orders = exchange.fetch_recent_closed_market_orders(symbol, limit=10)
+                reduce_fills = [
+                    o for o in closed_orders
+                    if o.get('reduceOnly') and o.get('status') in ('closed', 'filled')
+                    and float(o.get('filled', 0) or 0) > 0
+                ]
+                if reduce_fills:
+                    # Neueste Ausführung nehmen
+                    latest = max(reduce_fills, key=lambda o: o.get('timestamp') or 0)
+                    fill_price = float(latest.get('average') or latest.get('price') or 0)
+                    logger.info(f"Trailing Stop-Ausführung gefunden: fill @ {fill_price:.6f}")
+            except Exception as e:
+                logger.error(f"Fehler beim Abrufen der Trailing-Stop-Ausführung: {e}")
+
+            if fill_price and fill_price > 0 and entry_price > 0:
                 if last_side == 'long':
-                    outcome = 'win' if current_price >= entry_price else 'loss'
+                    outcome = 'win' if fill_price > entry_price else 'loss'
                 else:
-                    outcome = 'win' if current_price <= entry_price else 'loss'
-                outcome_label = 'WIN' if outcome == 'win' else 'LOSS'
-                reason = "Trailing Stop" if outcome == 'win' else "Stop Loss"
+                    outcome = 'win' if fill_price < entry_price else 'loss'
+                reason = "Trailing Stop"
                 logger.info(
-                    f"Trade geschlossen → {reason} → {outcome_label} "
-                    f"(Entry: {entry_price:.4f}, aktuell: {current_price:.4f})"
+                    f"Trade geschlossen via {reason} → {'WIN' if outcome == 'win' else 'LOSS'} "
+                    f"(Entry: {entry_price:.6f}, Fill: {fill_price:.6f})"
                 )
+            elif entry_price > 0 and sl_price > 0:
+                # Kein Fill gefunden → SL-Preis aus Tracker als Fallback
+                if last_side == 'long':
+                    outcome = 'loss' if current_price <= sl_price * 1.005 else 'win'
+                else:
+                    outcome = 'loss' if current_price >= sl_price * 0.995 else 'win'
+                reason = "Stop Loss" if outcome == 'loss' else "Trailing Stop"
+                logger.warning(
+                    f"Kein Fill gefunden → Fallback SL-Preisvergleich → "
+                    f"{'WIN' if outcome == 'win' else 'LOSS'}"
+                )
+            else:
+                logger.warning("Trade geschlossen, aber weder Fill noch Entry/SL-Preis bekannt — kein Self-Learning.")
+
+            if outcome:
+                outcome_label = 'WIN' if outcome == 'win' else 'LOSS'
                 record_trade_result(tracker_path, outcome, logger)
                 try:
-                    self_learn_from_closed_trade(tracker_path, db, outcome_label, current_price, logger)
+                    price_for_learning = fill_price if fill_price else current_price
+                    self_learn_from_closed_trade(tracker_path, db, outcome_label, price_for_learning, logger)
                 except Exception as e:
                     logger.error(f"Self-Learning Fehler: {e}")
                 emoji = "✅" if outcome == 'win' else "🛑"
@@ -646,8 +680,6 @@ def full_trade_cycle(
                     )
                 except Exception:
                     pass
-            else:
-                logger.warning("Trade geschlossen, kein Entry-Preis im Tracker — kein Self-Learning.")
 
             tracker = read_tracker(tracker_path)
             tracker.update({"stop_loss_ids": [], "take_profit_ids": [], "status": "ok_to_trade"})

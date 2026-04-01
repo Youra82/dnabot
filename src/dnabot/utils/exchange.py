@@ -205,6 +205,20 @@ class Exchange:
             logger.error(f"Fehler trigger orders {symbol}: {e}")
             return []
 
+    def fetch_recent_closed_market_orders(self, symbol: str, limit: int = 10):
+        """Holt zuletzt ausgeführte Market-Orders (OHNE stop=True).
+        Bitget Trailing Stop führt eine Market-Order aus — diese erscheint hier."""
+        if not self.markets:
+            return []
+        try:
+            return self.exchange.fetchClosedOrders(
+                symbol, limit=limit,
+                params={'stop': False, 'productType': 'USDT-FUTURES'}
+            )
+        except Exception as e:
+            logger.error(f"Fehler fetch closed market orders {symbol}: {e}")
+            return []
+
     def cancel_order(self, id: str, symbol: str):
         if not self.markets:
             return None

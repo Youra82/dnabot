@@ -201,7 +201,16 @@ echo ""
 # Schritt 2: Backtest
 if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "Y" ]]; then
     echo -e "${YELLOW}[Schritt 2/3] Backtest...${NC}"
-    $PYTHON "$SCRIPT_DIR/run_backtest.py" --capital "$CAPITAL" --risk "$RISK"
+    if [ -n "${PAIRS:-}" ]; then
+        echo "$PAIRS" | while IFS=' ' read -r sym tf; do
+            echo -e "${CYAN}  Backtest: $sym ($tf)${NC}"
+            $PYTHON "$SCRIPT_DIR/run_backtest.py" \
+                --symbol "$sym" --timeframe "$tf" \
+                --capital "$CAPITAL" --risk "$RISK"
+        done
+    else
+        $PYTHON "$SCRIPT_DIR/run_backtest.py" --capital "$CAPITAL" --risk "$RISK"
+    fi
     echo ""
 fi
 

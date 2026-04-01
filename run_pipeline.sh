@@ -108,6 +108,8 @@ RUN_BT="${RUN_BT:-j}"
 
 CAPITAL=1000
 RISK=1.0
+BT_START_DATE_ARG=""
+BT_END_DATE_ARG=""
 if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "Y" ]]; then
     read -p "Startkapital in USDT [Standard: 1000]: " CAP_INPUT
     CAP_INPUT="${CAP_INPUT//[$'\r\n ']/}"
@@ -116,6 +118,34 @@ if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "
     read -p "Risiko pro Trade in % [Standard: 1.0]: " RISK_INPUT
     RISK_INPUT="${RISK_INPUT//[$'\r\n ']/}"
     if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=$RISK_INPUT; fi
+
+    # 70/30 Split?
+    echo ""
+    echo -e "${YELLOW}--- Train/Test Split ---${NC}"
+    echo "  70/30: Genome-Discovery auf 70% der Daten, Backtest auf letzten 30%"
+    echo "  Nein:  Backtest auf denselben Daten (In-Sample, optimistischer)"
+    echo ""
+    read -p "70/30 Out-of-Sample Split verwenden? (j/n) [Standard: j]: " USE_SPLIT
+    USE_SPLIT="${USE_SPLIT//[$'\r\n ']/}"
+    USE_SPLIT="${USE_SPLIT:-j}"
+
+    if [[ "$USE_SPLIT" == "j" || "$USE_SPLIT" == "J" || "$USE_SPLIT" == "y" || "$USE_SPLIT" == "Y" ]]; then
+        # History-Tage ermitteln (aus HISTORY_INPUT oder Automatik für 2h)
+        TOTAL_DAYS=730
+        if [[ "$HISTORY_INPUT" =~ ^[0-9]+$ ]]; then
+            TOTAL_DAYS=$HISTORY_INPUT
+        fi
+        TRAIN_DAYS=$(( TOTAL_DAYS * 70 / 100 ))
+        TEST_DAYS=$(( TOTAL_DAYS - TRAIN_DAYS ))
+        SPLIT_DATE=$(date -d "$TEST_DAYS days ago" +%F)
+        TODAY=$(date +%F)
+        BT_START_DATE_ARG="--start-date $SPLIT_DATE"
+        BT_END_DATE_ARG="--end-date $TODAY"
+        echo -e "${CYAN}ℹ  Training:  letzte ${TRAIN_DAYS} Tage (bis $SPLIT_DATE)${NC}"
+        echo -e "${CYAN}ℹ  Backtest:  letzte ${TEST_DAYS} Tage ($SPLIT_DATE → $TODAY)${NC}"
+        # History auf 70% begrenzen für scan_and_learn
+        HISTORY_ARG="--history-days $TRAIN_DAYS"
+    fi
 fi
 
 # ── Pipeline starten ─────────────────────────────────────────────────────────
@@ -206,10 +236,13 @@ if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "
             echo -e "${CYAN}  Backtest: $sym ($tf)${NC}"
             $PYTHON "$SCRIPT_DIR/run_backtest.py" \
                 --symbol "$sym" --timeframe "$tf" \
-                --capital "$CAPITAL" --risk "$RISK"
+                --capital "$CAPITAL" --risk "$RISK" \
+                $BT_START_DATE_ARG $BT_END_DATE_ARG
         done
     else
-        $PYTHON "$SCRIPT_DIR/run_backtest.py" --capital "$CAPITAL" --risk "$RISK"
+        $PYTHON "$SCRIPT_DIR/run_backtest.py" \
+            --capital "$CAPITAL" --risk "$RISK" \
+            $BT_START_DATE_ARG $BT_END_DATE_ARG
     fi
     echo ""
 fi

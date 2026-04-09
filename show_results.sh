@@ -51,13 +51,14 @@ if [ "$MODE" == "1" ]; then
 
     read -p "Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: " START_DATE
     START_DATE="${START_DATE//[$'\r\n ']/}"
-    if ! [[ "$START_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then START_DATE="2023-01-01"; fi
+    START_DATE=$(date -d "${START_DATE:-2023-01-01}" +%Y-%m-%d 2>/dev/null || echo "2023-01-01")
 
     read -p "Enddatum (JJJJ-MM-TT) [Standard: Heute]: " END_DATE
     END_DATE="${END_DATE//[$'\r\n ']/}"
+    [ -n "$END_DATE" ] && END_DATE=$(date -d "$END_DATE" +%Y-%m-%d 2>/dev/null || echo "")
 
     DATE_ARGS="--start-date $START_DATE"
-    [ -n "$END_DATE" ] && [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+    [ -n "$END_DATE" ] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
 
     echo ""
     if [ -z "$COINS_INPUT" ] && [ -z "$TF_INPUT" ]; then
@@ -76,10 +77,11 @@ elif [ "$MODE" == "2" ]; then
     echo "--- Bitte Konfiguration festlegen ---"
     read -p "Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: " START_DATE
     START_DATE="${START_DATE//[$'\r\n ']/}"
-    if ! [[ "$START_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then START_DATE="2023-01-01"; fi
+    START_DATE=$(date -d "${START_DATE:-2023-01-01}" +%Y-%m-%d 2>/dev/null || echo "2023-01-01")
 
     read -p "Enddatum (JJJJ-MM-TT) [Standard: Heute]: " END_DATE
     END_DATE="${END_DATE//[$'\r\n ']/}"
+    [ -n "$END_DATE" ] && END_DATE=$(date -d "$END_DATE" +%Y-%m-%d 2>/dev/null || echo "")
 
     read -p "Startkapital in USDT [Standard: 1000]: " CAPITAL
     CAPITAL="${CAPITAL//[$'\r\n ']/}"
@@ -90,7 +92,7 @@ elif [ "$MODE" == "2" ]; then
     if ! [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=1.0; fi
 
     DATE_ARGS="--start-date $START_DATE"
-    [ -n "$END_DATE" ] && [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+    [ -n "$END_DATE" ] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
 
     echo ""
     python3 run_manual_portfolio.py \
@@ -111,10 +113,11 @@ elif [ "$MODE" == "3" ]; then
     echo "--- Bitte Konfiguration festlegen ---"
     read -p "Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: " START_DATE
     START_DATE="${START_DATE//[$'\r\n ']/}"
-    if ! [[ "$START_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then START_DATE="2023-01-01"; fi
+    START_DATE=$(date -d "${START_DATE:-2023-01-01}" +%Y-%m-%d 2>/dev/null || echo "2023-01-01")
 
     read -p "Enddatum (JJJJ-MM-TT) [Standard: Heute]: " END_DATE
     END_DATE="${END_DATE//[$'\r\n ']/}"
+    [ -n "$END_DATE" ] && END_DATE=$(date -d "$END_DATE" +%Y-%m-%d 2>/dev/null || echo "")
 
     read -p "Startkapital in USDT [Standard: 1000]: " CAPITAL
     CAPITAL="${CAPITAL//[$'\r\n ']/}"
@@ -125,7 +128,7 @@ elif [ "$MODE" == "3" ]; then
     if ! [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=1.0; fi
 
     DATE_ARGS="--start-date $START_DATE"
-    [ -n "$END_DATE" ] && [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+    [ -n "$END_DATE" ] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
 
     echo ""
     python3 run_portfolio_optimizer.py \

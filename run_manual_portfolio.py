@@ -259,19 +259,32 @@ def print_result(selected, pm, capital, risk_pct, start_date, end_date):
 
 
 def send_telegram(report_text):
+    # Telegram-Credentials aus secret.json lesen
+    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
+    bot_token = ''
+    chat_id   = ''
     try:
-        with open(SETTINGS_PATH) as f:
-            settings = json.load(f)
+        with open(secret_path) as f:
+            secrets = json.load(f)
+        tg = secrets.get('telegram', {})
+        bot_token = tg.get('bot_token', '')
+        chat_id   = tg.get('chat_id', '')
     except Exception:
-        print(f"  {R}settings.json nicht lesbar — Telegram übersprungen.{NC}")
-        return
+        pass
 
-    cfg       = settings.get('dnabot', settings)
-    bot_token = cfg.get('telegram_bot_token') or settings.get('telegram_bot_token', '')
-    chat_id   = cfg.get('telegram_chat_id')   or settings.get('telegram_chat_id', '')
+    # Fallback: settings.json (legacy)
+    if not bot_token or not chat_id:
+        try:
+            with open(SETTINGS_PATH) as f:
+                settings = json.load(f)
+            cfg       = settings.get('dnabot', settings)
+            bot_token = bot_token or cfg.get('telegram_bot_token') or settings.get('telegram_bot_token', '')
+            chat_id   = chat_id   or cfg.get('telegram_chat_id')   or settings.get('telegram_chat_id', '')
+        except Exception:
+            pass
 
     if not bot_token or not chat_id:
-        print(f"  {Y}Kein Telegram-Token/Chat-ID in settings.json — übersprungen.{NC}")
+        print(f"  {Y}Kein Telegram-Token/Chat-ID in secret.json — übersprungen.{NC}")
         return
 
     sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))

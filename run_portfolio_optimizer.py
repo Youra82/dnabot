@@ -18,8 +18,8 @@ import os
 import sys
 import json
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from itertools import combinations
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
@@ -34,7 +34,8 @@ C   = '\033[0;36m'
 B   = '\033[1;37m'
 NC  = '\033[0m'
 
-RR_RATIO = 2.0
+RR_RATIO  = 2.0
+N_WORKERS = min(os.cpu_count() or 4, 8)
 
 
 def _get_telegram_credentials():
@@ -196,86 +197,87 @@ def compute_filtered_stats(trades: list, capital: float, risk_pct: float) -> dic
     )
 
 
-def best_portfolio_for_size(candidates: list, team_size: int, capital: float,
-                             risk_pct: float, max_dd_limit: float,
-                             force_coins: set = None) -> tuple:
-    """
-    Findet das beste Portfolio mit genau team_size Pairs (exhaustive).
-    Constraint: max. 1 TF pro Coin.
-    Returns: (best_metrics, best_combo) or (None, None)
-    """
-    # Nur 1 TF pro Coin zulassen: besten TF pro Coin vorausfiltern
-    coin_map = {}
-    for pair in candidates:
-        coin = pair['coin']
-        pnl  = pair['filtered_stats']['total_pnl_pct']
-        if pnl <= 0:
-            continue
-        if coin not in coin_map or pnl > coin_map[coin]['filtered_stats']['total_pnl_pct']:
-            coin_map[coin] = pair
-
-    eligible = list(coin_map.values())
-    if len(eligible) < team_size:
-        return None, None
-
-    best_metrics = None
-    best_combo   = None
-
-    for combo in combinations(eligible, team_size):
-        metrics = simulate_portfolio(list(combo), capital, risk_pct)
-        if metrics['max_dd'] > max_dd_limit:
-            continue
-        if best_metrics is None or metrics['total_pnl_pct'] > best_metrics['total_pnl_pct']:
-            best_metrics = metrics
-            best_combo   = list(combo)
-
-    return best_metrics, best_combo
+def _calmar(metrics: dict) -> float:
+    """Calmar Ratio: PnL% / MaxDD% (risiko-adjustierter Score, wie jaegerbot)."""
+    if metrics['max_dd'] > 0:
+        return metrics['total_pnl_pct'] / metrics['max_dd']
+    return metrics['total_pnl_pct']
 
 
 def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
                         max_dd_limit: float) -> tuple:
     """
-    Findet das optimale Portfolio durch schrittweise Team-Größen-Suche.
-    Stoppt wenn keine weitere Verbesserung mehr möglich ist.
+    Greedy-Algorithmus mit Calmar-Ratio-Score (wie jaegerbot).
+    Kandidaten pro Iteration werden parallel via ThreadPoolExecutor bewertet.
+    Constraint: max. 1 TF pro Coin (Bitget: 1 Position pro Symbol).
     """
-    # Gefilterte Einzel-Stats berechnen
+    # Einzel-Stats für alle Kandidaten berechnen
     for r in candidates:
         r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
 
-    best_overall_metrics = None
-    best_overall_combo   = None
-    max_possible_size    = len(set(r['coin'] for r in candidates
-                                   if r['filtered_stats']['total_pnl_pct'] > 0))
+    # Besten Kandidaten pro Coin vorauswählen (höchster Calmar, MaxDD-konform)
+    coin_best: dict = {}
+    for r in candidates:
+        st = r['filtered_stats']
+        if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit:
+            continue
+        coin  = r['coin']
+        score = _calmar(st)
+        if coin not in coin_best or score > _calmar(coin_best[coin]['filtered_stats']):
+            coin_best[coin] = r
 
-    for team_size in range(1, max_possible_size + 1):
-        n_combos = 1
-        # Berechne Anzahl Kombinationen für Progress-Anzeige
-        eligible_count = len([r for r in candidates
-                               if r['filtered_stats']['total_pnl_pct'] > 0])
-        from math import comb as math_comb
-        n_combos = math_comb(min(eligible_count, 7), team_size)
+    eligible = list(coin_best.values())
+    if not eligible:
+        return None, None
 
-        print(f"  Teste Teams mit {team_size} Coin(s) ({n_combos} Kombinationen) ...",
-              end='', flush=True)
+    eligible.sort(key=lambda r: _calmar(r['filtered_stats']), reverse=True)
 
-        metrics, combo = best_portfolio_for_size(
-            candidates, team_size, capital, risk_pct, max_dd_limit
-        )
+    # Star-Spieler: Einzelstrategie mit höchstem Calmar
+    best_team    = [eligible[0]]
+    best_metrics = simulate_portfolio(best_team, capital, risk_pct)
+    best_score   = _calmar(best_metrics)
+    candidate_pool = eligible[1:]
 
-        if combo is None:
-            print(f" {Y}kein gültiges Team (MaxDD-Limit zu eng){NC}")
-            break
+    print(f"  1/3 Star-Spieler: {best_team[0]['market']} {best_team[0]['timeframe']} "
+          f"(Calmar: {best_score:.2f})")
+    print(f"  3/3 Suche beste Team-Kollegen "
+          f"({len(candidate_pool)} Kandidaten, {N_WORKERS} Threads)...")
 
-        print(f" Bestes PnL: {G}+{metrics['total_pnl_pct']:.1f}%{NC}  MaxDD: {metrics['max_dd']:.1f}%")
+    while candidate_pool:
+        best_addition     = None
+        best_score_with   = best_score
+        best_metrics_with = best_metrics
 
-        if best_overall_metrics is None or metrics['total_pnl_pct'] > best_overall_metrics['total_pnl_pct']:
-            best_overall_metrics = metrics
-            best_overall_combo   = combo
+        # Snapshot des aktuellen Teams für parallele Ausführung
+        current_team = list(best_team)
+
+        def _eval(cand, _team=current_team):
+            m = simulate_portfolio(_team + [cand], capital, risk_pct)
+            if m['max_dd'] <= max_dd_limit:
+                return cand, m, _calmar(m)
+            return cand, None, -1.0
+
+        with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
+            futures = {executor.submit(_eval, c): c for c in candidate_pool}
+            for future in as_completed(futures):
+                cand, m, score = future.result()
+                if m is not None and score > best_score_with:
+                    best_score_with   = score
+                    best_addition     = cand
+                    best_metrics_with = m
+
+        if best_addition:
+            print(f"    + {best_addition['market']} {best_addition['timeframe']} "
+                  f"(Calmar: {best_score_with:.2f})")
+            best_team.append(best_addition)
+            best_score    = best_score_with
+            best_metrics  = best_metrics_with
+            candidate_pool.remove(best_addition)
         else:
-            print(f"\n  {Y}Keine weitere Verbesserung durch mehr Coins. Optimierung beendet.{NC}")
+            print(f"  {Y}Keine weitere Verbesserung durch mehr Coins. Optimierung beendet.{NC}")
             break
 
-    return best_overall_metrics, best_overall_combo
+    return best_metrics, best_team
 
 
 def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
@@ -309,6 +311,7 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
         )
 
     pnl_col = G if pm['total_pnl_pct'] > 0 else R
+    calmar  = _calmar(pm)
     print(f"\n  {'─' * (w - 2)}")
     print(f"  {B}Portfolio gesamt (gemeinsamer Kapital-Pool, alle Trades kompoundiert):{NC}")
     print(f"  Trades total:  {pm['n_trades']}")
@@ -316,6 +319,7 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
     print(f"  PnL:           {pnl_col}{'+' if pm['total_pnl_pct'] >= 0 else ''}{pm['total_pnl_pct']:.1f}%{NC}")
     print(f"  Final Equity:  {pm['final_equity']:.2f} USDT")
     print(f"  Max Drawdown:  {pm['max_dd']:.1f}%")
+    print(f"  Calmar Score:  {G}{calmar:.2f}{NC}  (PnL% / MaxDD% — höher = besser)")
     print(f"{'=' * w}\n")
 
 
@@ -749,21 +753,25 @@ def main():
     best_combo     = None
     best_risk      = args.risk
     best_equity    = 0.0
+    best_calmar    = -999.0
 
     for risk_pct in risk_levels:
         m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd)
-        if combo and m and m['max_dd'] <= args.max_dd and m['final_equity'] > best_equity:
-            best_metrics = m
-            best_combo   = combo
-            best_risk    = risk_pct
-            best_equity  = m['final_equity']
+        if combo and m and m['max_dd'] <= args.max_dd:
+            score = _calmar(m)
+            if score > best_calmar:
+                best_metrics = m
+                best_combo   = combo
+                best_risk    = risk_pct
+                best_equity  = m['final_equity']
+                best_calmar  = score
 
     if not best_combo:
         best_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
                         'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
         best_combo = []
 
-    print(f"\n  {G}Bestes Risiko: {best_risk}% → Final Equity: {best_equity:.2f} USDT{NC}\n")
+    print(f"\n  {G}Bestes Risiko: {best_risk}% → Calmar: {best_calmar:.2f} | Final Equity: {best_equity:.2f} USDT{NC}\n")
     print_result(best_combo, best_metrics, args.capital, best_risk, args.max_dd)
 
     if not best_combo:

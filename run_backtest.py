@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 
+TIMEFRAME_MINUTES = {'15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '1d': 1440}
+
+
+def get_warmup_start_date(start_date_str: str, timeframe: str, warmup_candles: int = 35) -> str:
+    """Früheres Startdatum für Indikator-Warmup (warmup_candles Kerzen vor start_date_str)."""
+    tf_minutes = TIMEFRAME_MINUTES.get(timeframe, 60)
+    warmup_days = max(int(warmup_candles * tf_minutes / (24 * 60)) + 1, 2)
+    start_dt = datetime.strptime(start_date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    return (start_dt - timedelta(days=warmup_days)).strftime('%Y-%m-%d')
+
 
 def fetch_history(exchange: Exchange, symbol: str, timeframe: str, history_days: int):
     end_date = datetime.now(timezone.utc)
@@ -162,9 +172,11 @@ def main():
         if df is None:
             continue
 
-        # Datumsfilter anwenden
+        # Datumsfilter: Warmup-Puffer vor start_date laden, damit Indikatoren
+        # schon fertig aufgewärmt sind wenn der gewünschte Zeitraum beginnt.
         if args.start_date:
-            df = df[df.index >= pd.Timestamp(args.start_date, tz='UTC')]
+            warmup_from = get_warmup_start_date(args.start_date, timeframe)
+            df = df[df.index >= pd.Timestamp(warmup_from, tz='UTC')]
         if args.end_date:
             df = df[df.index <= pd.Timestamp(args.end_date + ' 23:59:59', tz='UTC')]
         if df.empty:
@@ -180,6 +192,19 @@ def main():
             start_capital=capital,
             risk_per_trade_pct=risk_pct,
         )
+
+        # Trades auf gewünschten Zeitraum einschränken (Warmup-Trades herausfiltern)
+        if args.start_date:
+            sd = pd.Timestamp(args.start_date, tz='UTC')
+            filtered_trades = []
+            for t in results.get('trades', []):
+                ts = pd.Timestamp(str(t['entry_time']))
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize('UTC')
+                if ts >= sd:
+                    filtered_trades.append(t)
+            results['trades'] = filtered_trades
+
         print_backtest_summary(results, symbol, timeframe)
         save_results(results, symbol, timeframe)
         all_stats.append((symbol, timeframe, results.get('stats', {})))

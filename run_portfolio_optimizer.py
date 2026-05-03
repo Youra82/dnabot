@@ -600,15 +600,16 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
 
         ergebnis = 'TP erreicht' if outcome == 'WIN' else ('SL erreicht' if outcome == 'LOSS' else 'Timeout')
         rows.append({
-            'Nr':             i + 1,
-            'Datum':          t['entry_time'][:16].replace('T', ' '),
-            'Coin':           t['coin'],
-            'Timeframe':      t['timeframe'],
-            'Richtung':       t['direction'],
-            'Ergebnis':       ergebnis,
-            'Eingesetzt (USDT)': round(risk_amount, 4),
-            'PnL (USDT)':     round(pnl, 4),
-            'Gesamtkapital':  round(equity, 4),
+            'Nr':                    i + 1,
+            'Datum':                 t['entry_time'][:16].replace('T', ' '),
+            'Coin':                  t['coin'],
+            'Timeframe':             t['timeframe'],
+            'Richtung':              t['direction'],
+            'Ergebnis':              ergebnis,
+            'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
+            'Eingesetzt (USDT)':     round(risk_amount, 4),
+            'PnL (USDT)':            round(pnl, 4),
+            'Gesamtkapital':         round(equity, 4),
         })
 
     wb = openpyxl.Workbook()
@@ -631,8 +632,8 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     headers = list(rows[0].keys()) if rows else []
     col_widths = {
         'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
-        'Richtung': 10, 'Ergebnis': 14, 'Eingesetzt (USDT)': 18,
-        'PnL (USDT)': 14, 'Gesamtkapital': 16,
+        'Richtung': 10, 'Ergebnis': 14, 'Reale Bewegung (%)': 20,
+        'Eingesetzt (USDT)': 18, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
     }
 
     # Header
@@ -660,7 +661,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             cell.fill      = fill
             cell.border    = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('Eingesetzt (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
+            if key in ('Reale Bewegung (%)', 'Eingesetzt (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 

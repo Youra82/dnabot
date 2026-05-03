@@ -831,13 +831,11 @@ def main():
                     print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
     elif capital_changed:
         print(f"  {Y}Kapital geändert ({current_capital} → {args.capital} USDT) → überschreibe settings.json.{NC}\n")
-        if args.auto_write:
-            write_to_settings(best_combo, best_risk)
-            settings_updated = True
+        write_to_settings(best_combo, best_risk)
+        settings_updated = True
     else:
-        if args.auto_write:
-            write_to_settings(best_combo, best_risk)
-            settings_updated = True
+        write_to_settings(best_combo, best_risk)
+        settings_updated = True
 
     # Telegram: Ergebnis der settings-Entscheidung
     if args.auto_write:

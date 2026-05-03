@@ -588,9 +588,10 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     equity = capital
     rows = []
     for i, t in enumerate(all_trades):
-        risk_amount = equity * (risk_pct / 100.0)
-        sl_pct      = max(t['sl_pct'], 0.01)
-        outcome     = t['outcome']
+        equity_before = equity
+        risk_amount   = equity_before * (risk_pct / 100.0)
+        sl_pct        = max(t['sl_pct'], 0.01)
+        outcome       = t['outcome']
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO
         elif outcome == 'LOSS':
@@ -598,6 +599,11 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
         else:
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
         equity += pnl
+
+        # Marge = Positionsgröße / Leverage, gedeckelt auf verfügbares Kapital
+        raw_position = risk_amount / max(t.get('sl_pct', 1.0) / 100.0, 0.0001)
+        max_position = equity_before * max(leverage, 1)
+        margin = min(raw_position, max_position) / max(leverage, 1)
 
         ergebnis = 'TP erreicht' if outcome == 'WIN' else ('SL erreicht' if outcome == 'LOSS' else 'Timeout')
         rows.append({
@@ -609,7 +615,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             'Ergebnis':              ergebnis,
             'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
             'Riskiert (USDT)':       round(risk_amount, 4),
-            'Marge (USDT)':          round((risk_amount / max(t.get('sl_pct', 1.0) / 100.0, 0.0001)) / max(leverage, 1), 4),
+            'Marge (USDT)':          round(margin, 4),
             'PnL (USDT)':            round(pnl, 4),
             'Gesamtkapital':         round(equity, 4),
         })

@@ -155,6 +155,7 @@ def main():
     }
     capital  = args.capital
     risk_pct = args.risk or risk_cfg.get('risk_per_entry_pct', 1.0)
+    leverage = int(risk_cfg.get('leverage', 1))
 
     date_range = ""
     if args.start_date or args.end_date:
@@ -191,6 +192,7 @@ def main():
             params=params,
             start_capital=capital,
             risk_per_trade_pct=risk_pct,
+            leverage=leverage,
         )
 
         # Trades auf gewünschten Zeitraum einschränken (Warmup-Trades herausfiltern)

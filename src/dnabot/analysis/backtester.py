@@ -157,6 +157,7 @@ def run_backtest(
     risk_per_trade_pct: float = 1.0,
     max_hold_candles: int = 20,
     warmup_candles: int = 35,
+    leverage: int = 1,
 ) -> dict:
     """
     Führt einen vollständigen Backtest durch.
@@ -192,11 +193,15 @@ def run_backtest(
         # Trade simulieren
         trade = simulate_trade(signal, df, i, max_hold_candles)
 
-        # Equity berechnen
+        # Equity berechnen (Positionsgröße auf equity × leverage deckeln)
         risk_amount = equity * (risk_per_trade_pct / 100.0)
         sl_pct = trade['sl_pct']
         if sl_pct > 0:
             position_size = risk_amount / (sl_pct / 100.0)
+            max_position = equity * max(leverage, 1)
+            if position_size > max_position:
+                position_size = max_position
+                risk_amount = position_size * (sl_pct / 100.0)
             actual_pnl = position_size * (trade['pnl_pct'] / 100.0)
             equity += actual_pnl
         else:

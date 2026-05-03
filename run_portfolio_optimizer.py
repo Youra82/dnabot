@@ -607,7 +607,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             'Richtung':              t['direction'],
             'Ergebnis':              ergebnis,
             'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
-            'Eingesetzt (USDT)':     round(risk_amount, 4),
+            'Riskiert (USDT)':       round(risk_amount, 4),
             'PnL (USDT)':            round(pnl, 4),
             'Gesamtkapital':         round(equity, 4),
         })
@@ -633,7 +633,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     col_widths = {
         'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
         'Richtung': 10, 'Ergebnis': 14, 'Reale Bewegung (%)': 20,
-        'Eingesetzt (USDT)': 18, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
+        'Riskiert (USDT)': 16, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
     }
 
     # Header
@@ -661,7 +661,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             cell.fill      = fill
             cell.border    = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('Reale Bewegung (%)', 'Eingesetzt (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
+            if key in ('Reale Bewegung (%)', 'Riskiert (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 

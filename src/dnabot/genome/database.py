@@ -276,6 +276,21 @@ class GenomeDB:
     # Statistics
     # -------------------------------------------------------------------------
 
+    def get_pair_stats(self) -> list[dict]:
+        """Aggregierte Stats pro (market, timeframe) via SQL — kein Full-Table-Scan."""
+        rows = self._conn.execute("""
+            SELECT
+                market, timeframe,
+                COUNT(*) AS total,
+                SUM(active) AS active,
+                AVG(CASE WHEN active = 1 THEN score END) AS avg_score,
+                AVG(CAST(wins AS REAL) / MAX(total_occurrences, 1)) AS avg_wr
+            FROM genomes
+            GROUP BY market, timeframe
+            ORDER BY market, timeframe
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     def get_db_summary(self) -> dict:
         """Gibt eine Zusammenfassung der Datenbank zurück."""
         total = self._conn.execute("SELECT COUNT(*) FROM genomes").fetchone()[0]

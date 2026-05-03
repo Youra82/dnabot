@@ -92,24 +92,18 @@ def mode_overview(db: GenomeDB):
     print(f"  Aktive Genome:    {G}{summary['active_genomes']}{NC}")
     print(f"  Märkte in DB:     {', '.join(summary['markets']) or '—'}")
 
-    # Per-Markt Zusammenfassung
-    all_genomes = db.get_all_genomes()
-    by_pair: dict[tuple, list] = {}
-    for g in all_genomes:
-        key = (g['market'], g['timeframe'])
-        by_pair.setdefault(key, []).append(g)
-
-    if by_pair:
+    # Per-Markt Zusammenfassung (SQL-Aggregat — kein Full-Table-Scan)
+    pair_stats = db.get_pair_stats()
+    if pair_stats:
         print()
         print(f"  {'Markt':<22} {'TF':<5} {'Gesamt':>7} {'Aktiv':>6} {'Ø Score':>8} {'Ø WR':>7}")
         print(f"  {SEP2}")
-        for (mkt, tf), gs in sorted(by_pair.items()):
-            active = [g for g in gs if g['active']]
-            avg_score = sum(g['score'] for g in active) / max(len(active), 1)
-            avg_wr    = sum(_winrate(g) for g in gs) / max(len(gs), 1)
+        for p in pair_stats:
+            avg_score = p['avg_score'] or 0.0
+            avg_wr    = p['avg_wr'] or 0.0
             print(
-                f"  {mkt:<22} {tf:<5} {len(gs):>7} "
-                f"{G}{len(active):>6}{NC} {avg_score:>8.3f} {avg_wr:>6.1%}"
+                f"  {p['market']:<22} {p['timeframe']:<5} {p['total']:>7} "
+                f"{G}{p['active']:>6}{NC} {avg_score:>8.3f} {avg_wr:>6.1%}"
             )
 
     # Top 10 global

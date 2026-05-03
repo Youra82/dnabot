@@ -556,7 +556,8 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         print(f"  {Y}Telegram nicht konfiguriert — Chart nur lokal gespeichert.{NC}")
 
 
-def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: float):
+def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: float,
+                          leverage: int = 1):
     """Erstellt eine Excel-Tabelle mit allen Einzeltrades des optimalen Portfolios."""
     try:
         import openpyxl
@@ -608,6 +609,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             'Ergebnis':              ergebnis,
             'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
             'Riskiert (USDT)':       round(risk_amount, 4),
+            'Marge (USDT)':          round((risk_amount / max(t.get('sl_pct', 1.0) / 100.0, 0.0001)) / max(leverage, 1), 4),
             'PnL (USDT)':            round(pnl, 4),
             'Gesamtkapital':         round(equity, 4),
         })
@@ -633,7 +635,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     col_widths = {
         'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
         'Richtung': 10, 'Ergebnis': 14, 'Reale Bewegung (%)': 20,
-        'Riskiert (USDT)': 16, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
+        'Riskiert (USDT)': 16, 'Marge (USDT)': 14, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
     }
 
     # Header
@@ -661,7 +663,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             cell.fill      = fill
             cell.border    = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('Reale Bewegung (%)', 'Riskiert (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
+            if key in ('Reale Bewegung (%)', 'Riskiert (USDT)', 'Marge (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 
@@ -781,10 +783,12 @@ def main():
     # Aktuelles Portfolio aus settings.json simulieren zum Vergleich
     current_equity = 0.0
     current_capital = None
+    leverage = 1
     try:
         with open(SETTINGS_PATH) as f:
             current_settings = json.load(f)
         current_capital = current_settings.get('optimization_settings', {}).get('start_capital')
+        leverage = int(current_settings.get('risk_settings', {}).get('leverage', 1))
         current_strategies = current_settings.get('live_trading_settings', {}).get('active_strategies', [])
         if current_strategies:
             current_pairs = []
@@ -860,7 +864,7 @@ def main():
         generate_portfolio_equity_chart(
             best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
         )
-        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
+        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage)
         if excel_file:
             bot_token, chat_id = _get_telegram_credentials()
             if bot_token and chat_id:
@@ -882,7 +886,7 @@ def main():
             generate_portfolio_equity_chart(
                 best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
             )
-            excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk)
+            excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage)
             if excel_file:
                 bot_token, chat_id = _get_telegram_credentials()
                 if bot_token and chat_id:

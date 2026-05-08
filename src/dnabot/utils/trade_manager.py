@@ -317,6 +317,35 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     _write_tracker(tracker_path, tracker)
 
 
+# ─── Housekeeper ─────────────────────────────────────────────────────────────
+
+def housekeeper_routine(exchange: Exchange, symbol: str, logger: logging.Logger) -> bool:
+    """Räumt verbleibende TP/SL-Orders auf der Exchange auf (analog stbot).
+    Wird aufgerufen wenn keine offene Position mehr existiert."""
+    try:
+        logger.info(f"Housekeeper: Starte Aufräumroutine für {symbol}...")
+        exchange.cancel_all_orders_for_symbol(symbol)
+        time.sleep(1)
+
+        # Sicherheitsnetz: verwaiste Position schließen falls doch noch eine offen ist
+        position = exchange.fetch_open_positions(symbol)
+        if position:
+            pos_info = position[0]
+            close_side = 'sell' if pos_info['side'] == 'long' else 'buy'
+            logger.warning(f"Housekeeper: Verwaiste Position ({pos_info['side']}) — schließe...")
+            exchange.place_market_order(symbol, close_side, float(pos_info['contracts']), reduce=True)
+            time.sleep(3)
+
+        if exchange.fetch_open_positions(symbol):
+            logger.error("Housekeeper: Position konnte nicht geschlossen werden!")
+        else:
+            logger.info(f"Housekeeper: {symbol} ist sauber.")
+        return True
+    except Exception as e:
+        logger.error(f"Housekeeper-Fehler: {e}", exc_info=True)
+        return False
+
+
 # ─── Entry Orders ─────────────────────────────────────────────────────────────
 
 def place_entry_orders(
@@ -608,6 +637,9 @@ def full_trade_cycle(
         ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, logger)
 
     else:
+        # Position weg — Exchange aufräumen (verbleibende TP/SL-Orders stornieren)
+        housekeeper_routine(exchange, symbol, logger)
+
         # Position weg — prüfen ob ein aktiver Trade im Tracker war
         tracker = read_tracker(tracker_path)
         had_tp_ids = bool(tracker.get('take_profit_ids'))

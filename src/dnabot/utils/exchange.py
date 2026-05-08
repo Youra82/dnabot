@@ -245,6 +245,7 @@ class Exchange:
         if not self.markets:
             return 0
         count = 0
+        # Phase 1: Batch-Cancel (normal + trigger)
         for stop_flag in [False, True]:
             try:
                 self.exchange.cancel_all_orders(symbol, params={'productType': 'USDT-FUTURES', 'stop': stop_flag})
@@ -257,6 +258,20 @@ class Exchange:
                     logger.error(f"Fehler cancel_all (stop={stop_flag}): {e}")
             except Exception as e:
                 logger.error(f"Unerwarteter Fehler cancel_all: {e}")
+        # Phase 2: Zombie-Killer — einzelne verbleibende Trigger-Orders gezielt löschen
+        try:
+            open_triggers = self.fetch_open_trigger_orders(symbol)
+            for order in open_triggers:
+                try:
+                    self.exchange.cancel_order(order['id'], symbol, params={'stop': True, 'productType': 'USDT-FUTURES'})
+                    count += 1
+                    time.sleep(0.1)
+                except ccxt.OrderNotFound:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Zombie-Killer: Konnte Order {order['id']} nicht löschen: {e}")
+        except Exception as e:
+            logger.error(f"Zombie-Killer Fehler beim Abrufen der Trigger-Orders: {e}")
         return count
 
     def set_margin_mode(self, symbol, margin_mode='isolated'):

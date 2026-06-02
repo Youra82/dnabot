@@ -571,10 +571,24 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 #### Genome-Datenbank zurücksetzen
 
 ```bash
-# Achtung: löscht alle erlernten Muster!
+# Achtung: löscht alle erlernten Muster und Backtest-Ergebnisse!
 rm artifacts/db/genome.db
+rm -f artifacts/results/backtest_*.json
 ./run_pipeline.sh
 ```
+
+#### Aktives Portfolio löschen
+
+```bash
+python3 -c "
+import json
+s = json.load(open('settings.json'))
+s['live_trading_settings']['active_strategies'] = []
+json.dump(s, open('settings.json','w'), indent=2, ensure_ascii=False)
+"
+```
+
+Danach beim nächsten `./show_results.sh` → Modus 3 findet kein aktives Portfolio mehr und fragt ob das neue eingetragen werden soll.
 
 ---
 

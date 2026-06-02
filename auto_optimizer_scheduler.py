@@ -182,6 +182,18 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
 
     _log(f"START reason={reason}")
 
+    # DB und alte Backtest-Ergebnisse vor jedem Lauf zurücksetzen
+    db_path = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
+    if os.path.exists(db_path):
+        os.remove(db_path)
+        _log("DB_RESET genome.db geloescht")
+    results_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
+    if os.path.isdir(results_dir):
+        import glob
+        for f in glob.glob(os.path.join(results_dir, 'backtest_*.json')):
+            os.remove(f)
+        _log("DB_RESET backtest_*.json geloescht")
+
     with open(IN_PROGRESS_FILE, 'w') as f:
         f.write(start_time.isoformat())
 

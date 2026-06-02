@@ -73,7 +73,8 @@ class GenomeDB:
         scanned_at          TEXT NOT NULL,
         candles_processed   INTEGER DEFAULT 0,
         new_genomes         INTEGER DEFAULT 0,
-        updated_genomes     INTEGER DEFAULT 0
+        updated_genomes     INTEGER DEFAULT 0,
+        data_end_date       TEXT DEFAULT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_genomes_market_tf
@@ -110,6 +111,7 @@ class GenomeDB:
                 self._conn.execute(s)
         self._conn.commit()
         self._migrate()
+        self._migrate_scan_log()
 
     def _migrate(self):
         """Fügt fehlende Spalten zu bestehenden DBs hinzu (rückwärtskompatibel)."""
@@ -129,6 +131,13 @@ class GenomeDB:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE genomes ADD COLUMN {col} {definition}")
                 logger.info(f"DB Migration: Spalte '{col}' hinzugefügt.")
+        self._conn.commit()
+
+    def _migrate_scan_log(self):
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(scan_log)")}
+        if 'data_end_date' not in existing:
+            self._conn.execute("ALTER TABLE scan_log ADD COLUMN data_end_date TEXT DEFAULT NULL")
+            logger.info("DB Migration: scan_log Spalte 'data_end_date' hinzugefügt.")
         self._conn.commit()
 
     def close(self):
@@ -324,14 +333,16 @@ class GenomeDB:
 
     def log_scan(
         self, market: str, timeframe: str,
-        candles_processed: int, new_genomes: int, updated_genomes: int
+        candles_processed: int, new_genomes: int, updated_genomes: int,
+        data_end_date: str = None,
     ):
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("""
             INSERT INTO scan_log
-                (market, timeframe, scanned_at, candles_processed, new_genomes, updated_genomes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (market, timeframe, now, candles_processed, new_genomes, updated_genomes))
+                (market, timeframe, scanned_at, candles_processed, new_genomes, updated_genomes,
+                 data_end_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (market, timeframe, now, candles_processed, new_genomes, updated_genomes, data_end_date))
         self._conn.commit()
 
     def get_last_scan(self, market: str, timeframe: str) -> Optional[dict]:

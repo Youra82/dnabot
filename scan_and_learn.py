@@ -19,6 +19,7 @@ import sys
 import json
 import logging
 import argparse
+import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -270,6 +271,35 @@ def main():
         if df is None:
             continue
 
+        # Inkrementeller Modus: nur neue Kerzen seit letztem Scan verarbeiten
+        start_candle_index = 0
+        last_scan = db.get_last_scan(symbol, timeframe)
+        if last_scan and last_scan.get('data_end_date'):
+            try:
+                last_end_ts = pd.Timestamp(last_scan['data_end_date'])
+                if df.index.tzinfo is not None and last_end_ts.tzinfo is None:
+                    last_end_ts = last_end_ts.tz_localize('UTC')
+                elif df.index.tzinfo is None and last_end_ts.tzinfo is not None:
+                    last_end_ts = last_end_ts.tz_localize(None)
+                new_mask = df.index > last_end_ts
+                if new_mask.any():
+                    start_candle_index = int(new_mask.argmax())
+                    logger.info(
+                        f"  Inkrementell: {int(new_mask.sum())} neue Kerzen "
+                        f"(ab Index {start_candle_index}, nach {last_scan['data_end_date'][:10]})"
+                    )
+                else:
+                    logger.info(
+                        f"  Keine neuen Kerzen seit {last_scan['data_end_date'][:10]} — "
+                        f"Discovery übersprungen, Evolver läuft weiter."
+                    )
+                    start_candle_index = len(df)
+            except Exception as e:
+                logger.warning(f"  Inkrementell-Check fehlgeschlagen ({e}) — vollständiger Scan.")
+                start_candle_index = 0
+        else:
+            logger.info(f"  Erster Scan für {symbol} ({timeframe}) — vollständige Discovery.")
+
         # Discovery
         result = discover_genomes(
             df=df,
@@ -279,6 +309,7 @@ def main():
             sequence_lengths=sequence_lengths,
             discovery_horizon=discovery_horizon,
             move_threshold_pct=move_threshold,
+            start_candle_index=start_candle_index,
         )
         total_new += result.get('new_genomes', 0)
         total_updated += result.get('updated_genomes', 0)

@@ -113,7 +113,7 @@
     "risk_pct": 4.0,
     "max_drawdown_pct": 30,
     "send_telegram_on_completion": true,
-    "reset_db_before_optimize": true,
+    "reset_db_before_optimize": false,
     "reset_db_every_n_runs": 2
   }
 }

@@ -31,6 +31,7 @@ def discover_genomes(
     sequence_lengths: list[int] = None,
     discovery_horizon: int = 5,
     move_threshold_pct: float = 1.0,
+    start_candle_index: int = 0,
 ) -> dict:
     """
     Scannt historische OHLCV-Daten und entdeckt profitable Genome-Muster.
@@ -87,9 +88,10 @@ def discover_genomes(
             logger.debug(f"  seq_len={seq_len}: Nicht genug Kerzen ({len(genes)}). Überspringe.")
             continue
 
-        logger.debug(f"  Scanne seq_len={seq_len} | {max_start} Fenster...")
+        effective_start = max(start_candle_index, 0)
+        logger.debug(f"  Scanne seq_len={seq_len} | {max(0, max_start - effective_start)} Fenster (ab Index {effective_start})...")
 
-        for i in range(max_start):
+        for i in range(effective_start, max_start):
             seq_genes = genes[i:i + seq_len]
             sequence = genes_to_sequence_string(seq_genes)
 
@@ -140,12 +142,17 @@ def discover_genomes(
                 else:
                     updated_genomes += 1
 
-    candles_processed = len(df)
-    db.log_scan(market, timeframe, candles_processed, new_genomes, updated_genomes)
+    candles_processed = max(0, len(df) - start_candle_index)
+    if candles_processed > 0:
+        try:
+            data_end_date = df.index[-1].isoformat()
+        except Exception:
+            data_end_date = None
+        db.log_scan(market, timeframe, candles_processed, new_genomes, updated_genomes, data_end_date)
 
     logger.info(
         f"[Discovery] {market} ({timeframe}) abgeschlossen: "
-        f"{candles_processed} Kerzen, {new_genomes} neue Genome, {updated_genomes} aktualisiert."
+        f"{candles_processed} neue Kerzen, {new_genomes} neue Genome, {updated_genomes} aktualisiert."
     )
 
     return {

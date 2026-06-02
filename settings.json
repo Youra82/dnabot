@@ -112,6 +112,7 @@
     "start_capital": 100,
     "risk_pct": 4.0,
     "max_drawdown_pct": 30,
-    "send_telegram_on_completion": true
+    "send_telegram_on_completion": true,
+    "reset_db_before_optimize": true
   }
 }

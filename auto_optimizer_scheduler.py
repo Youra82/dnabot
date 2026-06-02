@@ -154,8 +154,11 @@ def _send_telegram(message: str):
     try:
         import requests
         api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        requests.post(api_url, data={'chat_id': chat_id, 'text': message}, timeout=10)
-        _log("TELEGRAM sent")
+        resp = requests.post(api_url, data={'chat_id': chat_id, 'text': message}, timeout=10)
+        if resp.ok:
+            _log("TELEGRAM sent")
+        else:
+            _log(f"TELEGRAM ERROR HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         _log(f"TELEGRAM ERROR {e}")
 

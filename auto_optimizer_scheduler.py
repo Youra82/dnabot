@@ -202,6 +202,7 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
     # DB und alte Backtest-Ergebnisse zurücksetzen (steuerbar via settings.json)
     # reset_db_before_optimize: true  → Reset aktiv
     # reset_db_every_n_runs: N        → Reset nur alle N Läufe (0 = jeder Lauf)
+    reset_info = "deaktiviert"
     if opt_settings.get('reset_db_before_optimize', False):
         import glob
         every_n   = int(opt_settings.get('reset_db_every_n_runs', 0))
@@ -219,11 +220,11 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
                 for f in glob.glob(os.path.join(results_dir, 'backtest_*.json')):
                     os.remove(f)
             _log(f"DB_RESET backtest_*.json geloescht (every_n={every_n})")
+            reset_info = f"✅ zurückgesetzt (alle {every_n} Läufe)" if every_n > 0 else "✅ zurückgesetzt"
         else:
             _log(f"DB_RESET uebersprungen — Lauf {counter}/{every_n}")
+            reset_info = f"⏭ übersprungen — Lauf {counter}/{every_n}"
         _set_run_counter(counter)
-    else:
-        _log("DB_RESET deaktiviert (reset_db_before_optimize=false)")
 
     with open(IN_PROGRESS_FILE, 'w') as f:
         f.write(start_time.isoformat())
@@ -232,6 +233,7 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
         _send_telegram(
             f"🚀 dnabot Auto-Optimizer GESTARTET\n"
             f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"DB-Reset: {reset_info}\n"
             f"Schritt 1: Genome Discovery (scan_and_learn)\n"
             f"Schritt 2: Portfolio-Optimierung"
         )

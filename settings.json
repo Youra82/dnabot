@@ -70,7 +70,8 @@
     ]
   },
   "scan_settings": {
-    "_note": "Alle Felder optional. Nicht gesetzt \u2192 automatisch nach Timeframe: history_days (4h\u2192730d), discovery_horizon (4h\u21926), move_threshold_pct (4h\u21921.0%), min_samples_to_activate (4h\u219280)."
+    "_note": "Alle Felder optional. Nicht gesetzt \u2192 automatisch nach Timeframe: history_days (4h\u2192730d), discovery_horizon (4h\u21926), move_threshold_pct (4h\u21921.0%), min_samples_to_activate (4h\u219280).",
+    "min_samples_to_activate": 2
   },
   "genome_settings": {
     "sequence_lengths": [

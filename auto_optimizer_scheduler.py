@@ -81,6 +81,23 @@ def _set_last_run():
     _log(f"LAST_RUN updated={now_str}")
 
 
+RUN_COUNTER_FILE = os.path.join(CACHE_DIR, '.db_reset_counter')
+
+def _get_run_counter() -> int:
+    if not os.path.exists(RUN_COUNTER_FILE):
+        return 0
+    try:
+        with open(RUN_COUNTER_FILE, 'r') as f:
+            return int(f.read().strip())
+    except (ValueError, OSError):
+        return 0
+
+def _set_run_counter(value: int):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(RUN_COUNTER_FILE, 'w') as f:
+        f.write(str(value))
+
+
 def _is_due(schedule: dict) -> tuple[bool, str]:
     if os.path.exists(IN_PROGRESS_FILE):
         _log("SKIP already_in_progress")
@@ -183,17 +200,28 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
     _log(f"START reason={reason}")
 
     # DB und alte Backtest-Ergebnisse zurücksetzen (steuerbar via settings.json)
+    # reset_db_before_optimize: true  → Reset aktiv
+    # reset_db_every_n_runs: N        → Reset nur alle N Läufe (0 = jeder Lauf)
     if opt_settings.get('reset_db_before_optimize', False):
         import glob
-        db_path = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
-        if os.path.exists(db_path):
-            os.remove(db_path)
-            _log("DB_RESET genome.db geloescht")
-        results_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
-        if os.path.isdir(results_dir):
-            for f in glob.glob(os.path.join(results_dir, 'backtest_*.json')):
-                os.remove(f)
-        _log("DB_RESET backtest_*.json geloescht")
+        every_n   = int(opt_settings.get('reset_db_every_n_runs', 0))
+        counter   = _get_run_counter()
+        counter  += 1
+        do_reset  = (every_n <= 0) or (counter >= every_n)
+        if do_reset:
+            counter = 0
+            db_path = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
+            if os.path.exists(db_path):
+                os.remove(db_path)
+                _log("DB_RESET genome.db geloescht")
+            results_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
+            if os.path.isdir(results_dir):
+                for f in glob.glob(os.path.join(results_dir, 'backtest_*.json')):
+                    os.remove(f)
+            _log(f"DB_RESET backtest_*.json geloescht (every_n={every_n})")
+        else:
+            _log(f"DB_RESET uebersprungen — Lauf {counter}/{every_n}")
+        _set_run_counter(counter)
     else:
         _log("DB_RESET deaktiviert (reset_db_before_optimize=false)")
 

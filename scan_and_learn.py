@@ -147,6 +147,23 @@ def load_secrets() -> dict:
         return json.load(f)
 
 
+def _send_telegram_warning(message: str, secrets: dict):
+    try:
+        import requests
+        acc = secrets.get('dnabot', [{}])[0]
+        token = acc.get('telegram_bot_token', '') or secrets.get('telegram', {}).get('bot_token', '')
+        chat_id = acc.get('telegram_chat_id', '') or secrets.get('telegram', {}).get('chat_id', '')
+        if not token or not chat_id:
+            return
+        requests.post(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data={'chat_id': chat_id, 'text': message},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def fetch_history(exchange: Exchange, symbol: str, timeframe: str, history_days: int):
     """Lädt historische OHLCV-Daten für die Genome-Discovery."""
     end_date = datetime.now(timezone.utc)
@@ -269,6 +286,9 @@ def main():
 
         df = fetch_history(exchange, symbol, timeframe, history_days)
         if df is None:
+            msg = f"⚠️ dnabot Discovery: {symbol} ({timeframe}) nicht auf Bitget verfügbar — übersprungen."
+            logger.warning(msg)
+            _send_telegram_warning(msg, secrets)
             continue
 
         # Inkrementeller Modus: nur neue Kerzen seit letztem Scan verarbeiten

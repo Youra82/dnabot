@@ -98,7 +98,13 @@ class Exchange:
                 time.sleep(self.exchange.rateLimit / 1000)
             except ccxt.RateLimitExceeded:
                 time.sleep(10)
+            except ccxt.BadSymbol as e:
+                logger.error(f"Symbol nicht auf Bitget verfügbar: {e}")
+                return None
             except Exception as e:
+                if 'does not have market symbol' in str(e):
+                    logger.error(f"Symbol nicht auf Bitget verfügbar: {e}")
+                    return None
                 logger.error(f"Fehler beim historischen Download: {e}")
                 time.sleep(5)
 

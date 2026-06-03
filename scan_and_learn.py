@@ -147,7 +147,13 @@ def load_secrets() -> dict:
         return json.load(f)
 
 
-def _send_telegram_warning(message: str, secrets: dict):
+_warned_symbols: set = set()
+
+def _send_telegram_warning(message: str, secrets: dict, dedup_key: str = None):
+    if dedup_key:
+        if dedup_key in _warned_symbols:
+            return
+        _warned_symbols.add(dedup_key)
     try:
         import requests
         acc = secrets.get('dnabot', [{}])[0]
@@ -288,7 +294,7 @@ def main():
         if df is None:
             msg = f"⚠️ dnabot Discovery: {symbol} ({timeframe}) nicht auf Bitget verfügbar — übersprungen."
             logger.warning(msg)
-            _send_telegram_warning(msg, secrets)
+            _send_telegram_warning(msg, secrets, dedup_key=f"{symbol}_{timeframe}")
             continue
 
         # Inkrementeller Modus: nur neue Kerzen seit letztem Scan verarbeiten

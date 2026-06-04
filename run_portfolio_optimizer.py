@@ -734,11 +734,21 @@ def main():
     args = parser.parse_args()
 
     # Startdatum-Fallback aus settings.json (wenn nicht per CLI angegeben)
+    # Bevorzugt: backtest_lookback_weeks (rollend: heute - N Wochen)
+    # Fallback:  backtest_start_date (fixes Datum, legacy)
     if args.start_date is None:
         try:
             with open(SETTINGS_PATH) as f:
                 _s = json.load(f)
-            args.start_date = _s.get('optimization_settings', {}).get('backtest_start_date')
+            opt = _s.get('optimization_settings', {})
+            lookback_weeks = opt.get('backtest_lookback_weeks')
+            if lookback_weeks:
+                from datetime import timedelta
+                args.start_date = (
+                    datetime.now(timezone.utc) - timedelta(weeks=int(lookback_weeks))
+                ).strftime('%Y-%m-%d')
+            else:
+                args.start_date = opt.get('backtest_start_date')
         except Exception:
             pass
 

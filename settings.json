@@ -3,43 +3,28 @@
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
       {
-        "symbol": "ETH/USDT:USDT",
+        "symbol": "HBAR/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "INJ/USDT:USDT",
         "timeframe": "6h",
         "active": true
       },
       {
-        "symbol": "ADA/USDT:USDT",
+        "symbol": "ETC/USDT:USDT",
         "timeframe": "6h",
         "active": true
       },
       {
-        "symbol": "BTC/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      },
-      {
-        "symbol": "DOGE/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      },
-      {
-        "symbol": "XRP/USDT:USDT",
+        "symbol": "DOT/USDT:USDT",
         "timeframe": "4h",
         "active": true
       },
       {
-        "symbol": "AAVE/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      },
-      {
-        "symbol": "BNB/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "LINK/USDT:USDT",
-        "timeframe": "2h",
+        "symbol": "XLM/USDT:USDT",
+        "timeframe": "4h",
         "active": true
       },
       {
@@ -48,29 +33,24 @@
         "active": true
       },
       {
-        "symbol": "ARB/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "INJ/USDT:USDT",
-        "timeframe": "30m",
+        "symbol": "SNX/USDT:USDT",
+        "timeframe": "6h",
         "active": true
       },
       {
         "symbol": "LTC/USDT:USDT",
-        "timeframe": "1h",
+        "timeframe": "4h",
         "active": true
       },
       {
-        "symbol": "DOT/USDT:USDT",
-        "timeframe": "1d",
+        "symbol": "VET/USDT:USDT",
+        "timeframe": "4h",
         "active": true
       }
     ]
   },
   "scan_settings": {
-    "_note": "Alle Felder optional. Nicht gesetzt \u2192 automatisch nach Timeframe: history_days (4h\u2192730d), discovery_horizon (4h\u21926), move_threshold_pct (4h\u21921.0%), min_samples_to_activate (4h\u219280).",
+    "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6), move_threshold_pct (4h→1.0%), min_samples_to_activate (4h→80).",
     "min_samples_to_activate": 2,
     "scan_all_db_pairs": true,
     "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies"
@@ -93,7 +73,7 @@
     "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar."
   },
   "risk_settings": {
-    "risk_per_entry_pct": 4.0,
+    "risk_per_entry_pct": 5.0,
     "leverage": 5,
     "margin_mode": "isolated",
     "rr_ratio": 2.0,

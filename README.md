@@ -447,6 +447,53 @@ Manuell erzwingen:
 
 ---
 
+## Walk-Forward Lookback-Analyse
+
+Der wöchentliche Auto-Optimizer schaut `backtest_lookback_weeks` Wochen zurück, um das beste Portfolio zu wählen. Zu kurz = reaktiv aber instabil. Zu lang = stabil aber blind für aktuelle Marktlage.
+
+Mit `run_walkforward.sh` wird dieser Wert empirisch ermittelt — **ohne Lookahead**:
+
+```
+Für jeden Lookback (1, 2, 4, 8, 12, 26 Wochen):
+    Wöchentlich vorarbeiten:
+        In-Sample (letzte N Wochen) → Portfolio auswählen
+        Out-of-Sample (nächste Woche) → Portfolio anwenden
+        Equity akkumulieren
+→ Equity-Kurven + Calmar-Vergleich → Telegram
+```
+
+#### Ausführung
+
+```bash
+chmod +x run_walkforward.sh
+./run_walkforward.sh
+```
+
+> **Tipp:** Für ein aussagekräftiges Ergebnis zuerst Backtest-Daten mit längerem Zeitraum generieren:
+> ```bash
+> ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
+> ```
+> Dann hat der Walk-Forward ~70 Test-Wochen statt nur ~20.
+
+#### Ergebnis
+
+Der Script schickt einen Chart via Telegram mit:
+- Equity-Kurven für jeden getesteten Lookback (Out-of-Sample)
+- Calmar-Score-Vergleich als Balkendiagramm
+- Empfehlung welchen Wert du in `settings.json` eintragen sollst
+
+#### Ergebnis übernehmen
+
+```json
+"optimization_settings": {
+    "backtest_lookback_weeks": 4
+}
+```
+
+Der Auto-Optimizer berechnet das Startdatum dann immer dynamisch als `heute − N Wochen` — das Fenster bleibt konstant, egal wann der Optimizer läuft.
+
+---
+
 ## Tägliche Verwaltung & Wichtige Befehle ⚙️
 
 #### Logs ansehen

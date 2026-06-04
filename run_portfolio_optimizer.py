@@ -34,8 +34,9 @@ C   = '\033[0;36m'
 B   = '\033[1;37m'
 NC  = '\033[0m'
 
-RR_RATIO  = 2.0
-N_WORKERS = min(os.cpu_count() or 4, 8)
+RR_RATIO          = 2.0
+N_WORKERS         = min(os.cpu_count() or 4, 8)
+MAX_NOTIONAL_USDT = 200_000.0
 
 
 def _get_telegram_credentials():
@@ -157,9 +158,9 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
     wins   = 0
 
     for t in all_trades:
-        risk_amount = equity * (risk_pct / 100.0)
-        outcome     = t['outcome']
         sl_pct      = max(t['sl_pct'], 0.01)
+        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        outcome     = t['outcome']
 
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO
@@ -379,9 +380,9 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
     wins      = 0
 
     for t in all_trades:
-        risk_amount = equity * (risk_pct / 100.0)
-        outcome     = t['outcome']
         sl_pct      = max(t['sl_pct'], 0.01)
+        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        outcome     = t['outcome']
         if outcome == 'WIN':
             equity += risk_amount * RR_RATIO
             wins   += 1
@@ -415,9 +416,9 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         ptimes = [str(pair_trades[0].get('entry_time', ''))] if pair_trades else []
         pvals  = [peq]
         for t in pair_trades:
-            ra  = peq * (risk_pct / 100.0)
-            out = t.get('outcome', 'LOSS')
             slp = max(t.get('sl_pct', 1.0), 0.01)
+            ra  = min(peq * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (slp / 100.0))
+            out = t.get('outcome', 'LOSS')
             if out == 'WIN':
                 peq += ra * RR_RATIO
             elif out == 'LOSS':
@@ -589,8 +590,8 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     rows = []
     for i, t in enumerate(all_trades):
         equity_before = equity
-        risk_amount   = equity_before * (risk_pct / 100.0)
         sl_pct        = max(t['sl_pct'], 0.01)
+        risk_amount   = min(equity_before * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome       = t['outcome']
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO
@@ -600,9 +601,9 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
         equity += pnl
 
-        # Marge = Positionsgröße / Leverage, gedeckelt auf verfügbares Kapital
-        raw_position = risk_amount / max(t.get('sl_pct', 1.0) / 100.0, 0.0001)
-        max_position = equity_before * max(leverage, 1)
+        # Marge = Positionsgröße / Leverage, gedeckelt auf verfügbares Kapital und Notional-Cap
+        raw_position = risk_amount / max(sl_pct / 100.0, 0.0001)
+        max_position = min(equity_before * max(leverage, 1), MAX_NOTIONAL_USDT)
         margin = min(raw_position, max_position) / max(leverage, 1)
 
         ergebnis = 'TP erreicht' if outcome == 'WIN' else ('SL erreicht' if outcome == 'LOSS' else 'Timeout')

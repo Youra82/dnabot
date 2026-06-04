@@ -21,7 +21,8 @@ C   = '\033[0;36m'
 B   = '\033[1;37m'
 NC  = '\033[0m'
 
-RR_RATIO = 2.0
+RR_RATIO          = 2.0
+MAX_NOTIONAL_USDT = 200_000.0
 
 
 def load_all_results(start_date=None, end_date=None):
@@ -96,9 +97,9 @@ def simulate_portfolio(pair_results, capital, risk_pct):
     wins   = 0
 
     for t in all_trades:
-        risk_amount = equity * (risk_pct / 100.0)
-        outcome     = t['outcome']
         sl_pct      = max(t['sl_pct'], 0.01)
+        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        outcome     = t['outcome']
 
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO

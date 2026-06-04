@@ -27,6 +27,7 @@ from dnabot.genome.database import GenomeDB
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
 
 MIN_NOTIONAL_USDT = 5.0
+MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
 FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
 
 
@@ -402,6 +403,12 @@ def place_entry_orders(
     sl_distance_price = abs(entry_price - sl_price)
     risk_amount_usd = balance * (risk_pct / 100.0)
     amount_coins = risk_amount_usd / sl_distance_price
+
+    # Notional-Cap: max. 200.000 USDT pro Trade
+    notional_uncapped = amount_coins * entry_price
+    if notional_uncapped > MAX_NOTIONAL_USDT:
+        amount_coins = MAX_NOTIONAL_USDT / entry_price
+        logger.info(f"Notional-Cap: {notional_uncapped:.0f} → {MAX_NOTIONAL_USDT:.0f} USDT ({amount_coins:.6f} Kontrakte)")
 
     # Mindest-Checks
     min_amount = exchange.fetch_min_amount_tradable(symbol)

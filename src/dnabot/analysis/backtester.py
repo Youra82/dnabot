@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
+MAX_NOTIONAL_USDT = 200_000.0
 
 
 def _find_best_signal(genes: list[str], market: str, timeframe: str,
@@ -201,6 +202,9 @@ def run_backtest(
             max_position = equity * max(leverage, 1)
             if position_size > max_position:
                 position_size = max_position
+                risk_amount = position_size * (sl_pct / 100.0)
+            if position_size > MAX_NOTIONAL_USDT:
+                position_size = MAX_NOTIONAL_USDT
                 risk_amount = position_size * (sl_pct / 100.0)
             actual_pnl = position_size * (trade['pnl_pct'] / 100.0)
             equity += actual_pnl

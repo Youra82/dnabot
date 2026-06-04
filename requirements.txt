@@ -25,5 +25,8 @@ openpyxl
 
 # SQLite ist in Python built-in — kein Paket nötig
 
+# Scientific Analysis (Bootstrap Signifikanztest)
+scipy
+
 # Testing
 pytest

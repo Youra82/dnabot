@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 RESULTS_DIR   = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
-OUTPUT_PATH   = '/tmp/dnabot_walkforward.png'
+OUTPUT_PATH      = '/tmp/dnabot_walkforward.png'
+OUTPUT_PATH_DOCS = os.path.join(PROJECT_ROOT, 'docs', 'walkforward_latest.png')
 
 LOOKBACK_WINDOWS  = [1, 2, 4, 8, 12, 26]   # Wochen
 RR_RATIO          = 2.0
@@ -366,6 +367,9 @@ def create_chart(results, week_starts, risk_pct, capital):
 
     plt.tight_layout(pad=2.5)
     plt.savefig(OUTPUT_PATH, dpi=150, bbox_inches='tight', facecolor='#0f172a')
+    # Kopie ins Repo (docs/) für README-Einbindung
+    os.makedirs(os.path.dirname(OUTPUT_PATH_DOCS), exist_ok=True)
+    plt.savefig(OUTPUT_PATH_DOCS, dpi=150, bbox_inches='tight', facecolor='#0f172a')
     plt.close()
 
     return OUTPUT_PATH, summary_data

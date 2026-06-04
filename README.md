@@ -487,6 +487,8 @@ chmod +x run_walkforward.sh
 
 #### Beispiel-Ergebnis (167 Wochen Daten, 141 Test-Wochen OOS)
 
+![Walk-Forward Lookback-Vergleich](docs/walkforward_latest.png)
+
 ```
 Lookback  1W   PnL=+81179%  | DD=12.4% | Calmar= 6559 | Leerwochen=53  ← zu wenig Daten/Woche
 Lookback  2W   PnL=+466513% | DD=19.5% | Calmar=23885 | Leerwochen=11  ← ★ bestes Calmar

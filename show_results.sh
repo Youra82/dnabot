@@ -109,11 +109,14 @@ elif [ "$MODE" == "3" ]; then
     MAX_DD="${MAX_DD//[$'\r\n ']/}"
     if ! [[ "$MAX_DD" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then MAX_DD=30; fi
 
+    # Default-Startdatum aus settings.json lesen
+    DEFAULT_START=$(python3 -c "import json; s=json.load(open('settings.json')); print(s.get('optimization_settings',{}).get('backtest_start_date','2023-01-01'))" 2>/dev/null || echo "2023-01-01")
+
     echo ""
     echo "--- Bitte Konfiguration festlegen ---"
-    read -p "Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: " START_DATE
+    read -p "Startdatum (JJJJ-MM-TT) [Standard: $DEFAULT_START]: " START_DATE
     START_DATE="${START_DATE//[$'\r\n ']/}"
-    START_DATE=$(date -d "${START_DATE:-2023-01-01}" +%Y-%m-%d 2>/dev/null || echo "2023-01-01")
+    START_DATE=$(date -d "${START_DATE:-$DEFAULT_START}" +%Y-%m-%d 2>/dev/null || echo "$DEFAULT_START")
 
     read -p "Enddatum (JJJJ-MM-TT) [Standard: Heute]: " END_DATE
     END_DATE="${END_DATE//[$'\r\n ']/}"

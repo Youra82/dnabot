@@ -733,6 +733,15 @@ def main():
     parser.add_argument('--auto-write', action='store_true')
     args = parser.parse_args()
 
+    # Startdatum-Fallback aus settings.json (wenn nicht per CLI angegeben)
+    if args.start_date is None:
+        try:
+            with open(SETTINGS_PATH) as f:
+                _s = json.load(f)
+            args.start_date = _s.get('optimization_settings', {}).get('backtest_start_date')
+        except Exception:
+            pass
+
     date_range = ""
     if args.start_date or args.end_date:
         date_range = f" | {args.start_date or '...'} → {args.end_date or 'heute'}"

@@ -449,10 +449,12 @@ Manuell erzwingen:
 
 ## Wissenschaftliche Analysen
 
-Alle Analysen sind unter einem einzigen interaktiven Befehl zusammengefasst:
+Alle 19 Analysen sind unter **einem einzigen interaktiven Befehl** zusammengefasst.
+Jede Analyse sendet automatisch einen **Chart + Zusammenfassung via Telegram**.
 
 ```bash
-./run_analysis.sh
+./run_analysis.sh                 # interaktives Menü
+./run_analysis.sh --no-telegram   # nur lokale Charts, kein Telegram
 ```
 
 ```
@@ -464,27 +466,36 @@ Alle Analysen sind unter einem einzigen interaktiven Befehl zusammengefasst:
    1) Walk-Forward Lookback-Analyse
    2) Slippage & Fee Impact
    3) Monte Carlo Simulation
-   4) Bootstrap Signifikanztest          (in Entwicklung)
+   4) Bootstrap Signifikanztest
 
-  ── Priorität 2: Gewinnoptimierung ──────────────────
-   5) RR-Ratio Optimierung               (Walk-Forward)
-   6) Score Threshold Sweep              (Walk-Forward)
-   7) Trailing Callback Optimierung      (Walk-Forward)
-   8) Parameter Sensitivity Analysis     (in Entwicklung)
+  ── Priorität 2: Direkte Gewinnoptimierung ──────────
+   5) RR-Ratio Optimierung          (Walk-Forward)
+   6) Score Threshold Sweep         (Walk-Forward)
+   7) Trailing Callback Optimierung (Walk-Forward)
+   8) Parameter Sensitivity         (Tornado-Diagramm)
 
   ── Priorität 3: Systemverbesserung ─────────────────
-   9) Multi-TF Confirmation              (in Entwicklung)
-  10) Genome Decay Analysis              (in Entwicklung)
-  11) Anti-Korrelations-Portfolio        (in Entwicklung)
-  12) Kelly Position Sizing              (in Entwicklung)
+   9) Multi-Timeframe Confirmation
+  10) Genome Decay Analysis
+  11) Anti-Korrelations-Portfolio
+  12) Kelly Position Sizing
 
-  ── Priorität 4-6: Weitere ──────────────────────────
-  13-19) ...                             (in Entwicklung)
+  ── Priorität 4–6: Feintuning & Portfolio ───────────
+  13) Regime Performance Analysis
+  14) Sequenzlängen-Analyse
+  15) Confluence Score
+  16) Volatilitäts-Filter Optimierung
+  17) Tageszeit-Analyse
+  18) Regime-adaptive Parameter
+  19) Drawdown Duration Analysis
+
+   0) Alle 19 Analysen nacheinander ausführen
 ```
 
-Alle fertigen Analysen senden Chart + Zusammenfassung via Telegram und bieten an, optimale Werte direkt in `settings.json` zu übernehmen.
+Charts werden unter `docs/` gespeichert und via Telegram gesendet.
 
-> **Tipp:** Für aussagekräftige Ergebnisse zuerst Backtest-Daten mit längerem Zeitraum generieren:
+> **Voraussetzung für Analysen 2–8, 11–12, 14–19:** Backtest-Daten müssen vorhanden sein.
+> Erst mit einem langen Zeitraum generieren:
 > ```bash
 > ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
 > ```
@@ -493,15 +504,13 @@ Alle fertigen Analysen senden Chart + Zusammenfassung via Telegram und bieten an
 
 ### 1) Walk-Forward Lookback-Analyse
 
-Ermittelt empirisch den optimalen `backtest_lookback_weeks`-Wert — **ohne Lookahead**.
+**Frage:** Wie viele Wochen zurück soll der Auto-Optimizer schauen um das beste Portfolio zu wählen?
 
-Der wöchentliche Auto-Optimizer läuft einmal pro Woche und schaut N Wochen zurück, um das beste Portfolio zu wählen. Zu kurz = reaktiv aber wenig Daten. Zu lang = stabil aber blind für aktuelle Marktlage.
+Der wöchentliche Auto-Optimizer läuft einmal pro Woche und wählt Pairs anhand ihrer Performance im Lookback-Fenster. Zu kurz = zu wenig Daten, reaktiv. Zu lang = blind für aktuelle Marktlage.
 
-```
-Jeden Samstag 3:00 Uhr (Beispiel):
-  → Welche Pairs haben in den letzten 2 Wochen am besten performt?
-  → Diese werden für die nächste Woche aktiviert.
-```
+**Methode:** Rolling Walk-Forward ohne Lookahead. Für jeden Lookback (1, 2, 4, 8, 12, 26 Wochen) wird jede Woche simuliert: In-Sample → Portfolio wählen → Out-of-Sample → Equity akkumulieren. Alle Lookbacks auf demselben OOS-Zeitraum (fairer Vergleich).
+
+**Ergebnis:** Equity-Kurven aller Lookbacks + Calmar-Tabelle via Telegram.
 
 #### Beispiel-Ergebnis (167 Wochen Daten, 141 Test-Wochen OOS)
 
@@ -516,54 +525,296 @@ Lookback 12W   DD=21.4% | Calmar=21898 | Leerwochen= 4
 Lookback 26W   DD=24.8% | Calmar=18118 | Leerwochen= 4
 ```
 
-**Leerwochen** = Wochen in denen kein qualifizierendes Pair gefunden wurde (zu wenig Trades im Fenster).
-
-> Die absoluten PnL-Zahlen sind in-sample-beeinflusst. Aussagekräftig ist der **relative Calmar-Vergleich**.
+**Leerwochen** = Wochen ohne qualifizierendes Pair (zu wenig Trades im Fenster).
 
 Ergebnis in `settings.json` übernehmen:
-
 ```json
-"optimization_settings": {
-    "backtest_lookback_weeks": 2
-}
+"optimization_settings": { "backtest_lookback_weeks": 2 }
 ```
-
-Der Auto-Optimizer berechnet das Startdatum dynamisch als `heute − N Wochen`. Die Analyse sollte gelegentlich wiederholt werden, da sich das optimale Fenster mit dem Markt verschieben kann.
 
 ---
 
 ### 2) Slippage & Fee Impact
 
-Zeigt wie verschiedene Gebühren-/Slippage-Niveaus die Performance beeinflussen und berechnet den **Break-Even-Punkt**: ab welchen Gebühren wird der Bot unrentabel?
+**Frage:** Ist der Bot nach realen Gebühren und Slippage noch profitabel?
 
-- Gebühren-Sweep: 0% bis 0.20% pro Seite (Bitget Taker = 0.06%)
-- Slippage-Sweep: 0% bis 0.20% zusätzlich bei SL-Execution
-- Ergebnis: Chart + Break-Even-Gebühr via Telegram
+**Methode:** Zwei Sweeps auf allen Backtest-Trades:
+- **Gebühren-Sweep:** 0% bis 0.20% pro Seite (Bitget Taker = 0.06%) — jeweils Round-Trip berechnet
+- **Slippage-Sweep:** 0% bis 0.20% zusätzlicher Verlust bei SL-Execution (fixer Gebührensatz 0.06%)
+
+**Ergebnis:** Balkendiagramm (PnL% je Gebühr/Slippage) + **Break-Even-Gebühr** via Telegram.
+
+**Was man lernt:** Wenn der Break-Even bei 0.04%/Seite liegt, ist das System sehr empfindlich — schon 0.06% Taker-Gebühr macht es unrentabel. Liegt er bei 0.15%+, hat das System robuste Gewinnmargen.
 
 ---
 
 ### 3) Monte Carlo Simulation
 
-Simuliert 10.000 zufällige Trade-Reihenfolgen auf Basis der echten Win/Loss-Verteilung.
+**Frage:** Was ist das realistisch schlechteste Ergebnis? Wie hoch ist das Ruin-Risiko?
 
-Beantwortet:
-- Was ist das schlechteste realistisch mögliche Ergebnis (5. Perzentil)?
-- Wie hoch ist die **Ruin-Wahrscheinlichkeit** (Equity < 50% des Starts)?
-- Welchen maximalen Drawdown muss man in 95% der Fälle einplanen?
+**Methode:** 10.000 zufällige Permutationen der echten Trade-Sequenz. Jede Permutation simuliert dieselben Trade-Ergebnisse in anderer Reihenfolge. Der Median und die Perzentile zeigen die Verteilung möglicher Ergebnisse.
+
+**Ergebnis:** Zwei Histogramme (Final-PnL-Verteilung + MaxDD-Verteilung) mit Perzentil-Markierungen via Telegram.
+
+| Kennzahl | Bedeutung |
+|---|---|
+| 5. Perzentil | Das schlechteste Ergebnis in 95% der Fälle |
+| Median | Erwartetes mittleres Ergebnis |
+| 95. Perzentil | Das beste Ergebnis in 95% der Fälle |
+| Ruin-Wahrsch. | Anteil Pfade mit Equity < 50% des Startkapitals |
+
+**Interpretation:** Ruin-Wahrscheinlichkeit < 1% = robust. > 10% = Risk% reduzieren.
 
 ---
 
-### 5–7) Parameter Walk-Forward Optimierung
+### 4) Bootstrap Signifikanztest
 
-Walk-Forward für einzelne Parameter — findet den **out-of-sample optimalen Wert**:
+**Frage:** Sind die Genome-Win-Raten statistisch signifikant oder nur Zufall?
 
-| Option | Parameter | Testwerte |
+**Methode:** Binomialtest pro aktivem Genome. Nullhypothese: Win-Rate = 50% (Zufall). Einseitiger Test: Ist die gemessene WR signifikant **über** 50%? Ergebnis: p-Wert pro Genome. Signifikant = p < 0.05.
+
+**Ergebnis:** Scatter (WR vs. Sample-Größe, grün = signifikant) + p-Wert-Histogramm via Telegram.
+
+**Was man lernt:** Wenn 80% der aktiven Genome statistisch signifikant sind → das System erkennt echte Muster. Wenn nur 30% signifikant sind → viele Genome sind Zufall und sollten durch strengere `min_score`/`min_winrate` gefiltert werden.
+
+**Voraussetzung:** `pip install scipy` (einmalig auf dem VPS).
+
+---
+
+### 5) RR-Ratio Optimierung (Walk-Forward)
+
+**Frage:** Ist 2:1 R:R wirklich optimal oder ist 1.5:1 oder 3:1 besser?
+
+**Methode:** Walk-Forward für RR-Werte 1.0, 1.5, 2.0, 2.5, 3.0 — identisch zu Analyse 1, aber der Parameter ist das RR. Kein Lookahead: jede Woche wird mit dem in der Vorwoche gewählten RR simuliert.
+
+**Ergebnis:** Equity-Kurven aller RR-Werte + Calmar-Tabelle via Telegram. Optimaler Wert direkt in `settings.json` übernehmbar.
+
+**Direkte Auswirkung:** Das RR bestimmt den Aktivierungspreis des Trailing Stops. Zu hoch = Trailing Stop wird selten aktiviert (viele SL-Hits). Zu niedrig = früher in Gewinn aber kleiner Gewinn pro Win.
+
+---
+
+### 6) Score Threshold Sweep (Walk-Forward)
+
+**Frage:** Welcher `min_score` liefert das beste Verhältnis aus Trade-Anzahl und Win-Rate?
+
+**Methode:** Walk-Forward für min_score-Werte 0.01, 0.05, 0.08, 0.12, 0.15, 0.20, 0.30.
+- Niedrig = mehr Trades, niedrigere Win-Rate (mehr Rauschen erlaubt)
+- Hoch = weniger Trades, höhere Win-Rate (nur starke Signale)
+
+**Ergebnis:** Equity-Kurven aller Schwellwerte + Calmar-Tabelle via Telegram. Optimaler Wert direkt in `settings.json` übernehmbar (`genome_settings.min_score`).
+
+---
+
+### 7) Trailing Callback Optimierung (Walk-Forward)
+
+**Frage:** Ist 1% Callback optimal oder verlässt man Gewinner zu früh / zu spät?
+
+**Methode:** Walk-Forward für Callback-Werte 0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0%.
+- Klein = enger Trailing Stop → wird früher ausgelöst, weniger Gewinn pro Trade
+- Groß = weiter Trailing Stop → mehr Gewinn bei starken Bewegungen, mehr Gegenbewegung toleriert
+
+**Ergebnis:** Equity-Kurven + Calmar-Tabelle via Telegram. Optimaler Wert direkt in `settings.json` übernehmbar (`risk_settings.trailing_callback_rate_pct`).
+
+---
+
+### 8) Parameter Sensitivity Analysis
+
+**Frage:** Wie robust ist das System? Machen kleine Parameteränderungen alles kaputt?
+
+**Methode:** Jeder der 5 Haupt-Parameter wird ±30% variiert (in 7 Stufen: −30%, −20%, −10%, 0%, +10%, +20%, +30%). Calmar-Änderung gegenüber Basis wird gemessen.
+
+| Parameter | Basis | Testbereich |
 |---|---|---|
-| **5** | RR-Ratio | 1.0, 1.5, 2.0, 2.5, 3.0 |
-| **6** | Score Threshold (`min_score`) | 0.01, 0.05, 0.08, 0.12, 0.15, 0.20, 0.30 |
-| **7** | Trailing Callback % | 0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0 |
+| `rr_ratio` | 2.0 | 1.4 – 2.6 |
+| `min_score` | 0.08 | 0.056 – 0.104 |
+| `min_winrate` | 0.45 | 0.315 – 0.585 |
+| `half_life_days` | 180 | 126 – 234 |
+| `trailing_callback_pct` | 1.0 | 0.7 – 1.3 |
 
-Identische Methodik wie Walk-Forward Lookback: kein Lookahead, OOS-Validierung. Optimaler Wert kann direkt in `settings.json` übernommen werden.
+**Ergebnis:** Tornado-Diagramm via Telegram.
+- Breiter Balken = sensitiver Parameter = Overfitting-Risiko
+- Schmaler Balken = robuster Parameter = System ist stabil
+
+**Was man lernt:** Wenn `min_score` einen sehr breiten Balken hat → der Bot ist stark vom Schwellwert abhängig → Vorsicht mit manuellen Anpassungen.
+
+---
+
+### 9) Multi-Timeframe Confirmation
+
+**Frage:** Performen Signale besser wenn sie gleichzeitig auf mehreren Coins/Pairs auftreten?
+
+**Methode:** Trades werden nach Anzahl gleichzeitiger Signale im Zeitfenster (Standard: 2h) gruppiert. `n=1` = Einzelsignal, `n=2` = zwei Signals gleichzeitig, `n=3+` = starkes Confluence.
+
+**Ergebnis:** Win-Rate und Calmar nach Confluence-Stufe via Telegram.
+
+**Was man lernt:** Wenn `n=2+` signifikant besser ist → zukünftig nur bei Mehrfach-Bestätigung handeln (→ Confluence Score, Analyse 15). Wenn kein Unterschied → Einzelsignale sind ausreichend.
+
+---
+
+### 10) Genome Decay Analysis
+
+**Frage:** Verlieren Genome mit der Zeit ihre Vorhersagekraft? Ist `half_life_days=180` korrekt?
+
+**Methode:** Aktive Genome werden nach Alter (Tage seit `last_seen`) in Altersgruppen eingeteilt: 0–30d, 30–60d, 60–90d, 90–180d, 180–365d, >365d. Ø Win-Rate und Ø Score pro Gruppe.
+
+**Ergebnis:** Balkendiagramm (WR nach Alter) + Score-Verlauf vs. theoretischem Decay-Verlauf via Telegram.
+
+**Was man lernt:**
+- Win-Rate fällt mit dem Alter → Decay ist real → `half_life_days` korrekt gesetzt
+- Win-Rate konstant über alle Alter → Decay zu aggressiv → `half_life_days` erhöhen
+- Stark fallende Win-Rate nach 60d → Decay zu langsam → `half_life_days` reduzieren
+
+---
+
+### 11) Anti-Korrelations-Portfolio
+
+**Frage:** Welche Pairs verlieren und gewinnen selten gleichzeitig?
+
+**Methode:** Aus den Backtest-Trades wird pro Pair eine wöchentliche PnL-Zeitreihe erstellt. Pearson-Korrelationsmatrix aller Pairs. Negativ korrelierte Pairs kompensieren sich gegenseitig → geringerer Portfolio-Drawdown.
+
+**Ergebnis:** Heatmap der Korrelationsmatrix + Liste der besten (anti-korrelierten) Pair-Kombinationen via Telegram.
+
+**Was man lernt:** Pairs die stark positiv korrelieren (>0.7) sollten nicht gleichzeitig im Portfolio sein — sie fallen und steigen gemeinsam, ohne Diversifikationsvorteil.
+
+---
+
+### 12) Kelly Position Sizing
+
+**Frage:** Wie viel sollte man pro Genome riskieren — mathematisch optimal?
+
+**Methode:** Kelly-Kriterium pro aktivem Genome:
+```
+Kelly% = (WR × RR − (1−WR)) / RR
+Half-Kelly (empfohlen) = Kelly% / 2
+```
+
+Genome mit hoher Win-Rate und gutem RR dürfen mehr riskiert werden. Schwache Genome weniger.
+
+**Ergebnis:** Ranking aller aktiven Genome nach optimalem Kelly-Einsatz + Vergleich aktueller vs. Kelly-Risk via Telegram.
+
+**Was man lernt:** Wenn das aktuelle `risk_per_entry_pct=5%` für die meisten Genome deutlich über Half-Kelly liegt → das Risiko ist zu hoch und sollte reduziert werden. Kelly gibt die mathematisch optimale Wachstumsrate des Kapitals.
+
+---
+
+### 13) Regime Performance Analysis
+
+**Frage:** In welchen Marktphasen funktioniert welches Genome am besten?
+
+**Methode:** Direkt aus der Genome-Datenbank — die per-Regime-Spalten (`occ_trend/wins_trend`, `occ_range/wins_range`, `occ_neutral/wins_neutral`) werden aggregiert und verglichen.
+
+**Ergebnis:** Balkendiagramm (Win-Rate pro Regime pro Coin/Pair) + Tabelle via Telegram.
+
+**Was man lernt:** Wenn TREND-Regime durchgängig schlechte Win-Raten zeigt → TREND aus `allowed_regimes` in `settings.json` entfernen. Das kann die Gesamtperformance erheblich verbessern.
+
+```json
+"genome_settings": { "allowed_regimes": ["RANGE", "NEUTRAL"] }
+```
+
+---
+
+### 14) Sequenzlängen-Analyse
+
+**Frage:** Sind 4er, 5er oder 6er Sequenzen profitabler? Erzeugen 5er mehr Rauschen?
+
+**Methode:** Walk-Forward getrennt für jede Sequenzlänge: einmal nur 4er Sequenzen, einmal nur 5er, einmal nur 6er, einmal alle kombiniert. Calmar-Vergleich.
+
+**Ergebnis:** Equity-Kurven nach Sequenzlänge via Telegram.
+
+**Was man lernt:** Wenn 5er Sequenzen deutlich schlechter abschneiden → aus `sequence_lengths` entfernen. Das vereinfacht das System und reduziert Rauschen in der Genome-DB.
+
+```json
+"genome_settings": { "sequence_lengths": [4, 6] }
+```
+
+---
+
+### 15) Confluence Score
+
+**Frage:** Was passiert wenn man nur handelt wenn mehrere Genome gleichzeitig dasselbe signalisieren?
+
+**Methode:** Trades aus dem Backtest werden nach Anzahl gleichzeitiger gleichgerichteter Signale im Zeitfenster gefiltert. Simuliert: `min_confluence=1` (alles), `=2` (2+ Genome), `=3` (starkes Signal).
+
+**Ergebnis:** Vergleich Win-Rate, Trade-Anzahl und Calmar je Confluence-Schwellwert via Telegram.
+
+**Was man lernt:** Höhere Confluence = weniger Trades aber tendenziell bessere Qualität. Der Trade-off zwischen Trade-Anzahl und WR zeigt den optimalen Schwellwert.
+
+---
+
+### 16) Volatilitäts-Filter Optimierung
+
+**Frage:** Der HIGH_VOL-Filter blockiert bei ATR > 1.5× ATR-MA — ist das der richtige Schwellwert?
+
+**Methode:** Simuliert das Portfolio mit verschiedenen ATR-Schwellwerten: 1.0×, 1.5×, 2.0×, 2.5×, 3.0×.
+- Niedrig = mehr Trades geblockt (konservativ)
+- Hoch = mehr Trades erlaubt (aggressiv, auch bei hoher Volatilität)
+
+**Ergebnis:** Calmar-Vergleich aller Schwellwerte via Telegram.
+
+**Was man lernt:** Wenn 2.0× besser ist als 1.5× → der aktuelle Filter ist zu aggressiv und blendet profitable Trades aus. Direkter Handlungshinweis für den Code.
+
+---
+
+### 17) Tageszeit-Analyse
+
+**Frage:** Performen Genome-Signale zu bestimmten Tageszeiten besser?
+
+**Methode:** Alle Backtest-Trades werden nach Einstiegs-Uhrzeit (UTC) in Sessions gruppiert:
+- **Asia:** 01:00–09:00 UTC
+- **Europe:** 09:00–17:00 UTC
+- **US:** 17:00–01:00 UTC
+
+Win-Rate, PnL und Calmar pro Session.
+
+**Ergebnis:** Balkendiagramm + Heatmap (Stunde vs. Win-Rate) via Telegram.
+
+**Was man lernt:** Krypto handelt 24/7 — wenn bestimmte Stunden konstant negative Calmar zeigen, kann man Entry-Zeiten einschränken. Oft zeigt sich: London/NY-Overlap (13–17 UTC) ist liquider und Signale sind zuverlässiger.
+
+---
+
+### 18) Regime-adaptive Parameter
+
+**Frage:** Sollte man in TREND anderen RR verwenden als in RANGE?
+
+**Methode:** Simuliert das Portfolio mit verschiedenen RR-Gruppen je nach Timeframe:
+- **Kurzfristig (1h/2h):** RR 1.5, 2.0, 2.5
+- **Mittelfristig (4h/6h):** RR 2.0, 2.5, 3.0
+- Alle Kombinationen werden verglichen.
+
+**Ergebnis:** Heatmap (Timeframe-Gruppe vs. RR-Wert → Calmar) via Telegram.
+
+**Was man lernt:** Wenn 1h-Pairs mit RR=1.5 besser performen als mit RR=2.0 → für kurzfristige Pairs sollte ein niedrigerer RR gesetzt werden. Grundlage für future regime-adaptive Konfiguration.
+
+---
+
+### 19) Drawdown Duration Analysis
+
+**Frage:** Wie lange dauern Drawdown-Phasen? Wie lange muss man einen Verlust aussitzen?
+
+**Methode:** Aus der chronologischen Equity-Kurve werden alle Drawdown-Perioden extrahiert: Beginn (Abweichung vom Peak), Tief (maximale Abweichung), Ende (Rückkehr auf altes High). Dauer und Tiefe jeder Periode werden statistisch ausgewertet.
+
+**Ergebnis:** Drei Charts via Telegram:
+1. **Scatter:** Drawdown-Tiefe vs. Erholungsdauer (Zusammenhang?)
+2. **Histogramm:** Verteilung der Erholungsdauern
+3. **Equity-Kurve:** Visuell mit rot markierten Drawdown-Zonen
+
+| Kennzahl | Bedeutung |
+|---|---|
+| Ø Erholungsdauer | Wie lange man typischerweise aussitzen muss |
+| 90. Perzentil | In 90% der Fälle war die Erholung kürzer als X Tage |
+| Längste Erholung | Extremfall — mentale Vorbereitung |
+
+**Was man lernt:** Wenn die durchschnittliche Erholungsdauer > 60 Tage → das System reagiert langsam auf Verluste. Ursache prüfen: zu wenige Trades? Zu enger SL? Oder einfach normales Marktverhalten?
+
+---
+
+### Option 0 — Alle Analysen auf einmal
+
+```bash
+./run_analysis.sh
+# → Auswahl: 0
+```
+
+Führt alle 19 Analysen nacheinander mit Standard-Parametern aus (Kapital 100 USDT, Risk 2.5%). Analysen die keine Daten finden (z.B. leere Genome-DB oder keine Backtest-Daten) werden übersprungen ohne Fehler. Alle Charts landen in `docs/` und werden via Telegram gesendet.
 
 ---
 

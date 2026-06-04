@@ -447,24 +447,55 @@ Manuell erzwingen:
 
 ---
 
-## Walk-Forward Lookback-Analyse
+## Wissenschaftliche Analysen
 
-Der wöchentliche Auto-Optimizer schaut `backtest_lookback_weeks` Wochen zurück, um das beste Portfolio zu wählen. Zu kurz = reaktiv aber instabil. Zu lang = stabil aber blind für aktuelle Marktlage.
+Alle Analysen sind unter einem einzigen interaktiven Befehl zusammengefasst:
 
-Mit `run_walkforward.sh` wird dieser Wert empirisch ermittelt — **ohne Lookahead**:
-
-```
-Für jeden Lookback (1, 2, 4, 8, 12, 26 Wochen):
-    Wöchentlich vorarbeiten:
-        In-Sample (letzte N Wochen) → Portfolio auswählen
-        Out-of-Sample (nächste Woche) → Portfolio anwenden
-        Equity akkumulieren
-→ Equity-Kurven + Calmar-Vergleich → Telegram
+```bash
+./run_analysis.sh
 ```
 
-#### Was `backtest_lookback_weeks` bedeutet
+```
+=======================================================
+  dnabot — Wissenschaftliche Analysen
+=======================================================
 
-Der Optimizer **läuft weiterhin einmal wöchentlich** (konfigurierbar in `schedule`). Die Wochen-Zahl ist das **Selektionsfenster**: Wenn er läuft, schaut er genau N Wochen zurück und wählt daraus die aktuell besten Coins/Strategien für die nächste Woche aus.
+  ── Priorität 1: Fundament ──────────────────────────
+   1) Walk-Forward Lookback-Analyse
+   2) Slippage & Fee Impact
+   3) Monte Carlo Simulation
+   4) Bootstrap Signifikanztest          (in Entwicklung)
+
+  ── Priorität 2: Gewinnoptimierung ──────────────────
+   5) RR-Ratio Optimierung               (Walk-Forward)
+   6) Score Threshold Sweep              (Walk-Forward)
+   7) Trailing Callback Optimierung      (Walk-Forward)
+   8) Parameter Sensitivity Analysis     (in Entwicklung)
+
+  ── Priorität 3: Systemverbesserung ─────────────────
+   9) Multi-TF Confirmation              (in Entwicklung)
+  10) Genome Decay Analysis              (in Entwicklung)
+  11) Anti-Korrelations-Portfolio        (in Entwicklung)
+  12) Kelly Position Sizing              (in Entwicklung)
+
+  ── Priorität 4-6: Weitere ──────────────────────────
+  13-19) ...                             (in Entwicklung)
+```
+
+Alle fertigen Analysen senden Chart + Zusammenfassung via Telegram und bieten an, optimale Werte direkt in `settings.json` zu übernehmen.
+
+> **Tipp:** Für aussagekräftige Ergebnisse zuerst Backtest-Daten mit längerem Zeitraum generieren:
+> ```bash
+> ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
+> ```
+
+---
+
+### 1) Walk-Forward Lookback-Analyse
+
+Ermittelt empirisch den optimalen `backtest_lookback_weeks`-Wert — **ohne Lookahead**.
+
+Der wöchentliche Auto-Optimizer läuft einmal pro Woche und schaut N Wochen zurück, um das beste Portfolio zu wählen. Zu kurz = reaktiv aber wenig Daten. Zu lang = stabil aber blind für aktuelle Marktlage.
 
 ```
 Jeden Samstag 3:00 Uhr (Beispiel):
@@ -472,41 +503,24 @@ Jeden Samstag 3:00 Uhr (Beispiel):
   → Diese werden für die nächste Woche aktiviert.
 ```
 
-#### Ausführung
-
-```bash
-chmod +x run_walkforward.sh
-./run_walkforward.sh
-```
-
-> **Tipp:** Für ein aussagekräftiges Ergebnis zuerst Backtest-Daten mit längerem Zeitraum generieren:
-> ```bash
-> ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
-> ```
-> Dann hat der Walk-Forward ~140 Test-Wochen statt nur ~20.
-
 #### Beispiel-Ergebnis (167 Wochen Daten, 141 Test-Wochen OOS)
 
 ![Walk-Forward Lookback-Vergleich](docs/walkforward_latest.png)
 
 ```
-Lookback  1W   PnL=+81179%  | DD=12.4% | Calmar= 6559 | Leerwochen=53  ← zu wenig Daten/Woche
-Lookback  2W   PnL=+466513% | DD=19.5% | Calmar=23885 | Leerwochen=11  ← ★ bestes Calmar
-Lookback  4W   PnL=+548490% | DD=25.0% | Calmar=21937 | Leerwochen= 7
-Lookback  8W   PnL=+312107% | DD=33.9% | Calmar= 9220 | Leerwochen= 4
-Lookback 12W   PnL=+469310% | DD=21.4% | Calmar=21898 | Leerwochen= 4
-Lookback 26W   PnL=+449242% | DD=24.8% | Calmar=18118 | Leerwochen= 4
+Lookback  1W   DD=12.4% | Calmar= 6559 | Leerwochen=53  ← zu wenig Daten
+Lookback  2W   DD=19.5% | Calmar=23885 | Leerwochen=11  ← ★ bestes Calmar
+Lookback  4W   DD=25.0% | Calmar=21937 | Leerwochen= 7
+Lookback  8W   DD=33.9% | Calmar= 9220 | Leerwochen= 4
+Lookback 12W   DD=21.4% | Calmar=21898 | Leerwochen= 4
+Lookback 26W   DD=24.8% | Calmar=18118 | Leerwochen= 4
 ```
 
-**Warum 2 Wochen optimal war:**
-- **1 Woche**: zu wenig Daten pro Woche → 53 Leerwochen (oft kein qualifizierendes Pair gefunden), kaum Trades
-- **2 Wochen**: genug Daten + noch frisch genug um aktuelle Marktlage zu erfassen → bestes Calmar
-- **4+ Wochen**: mehr Stabilität, aber reagiert langsamer auf Marktveränderungen
+**Leerwochen** = Wochen in denen kein qualifizierendes Pair gefunden wurde (zu wenig Trades im Fenster).
 
-> Die absoluten PnL-Zahlen (hundertausende %) sind in-sample-beeinflusst und nicht 1:1 realisierbar.
-> Aussagekräftig ist der **relative Calmar-Vergleich** zwischen den Lookback-Fenstern.
+> Die absoluten PnL-Zahlen sind in-sample-beeinflusst. Aussagekräftig ist der **relative Calmar-Vergleich**.
 
-#### Ergebnis übernehmen
+Ergebnis in `settings.json` übernehmen:
 
 ```json
 "optimization_settings": {
@@ -514,7 +528,42 @@ Lookback 26W   PnL=+449242% | DD=24.8% | Calmar=18118 | Leerwochen= 4
 }
 ```
 
-Der Auto-Optimizer berechnet das Startdatum dann immer dynamisch als `heute − N Wochen` — das Fenster bleibt konstant, egal wann der Optimizer läuft. Die Analyse sollte gelegentlich wiederholt werden, da sich das optimale Fenster mit veränderten Marktbedingungen verschieben kann.
+Der Auto-Optimizer berechnet das Startdatum dynamisch als `heute − N Wochen`. Die Analyse sollte gelegentlich wiederholt werden, da sich das optimale Fenster mit dem Markt verschieben kann.
+
+---
+
+### 2) Slippage & Fee Impact
+
+Zeigt wie verschiedene Gebühren-/Slippage-Niveaus die Performance beeinflussen und berechnet den **Break-Even-Punkt**: ab welchen Gebühren wird der Bot unrentabel?
+
+- Gebühren-Sweep: 0% bis 0.20% pro Seite (Bitget Taker = 0.06%)
+- Slippage-Sweep: 0% bis 0.20% zusätzlich bei SL-Execution
+- Ergebnis: Chart + Break-Even-Gebühr via Telegram
+
+---
+
+### 3) Monte Carlo Simulation
+
+Simuliert 10.000 zufällige Trade-Reihenfolgen auf Basis der echten Win/Loss-Verteilung.
+
+Beantwortet:
+- Was ist das schlechteste realistisch mögliche Ergebnis (5. Perzentil)?
+- Wie hoch ist die **Ruin-Wahrscheinlichkeit** (Equity < 50% des Starts)?
+- Welchen maximalen Drawdown muss man in 95% der Fälle einplanen?
+
+---
+
+### 5–7) Parameter Walk-Forward Optimierung
+
+Walk-Forward für einzelne Parameter — findet den **out-of-sample optimalen Wert**:
+
+| Option | Parameter | Testwerte |
+|---|---|---|
+| **5** | RR-Ratio | 1.0, 1.5, 2.0, 2.5, 3.0 |
+| **6** | Score Threshold (`min_score`) | 0.01, 0.05, 0.08, 0.12, 0.15, 0.20, 0.30 |
+| **7** | Trailing Callback % | 0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0 |
+
+Identische Methodik wie Walk-Forward Lookback: kein Lookahead, OOS-Validierung. Optimaler Wert kann direkt in `settings.json` übernommen werden.
 
 ---
 

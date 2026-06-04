@@ -80,8 +80,7 @@ def main():
     ax1.set_xlabel('Sample-Größe (n)')
     ax1.set_ylabel('Win-Rate')
     ax1.set_title(f'Win-Rate vs. Sample-Größe\n'
-                  f'{G if len(sig) > 0 else R}{len(sig)} signifikant (grün){NC}, '
-                  f'{len(nsig)} nicht signifikant (grau)')
+                  f'{len(sig)} signifikant (grün), {len(nsig)} nicht signifikant (grau)')
     ax1.legend(facecolor='#1e293b', labelcolor='white')
 
     ax2.hist(ps, bins=40, color='#2563eb', alpha=0.8, edgecolor='none')

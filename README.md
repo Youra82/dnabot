@@ -462,6 +462,16 @@ Für jeden Lookback (1, 2, 4, 8, 12, 26 Wochen):
 → Equity-Kurven + Calmar-Vergleich → Telegram
 ```
 
+#### Was `backtest_lookback_weeks` bedeutet
+
+Der Optimizer **läuft weiterhin einmal wöchentlich** (konfigurierbar in `schedule`). Die Wochen-Zahl ist das **Selektionsfenster**: Wenn er läuft, schaut er genau N Wochen zurück und wählt daraus die aktuell besten Coins/Strategien für die nächste Woche aus.
+
+```
+Jeden Samstag 3:00 Uhr (Beispiel):
+  → Welche Pairs haben in den letzten 2 Wochen am besten performt?
+  → Diese werden für die nächste Woche aktiviert.
+```
+
 #### Ausführung
 
 ```bash
@@ -473,24 +483,36 @@ chmod +x run_walkforward.sh
 > ```bash
 > ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
 > ```
-> Dann hat der Walk-Forward ~70 Test-Wochen statt nur ~20.
+> Dann hat der Walk-Forward ~140 Test-Wochen statt nur ~20.
 
-#### Ergebnis
+#### Beispiel-Ergebnis (167 Wochen Daten, 141 Test-Wochen OOS)
 
-Der Script schickt einen Chart via Telegram mit:
-- Equity-Kurven für jeden getesteten Lookback (Out-of-Sample)
-- Calmar-Score-Vergleich als Balkendiagramm
-- Empfehlung welchen Wert du in `settings.json` eintragen sollst
+```
+Lookback  1W   PnL=+81179%  | DD=12.4% | Calmar= 6559 | Leerwochen=53  ← zu wenig Daten/Woche
+Lookback  2W   PnL=+466513% | DD=19.5% | Calmar=23885 | Leerwochen=11  ← ★ bestes Calmar
+Lookback  4W   PnL=+548490% | DD=25.0% | Calmar=21937 | Leerwochen= 7
+Lookback  8W   PnL=+312107% | DD=33.9% | Calmar= 9220 | Leerwochen= 4
+Lookback 12W   PnL=+469310% | DD=21.4% | Calmar=21898 | Leerwochen= 4
+Lookback 26W   PnL=+449242% | DD=24.8% | Calmar=18118 | Leerwochen= 4
+```
+
+**Warum 2 Wochen optimal war:**
+- **1 Woche**: zu wenig Daten pro Woche → 53 Leerwochen (oft kein qualifizierendes Pair gefunden), kaum Trades
+- **2 Wochen**: genug Daten + noch frisch genug um aktuelle Marktlage zu erfassen → bestes Calmar
+- **4+ Wochen**: mehr Stabilität, aber reagiert langsamer auf Marktveränderungen
+
+> Die absoluten PnL-Zahlen (hundertausende %) sind in-sample-beeinflusst und nicht 1:1 realisierbar.
+> Aussagekräftig ist der **relative Calmar-Vergleich** zwischen den Lookback-Fenstern.
 
 #### Ergebnis übernehmen
 
 ```json
 "optimization_settings": {
-    "backtest_lookback_weeks": 4
+    "backtest_lookback_weeks": 2
 }
 ```
 
-Der Auto-Optimizer berechnet das Startdatum dann immer dynamisch als `heute − N Wochen` — das Fenster bleibt konstant, egal wann der Optimizer läuft.
+Der Auto-Optimizer berechnet das Startdatum dann immer dynamisch als `heute − N Wochen` — das Fenster bleibt konstant, egal wann der Optimizer läuft. Die Analyse sollte gelegentlich wiederholt werden, da sich das optimale Fenster mit veränderten Marktbedingungen verschieben kann.
 
 ---
 

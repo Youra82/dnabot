@@ -125,7 +125,7 @@ def save_send(fig, name, caption='', no_telegram=False):
     return path
 
 
-def simulate(trades, capital, risk_pct, rr=None):
+def simulate(trades, capital, risk_pct, rr=None, leverage=1):
     """Vollständige Portfolio-Simulation."""
     if rr is None:
         rr = RR_RATIO
@@ -134,8 +134,9 @@ def simulate(trades, capital, risk_pct, rr=None):
     max_dd = 0.0
     wins   = 0
     for t in trades:
-        sl_pct      = max(t.get('sl_pct', 1.0), 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        sl_pct       = max(t.get('sl_pct', 1.0), 0.01)
+        leverage_cap = equity * max(leverage, 1) * (sl_pct / 100.0)
+        risk_amount  = min(equity * (risk_pct / 100.0), leverage_cap, MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
             pnl = risk_amount * rr; wins += 1

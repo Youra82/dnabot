@@ -94,15 +94,17 @@ def load_all_trades():
     return all_results
 
 
-def simulate_trades(trades, capital, risk_pct, rr_ratio=2.0, callback_pct=1.0):
-    """Simuliert Trades mit variierbarem RR-Ratio und Callback."""
+def simulate_trades(trades, capital, risk_pct, rr_ratio=2.0, callback_pct=1.0, leverage=1):
+    """Simuliert Trades mit variierbarem RR-Ratio, Callback und Leverage-Cap."""
     equity = capital
     peak   = equity
     max_dd = 0.0
     wins   = 0
     for t in sorted(trades, key=lambda x: x['entry_dt']):
         sl_pct      = max(t.get('sl_pct', 1.0), 0.01)
+        leverage_cap = equity * max(leverage, 1) * (sl_pct / 100.0)
         risk_amount = min(equity * (risk_pct / 100.0),
+                          leverage_cap,
                           MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
@@ -124,7 +126,7 @@ def simulate_trades(trades, capital, risk_pct, rr_ratio=2.0, callback_pct=1.0):
     return equity, max_dd, wins
 
 
-def select_portfolio(all_results, is_start, is_end, min_score, risk_pct, rr_ratio=2.0):
+def select_portfolio(all_results, is_start, is_end, min_score, risk_pct, rr_ratio=2.0, leverage=1):
     candidates = []
     for r in all_results:
         is_trades = [t for t in r['trades'] if is_start <= t['entry_dt'] < is_end]
@@ -136,7 +138,7 @@ def select_portfolio(all_results, is_start, is_end, min_score, risk_pct, rr_rati
                          if t.get('genome_score', 0) >= min_score]
         if len(is_trades) < MIN_TRADES:
             continue
-        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, rr_ratio)
+        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, rr_ratio, leverage=leverage)
         pnl_pct = (final_eq - 100.0) / 100.0 * 100.0
         if pnl_pct <= 0:
             continue
@@ -150,7 +152,7 @@ def select_portfolio(all_results, is_start, is_end, min_score, risk_pct, rr_rati
 
 
 def run_walk_forward_param(all_results, param_value, param, risk_pct,
-                            capital, week_starts, lookback_weeks=2):
+                            capital, week_starts, lookback_weeks=2, leverage=1):
     rr_ratio   = param_value if param == 'rr'       else 2.0
     min_score  = param_value if param == 'score'    else 0.08
     callback   = param_value if param == 'callback' else 1.0
@@ -165,7 +167,7 @@ def run_walk_forward_param(all_results, param_value, param, risk_pct,
         oos_end  = week_start + timedelta(weeks=1)
 
         portfolio = select_portfolio(all_results, is_start, week_start,
-                                     min_score, risk_pct, rr_ratio)
+                                     min_score, risk_pct, rr_ratio, leverage=leverage)
         oos_trades = []
         for p in portfolio:
             oos_trades.extend(
@@ -173,7 +175,7 @@ def run_walk_forward_param(all_results, param_value, param, risk_pct,
 
         if oos_trades:
             equity, _, wins = simulate_trades(oos_trades, equity, risk_pct,
-                                               rr_ratio, callback)
+                                               rr_ratio, callback, leverage=leverage)
             total_n    += len(oos_trades)
             total_wins += wins
         curve.append((oos_end, equity))
@@ -310,12 +312,20 @@ def main():
     label  = PARAM_LABELS[args.param]
     values = PARAM_RANGES[args.param]
 
+    # Leverage aus settings.json
+    try:
+        with open(SETTINGS_PATH) as f:
+            _s = json.load(f)
+        leverage = int(_s.get('risk_settings', {}).get('leverage', 1))
+    except Exception:
+        leverage = 1
+
     print(f"\n{'=' * 62}")
     print(f"  dnabot — {label} Walk-Forward Optimierung")
     print(f"{'=' * 62}")
     print(f"  Testwerte: {values}")
     print(f"  Risk/Trade: {args.risk}% | Kapital: {args.capital} USDT | "
-          f"Lookback: {args.lookback}W")
+          f"Lookback: {args.lookback}W | Leverage: {leverage}x")
     print()
 
     print("  Lade Backtest-Daten...", end='', flush=True)
@@ -351,7 +361,7 @@ def main():
         print(f"  {C}{label} = {val} ...{NC}", end='', flush=True)
         curve, pnl, dd, calmar, n, wr = run_walk_forward_param(
             all_results, val, args.param, args.risk,
-            args.capital, week_starts, args.lookback
+            args.capital, week_starts, args.lookback, leverage=leverage
         )
         results[val] = (curve, pnl, dd, calmar, n, wr)
         col = G if pnl > 0 else R

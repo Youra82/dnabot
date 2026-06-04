@@ -143,7 +143,7 @@ def load_all_trades():
 
 # ─── Simulation ───────────────────────────────────────────────────────────────
 
-def simulate_trades(trades, equity, risk_pct):
+def simulate_trades(trades, equity, risk_pct, leverage=1):
     """
     Simuliert eine Liste von Trades auf einem gemeinsamen Kapital-Pool.
     Gibt (final_equity, max_dd, n_wins) zurück.
@@ -152,8 +152,9 @@ def simulate_trades(trades, equity, risk_pct):
     max_dd = 0.0
     wins   = 0
     for t in sorted(trades, key=lambda x: x['entry_dt']):
-        sl_pct      = max(t.get('sl_pct', 1.0), 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        sl_pct       = max(t.get('sl_pct', 1.0), 0.01)
+        leverage_cap = equity * max(leverage, 1) * (sl_pct / 100.0)
+        risk_amount  = min(equity * (risk_pct / 100.0), leverage_cap, MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
             pnl = risk_amount * RR_RATIO
@@ -174,7 +175,7 @@ def simulate_trades(trades, equity, risk_pct):
 
 # ─── Portfolio-Auswahl ────────────────────────────────────────────────────────
 
-def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct):
+def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, leverage=1):
     """
     Wählt das Portfolio für das In-Sample Fenster [is_start, is_end).
     Kriterium: Alle Pairs mit >= min_trades und positivem Calmar.
@@ -186,7 +187,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct):
         if len(is_trades) < min_trades:
             continue
         # Calmar auf In-Sample berechnen (mit Startkapital = 100 für Vergleichbarkeit)
-        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct)
+        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, leverage=leverage)
         pnl_pct = (final_eq - 100.0) / 100.0 * 100.0
         if pnl_pct <= 0:
             continue
@@ -204,7 +205,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct):
 
 # ─── Walk-Forward ─────────────────────────────────────────────────────────────
 
-def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_starts, capital):
+def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_starts, capital, leverage=1):
     """
     Walk-Forward für einen Lookback-Zeitraum.
     Gibt (equity_curve, total_trades, total_wins, empty_weeks) zurück.
@@ -220,7 +221,7 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_sta
         is_start  = week_start - timedelta(weeks=lookback_weeks)
         oos_end   = week_start + timedelta(weeks=1)
 
-        portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct)
+        portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct, leverage=leverage)
 
         oos_trades = []
         for p in portfolio:
@@ -233,7 +234,7 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_sta
             curve.append((oos_end, equity, len(portfolio), 0))
             continue
 
-        equity, _, wins = simulate_trades(oos_trades, equity, risk_pct)
+        equity, _, wins = simulate_trades(oos_trades, equity, risk_pct, leverage=leverage)
         total_n    += len(oos_trades)
         total_wins += wins
         curve.append((oos_end, equity, len(portfolio), len(oos_trades)))
@@ -389,6 +390,7 @@ def main():
 
     settings = load_settings()
     risk_pct = args.risk or settings.get('optimization_settings', {}).get('risk_pct', 1.5)
+    leverage = int(settings.get('risk_settings', {}).get('leverage', 1))
     capital  = args.capital
 
     print(f"\n{'=' * 62}")
@@ -396,6 +398,7 @@ def main():
     print(f"{'=' * 62}")
     print(f"  Risk/Trade:   {risk_pct}%")
     print(f"  Startkapital: {capital} USDT")
+    print(f"  Leverage:     {leverage}x (aus settings.json)")
     print(f"  Min. Trades:  {args.min_trades} (pro Pair im Lookback-Fenster)")
     print(f"  Lookbacks:    {LOOKBACK_WINDOWS} Wochen")
     print()
@@ -448,7 +451,7 @@ def main():
     for weeks in active_lookbacks:
         print(f"  {C}Lookback {weeks:2d}W ...{NC}", end='', flush=True)
         curve, n_total, n_wins, empty_w = run_walk_forward(
-            all_results, weeks, risk_pct, args.min_trades, week_starts, capital
+            all_results, weeks, risk_pct, args.min_trades, week_starts, capital, leverage=leverage
         )
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)
         wr = n_wins / n_total * 100 if n_total > 0 else 0.0

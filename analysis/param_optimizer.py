@@ -3,7 +3,7 @@
 analysis/param_optimizer.py — Parameter Walk-Forward Optimierung
 
 Testet out-of-sample welcher Wert für einen Parameter optimal ist:
-  a) RR-Ratio         (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0)
+  a) RR-Ratio         (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0)
   b) Score Threshold  (0.01, 0.05, 0.08, 0.12, 0.15, 0.20, 0.30)
   c) Trailing Callback (0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0)
 
@@ -32,7 +32,7 @@ MAX_NOTIONAL_USDT = 200_000.0
 MIN_TRADES        = 2
 
 PARAM_RANGES = {
-    'rr':       [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+    'rr':       [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
     'score':    [0.01, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20, 0.30],
     'callback': [0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0],
 }

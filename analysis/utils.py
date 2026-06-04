@@ -19,9 +19,21 @@ C  = '\033[0;36m'
 NC = '\033[0m'
 
 
+def load_active_pairs():
+    """Gibt die aktiven (market, timeframe) Paare aus settings.json zurück."""
+    try:
+        with open(SETTINGS_PATH) as f:
+            s = json.load(f)
+        strats = s.get('live_trading_settings', {}).get('active_strategies', [])
+        return {(st['symbol'], st['timeframe']) for st in strats if st.get('active', True)}
+    except Exception:
+        return set()
+
+
 def load_trades():
-    """Lädt alle Trades aus artifacts/results/*.json mit geparsten Timestamps."""
-    from datetime import timedelta
+    """Lädt Trades aus artifacts/results/*.json — gefiltert auf active_strategies."""
+    active_pairs = load_active_pairs()
+
     results = []
     if not os.path.isdir(RESULTS_DIR):
         return results
@@ -33,6 +45,10 @@ def load_trades():
                 data = json.load(f)
         except Exception:
             continue
+
+        if active_pairs and (data['market'], data['timeframe']) not in active_pairs:
+            continue
+
         parsed = []
         for t in data.get('trades', []):
             try:

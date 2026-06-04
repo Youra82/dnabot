@@ -68,7 +68,21 @@ def next_monday(dt):
         hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
 
 
+def load_active_pairs():
+    """Gibt die aktiven (market, timeframe) Paare aus settings.json zurück."""
+    try:
+        with open(SETTINGS_PATH) as f:
+            s = json.load(f)
+        strats = s.get('live_trading_settings', {}).get('active_strategies', [])
+        return {(st['symbol'], st['timeframe']) for st in strats if st.get('active', True)}
+    except Exception:
+        return set()
+
+
 def load_all_trades():
+    """Lädt Trades aus den Backtest-JSON-Dateien — gefiltert auf active_strategies."""
+    active_pairs = load_active_pairs()
+
     all_results = []
     if not os.path.isdir(RESULTS_DIR):
         return all_results
@@ -80,6 +94,10 @@ def load_all_trades():
                 data = json.load(f)
         except Exception:
             continue
+
+        if active_pairs and (data['market'], data['timeframe']) not in active_pairs:
+            continue
+
         parsed = []
         for t in data.get('trades', []):
             dt = _parse_dt(t.get('entry_time', ''))

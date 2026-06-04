@@ -112,8 +112,21 @@ def next_monday(dt):
 
 # ─── Daten laden ──────────────────────────────────────────────────────────────
 
+def load_active_pairs():
+    """Gibt die aktiven (market, timeframe) Paare aus settings.json zurück."""
+    try:
+        with open(SETTINGS_PATH) as f:
+            s = json.load(f)
+        strats = s.get('live_trading_settings', {}).get('active_strategies', [])
+        return {(st['symbol'], st['timeframe']) for st in strats if st.get('active', True)}
+    except Exception:
+        return set()
+
+
 def load_all_trades():
-    """Lädt alle Trades aus den Backtest-JSON-Dateien mit geparsten Timestamps."""
+    """Lädt Trades aus den Backtest-JSON-Dateien — gefiltert auf active_strategies."""
+    active_pairs = load_active_pairs()
+
     all_results = []
     if not os.path.isdir(RESULTS_DIR):
         return all_results
@@ -125,6 +138,11 @@ def load_all_trades():
                 data = json.load(f)
         except Exception:
             continue
+
+        # Nur aktive Strategien verwenden (falls settings.json Pairs enthält)
+        if active_pairs and (data['market'], data['timeframe']) not in active_pairs:
+            continue
+
         parsed = []
         for t in data.get('trades', []):
             dt = _parse_dt(t.get('entry_time', ''))
@@ -404,6 +422,7 @@ def main():
     print()
 
     # ── Daten laden
+    active_pairs = load_active_pairs()
     print("  Lade Backtest-Daten...", end='', flush=True)
     all_results = load_all_trades()
     if not all_results:
@@ -414,7 +433,8 @@ def main():
     min_date  = min(all_dts)
     max_date  = max(all_dts)
     n_weeks   = (max_date - min_date).days // 7
-    print(f" {len(all_results)} Pairs | {min_date.strftime('%Y-%m-%d')} → "
+    src_label = f"active_strategies ({len(active_pairs)} Pairs)" if active_pairs else "alle Pairs"
+    print(f" {len(all_results)} Pairs [{src_label}] | {min_date.strftime('%Y-%m-%d')} → "
           f"{max_date.strftime('%Y-%m-%d')} ({n_weeks} Wochen)")
 
     # ── Lookback-Fenster filtern

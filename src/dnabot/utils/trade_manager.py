@@ -423,7 +423,7 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     # Sequenz-Label unterhalb
     mid_x = (pat_start + pat_end) / 2
     ax.text(mid_x, y_lo + (y_hi - y_lo) * 0.01,
-            f'🧬 {sequence}', color=pat_color, fontsize=7,
+            f'DNA: {sequence}', color=pat_color, fontsize=7,
             ha='center', va='bottom', fontfamily='monospace', alpha=0.85, zorder=7)
 
     # 3. Kerzen + Gene-Code-Labels über Pattern-Kerzen

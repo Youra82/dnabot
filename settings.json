@@ -3,18 +3,18 @@
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
       {
-        "symbol": "HBAR/USDT:USDT",
+        "symbol": "VET/USDT:USDT",
         "timeframe": "2h",
         "active": true
       },
       {
-        "symbol": "INJ/USDT:USDT",
-        "timeframe": "6h",
+        "symbol": "BNB/USDT:USDT",
+        "timeframe": "4h",
         "active": true
       },
       {
-        "symbol": "ETC/USDT:USDT",
-        "timeframe": "6h",
+        "symbol": "STX/USDT:USDT",
+        "timeframe": "4h",
         "active": true
       },
       {
@@ -23,28 +23,18 @@
         "active": true
       },
       {
-        "symbol": "XLM/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "NEAR/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "SNX/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      },
-      {
         "symbol": "LTC/USDT:USDT",
-        "timeframe": "4h",
+        "timeframe": "2h",
         "active": true
       },
       {
-        "symbol": "VET/USDT:USDT",
-        "timeframe": "4h",
+        "symbol": "HBAR/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "XLM/USDT:USDT",
+        "timeframe": "2h",
         "active": true
       }
     ]

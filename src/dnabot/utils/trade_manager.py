@@ -387,6 +387,9 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     winrate     = genome_signal.get('winrate', 0.0)
     occurrences = genome_signal.get('total_occurrences', 0)
     genome_id   = genome_signal.get('genome_id', '')[:8]
+    regime      = genome_signal.get('regime', '')
+    avg_move    = genome_signal.get('avg_move_pct', 0.0)
+    gene_codes  = [g for g in sequence.split('|') if g]  # z.B. ['B3H-UH', 'S2H-DH', ...]
 
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.patch.set_facecolor('#0d1117')
@@ -423,10 +426,11 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
             f'🧬 {sequence}', color=pat_color, fontsize=7,
             ha='center', va='bottom', fontfamily='monospace', alpha=0.85, zorder=7)
 
-    # 3. Kerzen
+    # 3. Kerzen + Gene-Code-Labels über Pattern-Kerzen
+    gene_start = n - seq_length   # erster Index der eigentlichen Pattern-Kerzen
+    label_h    = (y_hi - y_lo) * 0.02
     for i in range(n):
         o, h, l, c = opens[i], highs[i], lows[i], closes[i]
-        # Pattern-Kerzen etwas heller
         in_pat = pat_start <= i <= pat_end
         color = ('#26a69a' if c >= o else '#ef5350')
         if in_pat:
@@ -437,6 +441,16 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
             (i - bar_w / 2, min(o, c)), bar_w, body_h,
             boxstyle="square,pad=0", linewidth=0, facecolor=color, zorder=3,
         ))
+        # Gene-Code-Label über jeder Pattern-Kerze
+        if gene_start <= i < gene_start + len(gene_codes):
+            gene_idx = i - gene_start
+            code = gene_codes[gene_idx]
+            ax.text(i, h + label_h, code,
+                    color=pat_color, fontsize=6.5, ha='center', va='bottom',
+                    fontfamily='monospace', fontweight='bold',
+                    rotation=0, zorder=8,
+                    bbox=dict(facecolor='#0d1117', edgecolor=pat_color,
+                              alpha=0.75, boxstyle='round,pad=0.15', linewidth=0.5))
 
     # 4. Risiko/Reward-Zonen
     if sl_price and _in_range(sl_price):
@@ -466,12 +480,20 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     sl_pct  = abs(entry_price - sl_price) / entry_price * 100 if sl_price else 0
     tp_pct  = abs(tp_price - entry_price) / entry_price * 100 if tp_price else 0
     rr      = tp_pct / sl_pct if sl_pct > 0 else 0
+    regime_str = f"   [{regime}]" if regime else ""
+    avg_str    = f"   AvgMove: {avg_move:.2f}%" if avg_move else ""
     info_lines = [
-        f"{side_label}   R:R 1:{rr:.1f}",
-        f"Score:   {score:.3f}   WR: {winrate:.1%}   n={occurrences}",
+        f"{side_label}   R:R 1:{rr:.1f}{regime_str}",
+        f"Score:   {score:.3f}   WR: {winrate:.1%}   n={occurrences}{avg_str}",
         f"Genome:  {genome_id}...",
-        f"Seq:     {sequence[:35]}",
     ]
+    # Gene-Codes als Bedingungen anzeigen (eine pro Zeile)
+    if gene_codes and gene_codes[0] != '[SIMULATION]':
+        info_lines.append("─" * 28)
+        for j, code in enumerate(gene_codes):
+            info_lines.append(f"  K{j+1}: {code}")
+    else:
+        info_lines.append(f"Seq:     {sequence[:35]}")
     ax.text(0.01, 0.98, '\n'.join(info_lines),
             transform=ax.transAxes, fontsize=8, va='top', ha='left',
             color='#cccccc', fontfamily='monospace',

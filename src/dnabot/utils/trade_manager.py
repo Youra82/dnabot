@@ -21,7 +21,7 @@ TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
 
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
-from dnabot.utils.telegram import send_message
+from dnabot.utils.telegram import send_message, send_photo
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
@@ -347,6 +347,188 @@ def housekeeper_routine(exchange: Exchange, symbol: str, logger: logging.Logger)
         return False
 
 
+# ─── Chart-Generierung: Genome-Kerzendiagramm ────────────────────────────────
+
+def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
+                                symbol: str, timeframe: str,
+                                n_candles: int = 40) -> str:
+    """
+    Zeichnet Kerzendiagramm mit hervorgehobenem Genome-Muster und Entry/SL/TP-Tags.
+    Gibt Pfad zur temporaeren PNG-Datei zurueck (oder None bei Fehler).
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except ImportError:
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    display_df = df[['open', 'high', 'low', 'close']].iloc[-n_candles:].reset_index(drop=True)
+    n = len(display_df)
+    if n == 0:
+        return None
+
+    opens  = display_df['open'].values
+    highs  = display_df['high'].values
+    lows   = display_df['low'].values
+    closes = display_df['close'].values
+
+    side        = genome_signal.get('side', 'long')
+    entry_price = genome_signal.get('entry_price', closes[-1])
+    sl_price    = genome_signal.get('sl_price', 0.0)
+    tp_price    = genome_signal.get('tp_price', 0.0)
+    seq_length  = int(genome_signal.get('seq_length', 4))
+    sequence    = genome_signal.get('sequence', '')
+    score       = genome_signal.get('score', 0.0)
+    winrate     = genome_signal.get('winrate', 0.0)
+    occurrences = genome_signal.get('total_occurrences', 0)
+    genome_id   = genome_signal.get('genome_id', '')[:8]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#0d1117')
+
+    bar_w = 0.6
+
+    # 1. Y-Limits (vor dem Zeichnen berechnen)
+    y_min = float(lows.min())
+    y_max = float(highs.max())
+    for p in filter(None, [entry_price, sl_price, tp_price]):
+        y_min = min(y_min, float(p) * 0.999)
+        y_max = max(y_max, float(p) * 1.001)
+    margin = (y_max - y_min) * 0.14
+    y_lo, y_hi = y_min - margin, y_max + margin
+    ax.set_xlim(-1, n + 1)
+    ax.set_ylim(y_lo, y_hi)
+
+    def _in_range(price):
+        return y_lo < float(price) < y_hi
+
+    # 2. Genome-Pattern-Hintergrund (letzte seq_length Kerzen)
+    pat_start = max(0, n - seq_length - 1)
+    pat_end   = n - 1
+    pat_color = '#00e676' if side == 'long' else '#ff1744'
+    ax.axvspan(pat_start - 0.5, pat_end + 0.5,
+               color=pat_color, alpha=0.08, zorder=1)
+    # Vertikale Klammer-Linie unten
+    ax.annotate('', xy=(pat_end + 0.5, y_lo), xytext=(pat_start - 0.5, y_lo),
+                arrowprops=dict(arrowstyle='-', color=pat_color, lw=0.8, alpha=0.5))
+    # Sequenz-Label unterhalb
+    mid_x = (pat_start + pat_end) / 2
+    ax.text(mid_x, y_lo + (y_hi - y_lo) * 0.01,
+            f'🧬 {sequence}', color=pat_color, fontsize=7,
+            ha='center', va='bottom', fontfamily='monospace', alpha=0.85, zorder=7)
+
+    # 3. Kerzen
+    for i in range(n):
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        # Pattern-Kerzen etwas heller
+        in_pat = pat_start <= i <= pat_end
+        color = ('#26a69a' if c >= o else '#ef5350')
+        if in_pat:
+            color = ('#4cceac' if c >= o else '#ff6b6b')
+        ax.plot([i, i], [l, h], color=color, linewidth=0.8, zorder=2)
+        body_h = max(abs(c - o), (h - l) * 0.005)
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (i - bar_w / 2, min(o, c)), bar_w, body_h,
+            boxstyle="square,pad=0", linewidth=0, facecolor=color, zorder=3,
+        ))
+
+    # 4. Risiko/Reward-Zonen
+    if sl_price and _in_range(sl_price):
+        ax.axhspan(min(sl_price, entry_price), max(sl_price, entry_price),
+                   color='#ff1744', alpha=0.07, zorder=1)
+    if tp_price and _in_range(tp_price):
+        ax.axhspan(min(tp_price, entry_price), max(tp_price, entry_price),
+                   color='#00c853', alpha=0.07, zorder=1)
+
+    # 5. Entry/SL/TP Preis-Tags
+    def _price_tag(price, label, color, lw=1.5, ls='--'):
+        if not price or not _in_range(price):
+            return
+        ax.axhline(price, color=color, linewidth=lw, linestyle=ls, zorder=6)
+        ax.text(n - 0.3, price, f'  {label}: {price:.6g}  ',
+                color='#0d1117', fontsize=8.5, va='center', ha='right',
+                fontweight='bold', zorder=8,
+                bbox=dict(facecolor=color, edgecolor='none', alpha=0.92,
+                          boxstyle='square,pad=0.25'))
+
+    _price_tag(tp_price,    'TP',    '#00c853')
+    _price_tag(entry_price, 'Entry', '#ffd700')
+    _price_tag(sl_price,    'SL',    '#ff1744')
+
+    # 6. Genome-Infobox oben links
+    side_label = 'LONG ▲' if side == 'long' else 'SHORT ▼'
+    sl_pct  = abs(entry_price - sl_price) / entry_price * 100 if sl_price else 0
+    tp_pct  = abs(tp_price - entry_price) / entry_price * 100 if tp_price else 0
+    rr      = tp_pct / sl_pct if sl_pct > 0 else 0
+    info_lines = [
+        f"{side_label}   R:R 1:{rr:.1f}",
+        f"Score:   {score:.3f}   WR: {winrate:.1%}   n={occurrences}",
+        f"Genome:  {genome_id}...",
+        f"Seq:     {sequence[:35]}",
+    ]
+    ax.text(0.01, 0.98, '\n'.join(info_lines),
+            transform=ax.transAxes, fontsize=8, va='top', ha='left',
+            color='#cccccc', fontfamily='monospace',
+            bbox=dict(facecolor='#1a2332', edgecolor='#2a3a4a',
+                      alpha=0.88, boxstyle='round,pad=0.5'),
+            zorder=9)
+
+    # 7. Styling
+    ax.set_title(
+        f"DNABOT  |  {symbol}  {timeframe}  |  {side_label}  |  letzte {n} Kerzen",
+        color='#e0e0e0', fontsize=11, pad=10,
+    )
+    ax.tick_params(colors='#888888', labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_edgecolor('#2a3a4a')
+    ax.set_xticks([])
+    ax.yaxis.tick_right()
+    ax.grid(axis='y', color='#1e2a3a', linewidth=0.4, zorder=0)
+    plt.tight_layout()
+
+    tmp_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'tmp')
+    os.makedirs(tmp_dir, exist_ok=True)
+    from datetime import timezone
+    ts       = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    sym_safe = symbol.replace('/', '-').replace(':', '-')
+    path     = os.path.join(tmp_dir, f'genome_entry_{sym_safe}_{timeframe}_{ts}.png')
+    fig.savefig(path, dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return path
+
+
+def _send_genome_chart(df: pd.DataFrame, genome_signal: dict, symbol: str,
+                        timeframe: str, telegram_config: dict, logger: logging.Logger):
+    """Generiert Genome-Chart-PNG und sendet es via Telegram."""
+    if not telegram_config or not telegram_config.get('bot_token') or not telegram_config.get('chat_id'):
+        return
+    try:
+        path = _generate_genome_chart_png(df, genome_signal, symbol, timeframe)
+        if path and os.path.exists(path):
+            side_label = 'LONG' if genome_signal.get('side') == 'long' else 'SHORT'
+            ep = genome_signal.get('entry_price', 0)
+            sl = genome_signal.get('sl_price', 0)
+            tp = genome_signal.get('tp_price', 0)
+            caption = (
+                f"DNABOT | {symbol} ({timeframe})\n"
+                f"{side_label} @ {ep:.6g}  |  SL: {sl:.6g}  |  TP: {tp:.6g}\n"
+                f"Score: {genome_signal.get('score', 0):.3f}  |  "
+                f"WR: {genome_signal.get('winrate', 0):.1%}  |  "
+                f"n={genome_signal.get('total_occurrences', 0)}"
+            )
+            send_photo(telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+                       path, caption)
+            os.remove(path)
+    except Exception as e:
+        logger.warning(f"Genome-Chart senden fehlgeschlagen: {e}")
+
+
 # ─── Entry Orders ─────────────────────────────────────────────────────────────
 
 def place_entry_orders(
@@ -357,6 +539,7 @@ def place_entry_orders(
     tracker_path: str,
     telegram_config: dict,
     logger: logging.Logger,
+    df: pd.DataFrame = None,
 ):
     """
     Platziert einen Entry-Trade basierend auf dem Genome-Signal.
@@ -529,6 +712,9 @@ def place_entry_orders(
         send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
     except Exception as e:
         logger.warning(f"Telegram-Benachrichtigung fehlgeschlagen: {e}")
+
+    # Chart mit Genome-Pattern per Telegram senden
+    _send_genome_chart(df, genome_signal, symbol, timeframe, telegram_config, logger)
 
 
 # ─── Self-Learning Update ─────────────────────────────────────────────────────
@@ -738,7 +924,7 @@ def full_trade_cycle(
             logger.info("Kein Genome-Signal → kein Entry.")
             db.close()
             return
-        place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger)
+        place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger, df=df)
 
     db.close()
     logger.info(f"Trade-Zyklus abgeschlossen für {symbol} ({timeframe}).")

@@ -68,9 +68,12 @@ echo "  17) Tageszeit-Analyse"
 echo "  18) Regime-adaptive Parameter"
 echo "  19) Drawdown Duration Analysis"
 echo ""
+echo -e "  ${CYAN}── Strategie-Vergleich ─────────────────────────────${NC}"
+echo "  20) WF Re-Opt vs. Alle Configs       (Langzeit-Vergleich)"
+echo ""
 echo "   0) Alle Analysen nacheinander ausführen"
 echo ""
-read -p "Auswahl (0-19): " MODE
+read -p "Auswahl (0-20): " MODE
 MODE="${MODE//[$'\r\n ']/}"
 echo ""
 
@@ -330,6 +333,24 @@ run_mode() {
             --capital "$CAP" --risk "$RISK" $NO_TELEGRAM
         ;;
 
+    # ── 20: Strategie-Vergleich ───────────────────────────────────────────────
+    20)
+        echo -e "${GREEN}▶ WF Re-Opt vs. Alle Configs — Langzeit-Vergleich${NC}"
+        echo "  Vergleicht wöchentliche Re-Optimierung gegen alle Configs dauerhaft."
+        echo "  Beantwortet: Hilft die wöchentliche Optimierung langfristig oder nicht?"
+        echo ""
+        CAP=$(ask_capital)
+        RISK=$(ask_risk)
+        read -p "Max. Drawdown-Limit für Portfolio-Auswahl in % [Standard: 30]: " MAX_DD
+        MAX_DD="${MAX_DD//[$'\r\n ']/}"
+        if ! [[ "$MAX_DD" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then MAX_DD=30; fi
+        read -p "Fenster-Größe in Wochen [Standard: aus settings.json]: " LB
+        LB="${LB//[$'\r\n ']/}"
+        ARGS="--capital $CAP --risk $RISK --max-dd $MAX_DD $NO_TELEGRAM"
+        [[ "$LB" =~ ^[0-9]+$ ]] && ARGS="$ARGS --lookback $LB"
+        $PYTHON "$SCRIPT_DIR/analysis/strategy_comparison.py" $ARGS
+        ;;
+
     *)
         echo -e "${RED}Ungültige Auswahl: $m${NC}"
         ;;
@@ -339,16 +360,16 @@ run_mode() {
 # ─── Auswahl ausführen ────────────────────────────────────────────────────────
 
 if [ "$MODE" == "0" ]; then
-    echo -e "${YELLOW}▶ Alle 19 Analysen werden nacheinander ausgeführt.${NC}"
-    echo "  Hinweis: Analysen die Backtest-Daten benötigen (2-8, 11-12, 14-19)"
+    echo -e "${YELLOW}▶ Alle 20 Analysen werden nacheinander ausgeführt.${NC}"
+    echo "  Hinweis: Analysen die Backtest-Daten benötigen (2-8, 11-12, 14-20)"
     echo "  werden übersprungen falls artifacts/results/ leer ist."
     echo ""
     # Für alle Modes Standard-Werte verwenden
     export DNABOT_BATCH=1
-    for i in $(seq 1 19); do
+    for i in $(seq 1 20); do
         echo ""
         echo -e "${CYAN}══════════════════════════════════════════════════════${NC}"
-        echo -e "${CYAN}  Analyse $i / 19${NC}"
+        echo -e "${CYAN}  Analyse $i / 20${NC}"
         echo -e "${CYAN}══════════════════════════════════════════════════════${NC}"
         # Batch-Modus: Standard-Kapital/Risk ohne Abfrage
         case "$i" in
@@ -390,6 +411,8 @@ if [ "$MODE" == "0" ]; then
                     --capital 100 --risk 2.5 $NO_TELEGRAM 2>/dev/null || true ;;
             19) $PYTHON "$SCRIPT_DIR/analysis/drawdown_duration.py" \
                     --capital 100 --risk 2.5 $NO_TELEGRAM 2>/dev/null || true ;;
+            20) $PYTHON "$SCRIPT_DIR/analysis/strategy_comparison.py" \
+                    --capital 100 --risk 2.5 --max-dd 30 $NO_TELEGRAM 2>/dev/null || true ;;
         esac
     done
     echo ""

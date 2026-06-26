@@ -27,6 +27,7 @@ LOG_DIR          = os.path.join(PROJECT_ROOT, 'logs')
 SETTINGS_FILE    = os.path.join(PROJECT_ROOT, 'settings.json')
 SECRET_FILE      = os.path.join(PROJECT_ROOT, 'secret.json')
 LAST_RUN_FILE    = os.path.join(CACHE_DIR, '.last_optimization_run')
+LAST_SCAN_FILE   = os.path.join(CACHE_DIR, '.last_scan_run')
 IN_PROGRESS_FILE = os.path.join(CACHE_DIR, '.optimization_in_progress')
 TRIGGER_LOG      = os.path.join(LOG_DIR, 'auto_optimizer_trigger.log')
 
@@ -79,6 +80,36 @@ def _set_last_run():
     with open(LAST_RUN_FILE, 'w') as f:
         f.write(now_str)
     _log(f"LAST_RUN updated={now_str}")
+
+
+def _get_last_scan_run() -> datetime | None:
+    if not os.path.exists(LAST_SCAN_FILE):
+        return None
+    with open(LAST_SCAN_FILE, 'r') as f:
+        s = f.read().strip()
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _set_last_scan_run():
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    now_str = datetime.now().isoformat()
+    with open(LAST_SCAN_FILE, 'w') as f:
+        f.write(now_str)
+    _log(f"LAST_SCAN updated={now_str}")
+
+
+def _is_scan_due(opt_settings: dict) -> bool:
+    if os.path.exists(IN_PROGRESS_FILE):
+        _log("SCAN_SKIP already_in_progress")
+        return False
+    last_scan = _get_last_scan_run()
+    if last_scan is None:
+        return True
+    interval_h = float(opt_settings.get('scan_interval_hours', 24))
+    return (datetime.now() - last_scan).total_seconds() / 3600 >= interval_h
 
 
 RUN_COUNTER_FILE = os.path.join(CACHE_DIR, '.db_reset_counter')
@@ -195,6 +226,48 @@ def _run_portfolio_optimizer(opt_settings: dict) -> int:
     return result.returncode
 
 
+def _run_scan_standalone(opt_settings: dict):
+    """Nur Genome-Scan ohne Portfolio-Optimierung (wenn enabled=false)."""
+    send_tg    = opt_settings.get('send_telegram_on_completion', False)
+    start_time = datetime.now()
+    _log("SCAN_ONLY_START")
+
+    with open(IN_PROGRESS_FILE, 'w') as f:
+        f.write(start_time.isoformat())
+
+    start_perf = time.time()
+    success    = False
+    try:
+        rc      = _run_scan(opt_settings)
+        success = (rc == 0)
+    except Exception as e:
+        _log(f"SCAN_ONLY_ERROR {e}")
+    finally:
+        if os.path.exists(IN_PROGRESS_FILE):
+            os.remove(IN_PROGRESS_FILE)
+
+    elapsed = round(time.time() - start_perf, 1)
+
+    if success:
+        _set_last_scan_run()
+        _log(f"SCAN_ONLY_FINISH elapsed_s={elapsed}")
+        if send_tg:
+            _send_telegram(
+                f"🧬 dnabot Genome-Scan abgeschlossen\n"
+                f"Dauer: {_format_elapsed(elapsed)}\n"
+                f"Nur neue, noch nicht gesehene Kerzen wurden verarbeitet.\n"
+                f"Portfolio-Optimierung: deaktiviert (enabled=false)"
+            )
+    else:
+        _log(f"SCAN_ONLY_FAILED elapsed_s={elapsed}")
+        if send_tg:
+            _send_telegram(
+                f"❌ dnabot Genome-Scan FEHLGESCHLAGEN\n"
+                f"Dauer: {_format_elapsed(elapsed)}\n"
+                f"Logs prüfen: {TRIGGER_LOG}"
+            )
+
+
 def run_optimization(schedule: dict, opt_settings: dict, reason: str):
     os.makedirs(CACHE_DIR, exist_ok=True)
     start_time = datetime.now()
@@ -297,11 +370,17 @@ def main():
         return
 
     opt_settings = settings.get('optimization_settings', {})
+    enabled      = opt_settings.get('enabled', False)
 
-    if not opt_settings.get('enabled', False) and not args.force:
-        print("Auto-Optimierung deaktiviert (optimization_settings.enabled=false).")
+    # Wenn Portfolio-Optimierung deaktiviert: nur Genome-Scan (inkrementell)
+    if not enabled and not args.force:
+        if _is_scan_due(opt_settings):
+            _run_scan_standalone(opt_settings)
+        else:
+            print("Genome-Scan noch nicht fällig (optimization_settings.enabled=false).")
         return
 
+    # Portfolio-Optimierung aktiv (enabled=true oder --force)
     schedule = opt_settings.get('schedule', {
         'day_of_week': 0, 'hour': 3, 'minute': 0,
         'interval': {'value': 7, 'unit': 'days'},

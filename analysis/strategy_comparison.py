@@ -533,16 +533,12 @@ def generate_html_chart(curve_wf, curve_all, wstats, stats_all,
     fig.add_hline(y=capital, line=dict(color='rgba(148,163,184,0.35)', width=1, dash='dash'),
                   row=1, col=1)
 
-    # Fenster-Trennlinien
+    # Fenster-Trennlinien (ohne annotation — crasht bei datetime-Achsen in älteren plotly-Versionen)
     for w in wstats:
-        pairs_str = ', '.join(w['selected']) if w['selected'] else '—'
         fig.add_vline(
             x=w['train_end'].isoformat(),
             line=dict(color='rgba(37,99,235,0.25)', width=1, dash='dot'),
             row=1, col=1,
-            annotation_text=f"→ {pairs_str[:30]}",
-            annotation_position='top left',
-            annotation_font=dict(size=8, color='#60a5fa'),
         )
 
     # Drawdown

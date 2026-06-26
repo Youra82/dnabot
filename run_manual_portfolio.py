@@ -615,6 +615,34 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     return output_file
 
 
+def write_to_settings(selected: list, risk_pct: float = None):
+    try:
+        with open(SETTINGS_PATH) as f:
+            settings = json.load(f)
+    except Exception as e:
+        print(f"{R}Fehler beim Lesen von settings.json: {e}{NC}")
+        return False
+
+    new_strategies = [
+        {"symbol": pr['market'], "timeframe": pr['timeframe'], "active": True}
+        for pr in selected
+    ]
+    settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
+
+    if risk_pct is not None:
+        settings.setdefault('risk_settings', {})['risk_per_entry_pct'] = risk_pct
+
+    try:
+        with open(SETTINGS_PATH, 'w') as f:
+            json.dump(settings, f, indent=2)
+        risk_info = f" | Risiko/Trade: {risk_pct}%" if risk_pct is not None else ""
+        print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen{risk_info}.{NC}\n")
+        return True
+    except Exception as e:
+        print(f"{R}Fehler beim Schreiben von settings.json: {e}{NC}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="dnabot Manuelle Portfolio-Simulation")
     parser.add_argument('--capital',    type=float, default=1000.0)
@@ -651,6 +679,13 @@ def main():
 
     pm = simulate_portfolio(selected, args.capital, args.risk)
     print_result(selected, pm, args.capital, args.risk, args.start_date, args.end_date)
+
+    try:
+        settings_ans = input("  Sollen die ausgewählten Pairs in settings.json eingetragen werden? (j/n): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        settings_ans = 'n'
+    if settings_ans in ('j', 'ja', 'y', 'yes'):
+        write_to_settings(selected, args.risk)
 
     send_tg = args.telegram
     if not send_tg:

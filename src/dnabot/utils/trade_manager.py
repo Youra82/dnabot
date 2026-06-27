@@ -245,11 +245,17 @@ def notify_new_position(exchange: Exchange, position: dict, params: dict,
 
 
 def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
-                  params: dict, tracker_path: str, logger: logging.Logger):
-    """Setzt Trailing Stop / SL nach wenn sie fehlen (Sicherheitsnetz)."""
+                  params: dict, tracker_path: str, telegram_config: dict,
+                  logger: logging.Logger):
+    """Erkennt fehlende SL/TP-Orders und stellt sie neu aus.
+    Strategie: ID-Check zuerst, Preis-Richtungs-Fallback wenn keine IDs.
+    Sendet Telegram-Alert wenn Reparatur nötig oder Preis unbekannt."""
     symbol = params['market']['symbol']
     pos_side = position['side']
     entry_price = float(position.get('entryPrice', 0))
+    contracts = float(position.get('contracts', 0))
+    if contracts == 0:
+        return
 
     triggers = exchange.fetch_open_trigger_orders(symbol)
     trigger_ids = {o['id'] for o in triggers}
@@ -258,64 +264,108 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     tp_ids = set(tracker.get('take_profit_ids', []))
     sl_ids = set(tracker.get('stop_loss_ids', []))
 
-    # TP = Trailing Stop → Tracker-IDs als Wahrheit (Bitget gibt Trailing Orders
-    # nicht über fetchOpenOrders zurück, daher kein API-Check möglich)
-    tp_exists = bool(tp_ids)
+    def _trig_price(o: dict) -> float:
+        raw = (o.get('stopPrice') or o.get('triggerPrice')
+               or o.get('info', {}).get('triggerPrice')
+               or o.get('info', {}).get('planPrice') or 0)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
 
-    # SL = fester Trigger → Tracker-IDs, Fallback: Preis-Richtung
+    # --- SL: ID-Check, dann Preis-Richtungs-Fallback ---
     if sl_ids:
         sl_exists = bool(sl_ids & trigger_ids)
+        logger.info(f"SL ID-Check: {sl_exists} ({len(trigger_ids)} offene Trigger-Orders)")
     else:
         sl_exists = any(
-            o.get('reduceOnly') and (
-                (pos_side == 'long' and o.get('side') == 'sell' and float(o.get('triggerPrice', 0)) < entry_price) or
-                (pos_side == 'short' and o.get('side') == 'buy' and float(o.get('triggerPrice', 0)) > entry_price)
-            )
+            (pos_side == 'long' and _trig_price(o) < entry_price and _trig_price(o) > 0) or
+            (pos_side == 'short' and _trig_price(o) > entry_price and entry_price > 0)
             for o in triggers
         )
+        logger.info(f"SL Preis-Fallback: {sl_exists} ({len(triggers)} Trigger-Orders)")
 
-    if tp_exists and sl_exists:
+    # --- TP (Trailing Stop): ID-Check, Preis-Fallback, letzter Ausweg: IDs im Tracker ---
+    if tp_ids:
+        if bool(tp_ids & trigger_ids):
+            tp_exists = True
+        else:
+            # Trailing Stops erscheinen manchmal nicht in fetchOpenTriggerOrders (Bitget)
+            # → Preis-Richtungs-Fallback
+            tp_exists = any(
+                (pos_side == 'long' and _trig_price(o) > entry_price and entry_price > 0) or
+                (pos_side == 'short' and _trig_price(o) < entry_price and _trig_price(o) > 0)
+                for o in triggers
+            )
+            if not tp_exists:
+                logger.warning("TP weder per ID noch Preis-Fallback gefunden — TP-Reparatur nötig")
+    else:
+        tp_exists = False
+
+    if sl_exists and tp_exists:
         return
 
-    logger.warning(f"Trailing Stop={tp_exists}, SL={sl_exists} fehlen — nachtragen...")
+    logger.warning(f"Self-Repair: SL={sl_exists} TP={tp_exists} für {symbol}")
 
-    contracts = float(position.get('contracts', 0))
-    if contracts == 0:
-        return
-
-    # Preise aus Signal — Fallback auf gespeichertes active_genome im Tracker
+    # --- Preise aus aktuellem Signal, Fallback: gespeichertes active_genome ---
     active_genome = tracker.get('active_genome') or {}
     tp_price = (genome_signal.get('tp_price') if genome_signal else None) or active_genome.get('tp_price')
     sl_price = (genome_signal.get('sl_price') if genome_signal else None) or active_genome.get('sl_price')
-    if not tp_price or not sl_price:
-        logger.warning("Kein tp_price/sl_price verfügbar (weder Signal noch Tracker) — Nachtragen nicht möglich.")
-        return
+
+    # TP-Preis aus Entry + SL rekonstruieren wenn unbekannt
+    if not tp_price and sl_price and entry_price > 0:
+        rr = float(params.get('risk', {}).get('rr_ratio', 2.0))
+        sl_dist = abs(entry_price - float(sl_price))
+        tp_price = (entry_price + rr * sl_dist) if pos_side == 'long' else (entry_price - rr * sl_dist)
+        logger.warning(f"TP-Preis rekonstruiert aus Entry/SL (R:R {rr}:1): {tp_price:.6f}")
 
     trailing_callback = params['risk'].get('trailing_callback_rate_pct', 1.0) / 100.0
     new_tp_ids = list(tp_ids)
     new_sl_ids = list(sl_ids)
+    repaired = []
 
-    try:
-        if not tp_exists and tp_price:
+    if not tp_exists:
+        if tp_price and contracts > 0:
             trail_side = 'sell' if pos_side == 'long' else 'buy'
-            o = exchange.place_trailing_stop_order(symbol, trail_side, contracts, tp_price, trailing_callback)
-            if o and 'id' in o:
-                new_tp_ids = [o['id']]
-            logger.info(f"Trailing Stop nachgetragen (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
-            time.sleep(0.2)
+            try:
+                o = exchange.place_trailing_stop_order(symbol, trail_side, contracts, float(tp_price), trailing_callback)
+                if o and 'id' in o:
+                    new_tp_ids = [o['id']]
+                repaired.append(f"TP@{float(tp_price):.4f}")
+                logger.info(f"Trailing Stop nachgetragen (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
+                time.sleep(0.2)
+            except Exception as e:
+                logger.error(f"TP-Reparatur fehlgeschlagen: {e}", exc_info=True)
+        else:
+            logger.error("TP fehlt aber Preis unbekannt — manuelle Intervention nötig!")
+            send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+                         f"🚨 dnabot ALARM ({symbol}): TP fehlt, Preis unbekannt — manuelle Intervention!")
 
-        if not sl_exists and sl_price:
+    if not sl_exists:
+        if sl_price and contracts > 0:
             sl_side = 'sell' if pos_side == 'long' else 'buy'
-            o = exchange.place_trigger_market_order(symbol, sl_side, contracts, sl_price, reduce=True)
-            if o and 'id' in o:
-                new_sl_ids = [o['id']]
-            logger.info(f"SL nachgetragen @ {sl_price:.4f}")
-    except Exception as e:
-        logger.error(f"Fehler beim Nachtragen von Trailing Stop/SL: {e}", exc_info=True)
+            try:
+                o = exchange.place_trigger_market_order(symbol, sl_side, contracts, float(sl_price), reduce=True)
+                if o and 'id' in o:
+                    new_sl_ids = [o['id']]
+                repaired.append(f"SL@{float(sl_price):.4f}")
+                logger.info(f"SL nachgetragen @ {sl_price:.4f}")
+            except Exception as e:
+                logger.error(f"SL-Reparatur fehlgeschlagen: {e}", exc_info=True)
+        else:
+            logger.error("SL fehlt aber Preis unbekannt — manuelle Intervention nötig!")
+            send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+                         f"🚨 dnabot ALARM ({symbol}): SL fehlt, Preis unbekannt — manuelle Intervention!")
 
     tracker['take_profit_ids'] = new_tp_ids
     tracker['stop_loss_ids'] = new_sl_ids
     _write_tracker(tracker_path, tracker)
+
+    if repaired:
+        send_message(
+            telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+            f"🔧 dnabot Self-Repair ({symbol}): {', '.join(repaired)} automatisch nachgetragen."
+        )
 
 
 # ─── Housekeeper ─────────────────────────────────────────────────────────────
@@ -849,7 +899,53 @@ def full_trade_cycle(
             pass
 
         notify_new_position(exchange, position, params, tracker_path, telegram_config, logger)
-        ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, logger)
+        ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, telegram_config, logger)
+
+        # --- Preis-Overshoot-Check: Position schließen falls Preis SL/TP bereits überschritten ---
+        try:
+            ov_tracker = read_tracker(tracker_path)
+            ov_genome = ov_tracker.get('active_genome') or {}
+            sl_price_ov = ov_genome.get('sl_price')
+            tp_price_ov = ov_genome.get('tp_price')
+            pos_side_ov = position.get('side', 'long')
+            contracts_ov = float(position.get('contracts', 0))
+            close_side_ov = 'sell' if pos_side_ov == 'long' else 'buy'
+
+            if sl_price_ov and tp_price_ov and contracts_ov > 0 and current_price > 0:
+                sl_val = float(sl_price_ov)
+                tp_val = float(tp_price_ov)
+                if pos_side_ov == 'long':
+                    breached = current_price <= sl_val or current_price >= tp_val
+                    overshoot_reason = "SL" if current_price <= sl_val else "TP"
+                else:
+                    breached = current_price >= sl_val or current_price <= tp_val
+                    overshoot_reason = "SL" if current_price >= sl_val else "TP"
+                if breached:
+                    level_ov = sl_val if overshoot_reason == "SL" else tp_val
+                    logger.warning(
+                        f"Preis-Overshoot: {current_price:.6f} hat {overshoot_reason} "
+                        f"({level_ov:.6f}) überschritten — schließe {symbol} per Market."
+                    )
+                    try:
+                        exchange.cancel_all_orders_for_symbol(symbol)
+                    except Exception:
+                        pass
+                    exchange.place_market_order(symbol, close_side_ov, contracts_ov, reduce=True)
+                    time.sleep(2)
+                    remaining = exchange.fetch_open_positions(symbol)
+                    if not remaining:
+                        _write_tracker(tracker_path, {})
+                        logger.info(f"Overshoot-Schließung {symbol} erfolgreich — Tracker geleert.")
+                    else:
+                        logger.error(f"Overshoot-Schließung {symbol}: Position noch offen!")
+                    send_message(
+                        telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+                        f"⚡ dnabot NOTSCHLIESSUNG ({symbol}): Preis {current_price:.6f} hat "
+                        f"{overshoot_reason} ({level_ov:.6f}) überschritten. "
+                        f"Position per Market geschlossen."
+                    )
+        except Exception as e:
+            logger.error(f"Fehler beim Preis-Overshoot-Check: {e}")
 
     else:
         # Position weg — Exchange aufräumen (verbleibende TP/SL-Orders stornieren)

@@ -306,13 +306,21 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
         )
         logger.info(f"SL Preis-Fallback: {sl_exists} ({len(triggers)} Trigger-Orders)")
 
-    # --- TP (Trailing Stop): ID-Check → Preis-Fallback (immer, auch ohne gespeicherte IDs) ---
+    # --- TP (Trailing Stop): IDs gespeichert → Exchange vertrauen (wie stbot) ---
+    # Trailing Stops (planType=track_plan) erscheinen nicht zuverlässig in der API.
+    # Wenn die Position noch offen ist, ist der Trailing Stop noch aktiv —
+    # sonst wäre die Position bereits geschlossen worden.
     close_side_tp = 'sell' if pos_side == 'long' else 'buy'
-    if tp_ids and bool(tp_ids & trigger_ids):
+    if tp_ids:
+        # IDs gespeichert: Trailing Stop als vorhanden annehmen.
+        # API-Sichtbarkeit ist hier kein Beweis für Abwesenheit.
         tp_exists = True
+        if tp_ids & trigger_ids:
+            logger.info(f"TP ID-Check: True (ID in Trigger-Orders sichtbar)")
+        else:
+            logger.info(f"TP ID gespeichert, API-unsichtbar — als aktiv angenommen (Exchange verwaltet)")
     else:
-        # Preis-Richtungs-Fallback: läuft immer (ob IDs vorhanden oder nicht).
-        # Trailing Stops haben planPrice/triggerPrice = Aktivierungspreis.
+        # Keine gespeicherten IDs (Entry-Fehler oder Tracker-Reset) → Preis-Fallback
         tp_exists = any(
             (o.get('side', '').lower() == close_side_tp) and (
                 (pos_side == 'long' and _trig_price(o) > entry_price and entry_price > 0) or
@@ -320,10 +328,7 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
             )
             for o in triggers
         )
-        method = "IDs+Preis-Fallback" if tp_ids else "Preis-Fallback (keine IDs)"
-        logger.info(f"TP {method}: {tp_exists} ({len(triggers)} Trigger-Orders)")
-        if tp_ids and not tp_exists:
-            logger.warning("TP weder per ID noch Preis-Fallback gefunden — TP-Reparatur nötig")
+        logger.info(f"TP Preis-Fallback (keine IDs): {tp_exists} ({len(triggers)} Trigger-Orders)")
 
     if sl_exists and tp_exists:
         return

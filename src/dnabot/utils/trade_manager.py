@@ -114,11 +114,17 @@ def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
     """Storniert alle offenen Limit- und nicht-reduceOnly Trigger-Orders."""
     # TP/SL-Order-IDs aus Tracker schützen (Bitget gibt reduceOnly oft nicht zurück)
     protected_ids: set = set()
+    has_active_trade = False
     if tracker_path:
         try:
             t = read_tracker(tracker_path)
             protected_ids.update(t.get('take_profit_ids', []))
             protected_ids.update(t.get('stop_loss_ids', []))
+            has_active_trade = bool(
+                t.get('active_genome') or
+                t.get('take_profit_ids') or
+                t.get('stop_loss_ids')
+            )
         except Exception:
             pass
 
@@ -134,6 +140,12 @@ def cancel_entry_orders(exchange: Exchange, symbol: str, logger: logging.Logger,
             pass
         except Exception as e:
             logger.warning(f"Konnte Order {order['id']} nicht stornieren: {e}")
+
+    # Trigger-Orders (SL/TP) nur canceln wenn dieser TF-Bot-Instanz einen aktiven Trade hat.
+    # Ohne aktiven Trade könnten die Orders von einem anderen TF-Bot für dasselbe Symbol stammen
+    # (Bitget hat nur 1 Position pro Symbol — mehrere TF-Instanzen sehen dieselbe Position).
+    if not has_active_trade:
+        return count
 
     for order in exchange.fetch_open_trigger_orders(symbol):
         if order.get('reduceOnly') or order['id'] in protected_ids:
@@ -263,6 +275,12 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     tracker = read_tracker(tracker_path)
     tp_ids = set(tracker.get('take_profit_ids', []))
     sl_ids = set(tracker.get('stop_loss_ids', []))
+
+    # Wenn dieser TF-Bot kein active_genome und keine Order-IDs hat, hat er die Position
+    # nicht selbst eröffnet (anderer TF-Bot für dasselbe Symbol). Nicht reparieren.
+    if not tracker.get('active_genome') and not tp_ids and not sl_ids:
+        logger.debug(f"Self-Repair übersprungen ({symbol}): kein aktiver Trade in diesem TF-Bot-Tracker.")
+        return
 
     def _trig_price(o: dict) -> float:
         raw = (o.get('stopPrice') or o.get('triggerPrice')
@@ -725,11 +743,19 @@ def place_entry_orders(
 
     except ccxt.InsufficientFunds as e:
         logger.error(f"Nicht genug Guthaben: {e}")
-        cancel_entry_orders(exchange, symbol, logger)
+        for oid in new_tp_ids + new_sl_ids:
+            try:
+                exchange.cancel_trigger_order(oid, symbol)
+            except Exception:
+                pass
         return
     except Exception as e:
         logger.error(f"Fehler beim Platzieren: {e}", exc_info=True)
-        cancel_entry_orders(exchange, symbol, logger)
+        for oid in new_tp_ids + new_sl_ids:
+            try:
+                exchange.cancel_trigger_order(oid, symbol)
+            except Exception:
+                pass
         return
 
     # Tracker aktualisieren (Genome-Info für Self-Learning)

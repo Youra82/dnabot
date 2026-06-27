@@ -306,19 +306,23 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
         )
         logger.info(f"SL Preis-Fallback: {sl_exists} ({len(triggers)} Trigger-Orders)")
 
-    # --- TP (Trailing Stop): IDs gespeichert → Exchange vertrauen (wie stbot) ---
-    # Trailing Stops (planType=track_plan) erscheinen nicht zuverlässig in der API.
-    # Wenn die Position noch offen ist, ist der Trailing Stop noch aktiv —
-    # sonst wäre die Position bereits geschlossen worden.
+    # --- TP (Trailing Stop): Sichtbarkeits-bewusstes ID-Tracking ---
+    # tsl_api_visible=False → Bitget gibt track_plan nie zurück → IDs vertrauen.
+    # tsl_api_visible=True oder None → normaler ID-Check; nicht gefunden → Repair.
     close_side_tp = 'sell' if pos_side == 'long' else 'buy'
     if tp_ids:
-        # IDs gespeichert: Trailing Stop als vorhanden annehmen.
-        # API-Sichtbarkeit ist hier kein Beweis für Abwesenheit.
-        tp_exists = True
         if tp_ids & trigger_ids:
+            # TSL in API sichtbar und gefunden
+            tp_exists = True
             logger.info(f"TP ID-Check: True (ID in Trigger-Orders sichtbar)")
+        elif tracker.get('tsl_api_visible') is False:
+            # Bekannt API-unsichtbar seit Platzierung → IDs vertrauen
+            tp_exists = True
+            logger.info(f"TP ID gespeichert, bekannt API-unsichtbar — als aktiv angenommen (Exchange verwaltet)")
         else:
-            logger.info(f"TP ID gespeichert, API-unsichtbar — als aktiv angenommen (Exchange verwaltet)")
+            # tsl_api_visible=True oder None → ID nicht gefunden → Repair nötig
+            tp_exists = False
+            logger.info(f"TP ID gespeichert aber nicht in API gefunden (tsl_api_visible={tracker.get('tsl_api_visible')!r}) → Repair")
     else:
         # Keine gespeicherten IDs (Entry-Fehler oder Tracker-Reset) → Preis-Fallback
         tp_exists = any(
@@ -335,10 +339,12 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
 
     logger.warning(f"Self-Repair: SL={sl_exists} TP={tp_exists} für {symbol}")
 
-    # --- Preise aus aktuellem Signal, Fallback: gespeichertes active_genome ---
+    # --- Preise für Repair: Original-Trade-Parameter haben Vorrang ---
+    # active_genome enthält die Preise vom ursprünglichen Entry → diese verwenden.
+    # Fallback auf aktuelles Signal nur wenn active_genome leer (z.B. nach Tracker-Reset).
     active_genome = tracker.get('active_genome') or {}
-    tp_price = (genome_signal.get('tp_price') if genome_signal else None) or active_genome.get('tp_price')
-    sl_price = (genome_signal.get('sl_price') if genome_signal else None) or active_genome.get('sl_price')
+    tp_price = active_genome.get('tp_price') or (genome_signal.get('tp_price') if genome_signal else None)
+    sl_price = active_genome.get('sl_price') or (genome_signal.get('sl_price') if genome_signal else None)
 
     # TP-Preis aus Entry + SL rekonstruieren wenn unbekannt
     if not tp_price and sl_price and entry_price > 0:
@@ -359,9 +365,14 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
                 o = exchange.place_trailing_stop_order(symbol, trail_side, contracts, float(tp_price), trailing_callback)
                 if o and 'id' in o:
                     new_tp_ids = [o['id']]
+                    # Sichtbarkeit direkt nach Platzierung prüfen
+                    time.sleep(0.3)
+                    verify_triggers = exchange.fetch_open_trigger_orders(symbol)
+                    tsl_visible = o['id'] in {v['id'] for v in verify_triggers}
+                    tracker['tsl_api_visible'] = tsl_visible
+                    logger.info(f"Trailing Stop nachgetragen (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%) — "
+                                f"API-sichtbar: {tsl_visible}")
                 repaired.append(f"TP@{float(tp_price):.4f}")
-                logger.info(f"Trailing Stop nachgetragen (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
-                time.sleep(0.2)
             except Exception as e:
                 logger.error(f"TP-Reparatur fehlgeschlagen: {e}", exc_info=True)
         else:
@@ -762,9 +773,15 @@ def place_entry_orders(
         time.sleep(0.2)
 
         tp_order = exchange.place_trailing_stop_order(symbol, tp_side, actual_contracts, tp_price, trailing_callback)
+        tsl_api_visible = False
         if tp_order and 'id' in tp_order:
             new_tp_ids.append(tp_order['id'])
-        logger.info(f"Trailing Stop gesetzt (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
+            # Sichtbarkeit direkt nach Platzierung prüfen (bestimmt künftiges Verhalten von ensure_tp_sl)
+            time.sleep(0.3)
+            verify_trig = exchange.fetch_open_trigger_orders(symbol)
+            tsl_api_visible = tp_order['id'] in {v['id'] for v in verify_trig}
+        logger.info(f"Trailing Stop gesetzt (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%) — "
+                    f"API-sichtbar: {tsl_api_visible}")
 
     except Exception as e:
         logger.error(f"SL/TP-Placement fehlgeschlagen: {e}", exc_info=True)
@@ -781,6 +798,7 @@ def place_entry_orders(
     tracker = read_tracker(tracker_path)
     tracker['stop_loss_ids'] = new_sl_ids
     tracker['take_profit_ids'] = new_tp_ids
+    tracker['tsl_api_visible'] = tsl_api_visible
     tracker['last_side'] = side
     tracker['status'] = 'ok_to_trade'
     tracker['last_notified_entry_price'] = actual_entry

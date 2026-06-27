@@ -729,41 +729,52 @@ def place_entry_orders(
     new_tp_ids = []
     new_sl_ids = []
 
+    # 1. Entry Market-Order zuerst (wie stbot) — keine Zombie-Trigger-Orders bei Fehler
     try:
-        # 1. Trailing Stop (aktiviert @ TP-Preis = 2:1 R:R, dann trailing)
-        tp_order = exchange.place_trailing_stop_order(symbol, tp_side, amount_coins, tp_price, trailing_callback)
-        if tp_order and 'id' in tp_order:
-            new_tp_ids.append(tp_order['id'])
-        logger.info(f"Trailing Stop gesetzt (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
-        time.sleep(0.2)
+        exchange.place_market_order(symbol, order_side, amount_coins, reduce=False,
+                                    margin_mode=risk.get('margin_mode', 'isolated'))
+        logger.info(f"Entry Market-Order platziert: {order_side.upper()} @ ~{entry_price:.4f}")
+    except ccxt.InsufficientFunds as e:
+        logger.error(f"Nicht genug Guthaben: {e}")
+        return
+    except Exception as e:
+        logger.error(f"Fehler beim Entry: {e}", exc_info=True)
+        return
 
-        # 2. SL (reduceOnly)
-        sl_order = exchange.place_trigger_market_order(symbol, sl_side, amount_coins, sl_price, reduce=True)
+    # 2. Position bestätigen und echte Kontrakte/Fill-Preis holen
+    time.sleep(2)
+    open_positions = exchange.fetch_open_positions(symbol)
+    if not open_positions:
+        logger.error(f"Entry gesendet aber keine offene Position gefunden — abgebrochen.")
+        return
+
+    pos_info = open_positions[0]
+    actual_contracts = float(pos_info['contracts'])
+    actual_entry = float(pos_info.get('entryPrice') or entry_price)
+    logger.info(f"Position bestätigt: {side.upper()} {actual_contracts:.6f} Kontr. @ {actual_entry:.4f}")
+
+    # 3. SL und Trailing Stop mit echten Kontrakten platzieren
+    try:
+        sl_order = exchange.place_trigger_market_order(symbol, sl_side, actual_contracts, sl_price, reduce=True)
         if sl_order and 'id' in sl_order:
             new_sl_ids.append(sl_order['id'])
         logger.info(f"SL gesetzt @ {sl_price:.4f}")
         time.sleep(0.2)
 
-        # 3. Entry Market-Order (Sequenz ist abgeschlossen → sofort einsteigen)
-        exchange.place_market_order(symbol, order_side, amount_coins, reduce=False,
-                                    margin_mode=risk.get('margin_mode', 'isolated'))
-        logger.info(f"Entry Market-Order platziert: {order_side.upper()} @ ~{entry_price:.4f}")
+        tp_order = exchange.place_trailing_stop_order(symbol, tp_side, actual_contracts, tp_price, trailing_callback)
+        if tp_order and 'id' in tp_order:
+            new_tp_ids.append(tp_order['id'])
+        logger.info(f"Trailing Stop gesetzt (Aktivierung @ {tp_price:.4f}, Callback {trailing_callback*100:.1f}%)")
 
-    except ccxt.InsufficientFunds as e:
-        logger.error(f"Nicht genug Guthaben: {e}")
-        for oid in new_tp_ids + new_sl_ids:
-            try:
-                exchange.cancel_trigger_order(oid, symbol)
-            except Exception:
-                pass
-        return
     except Exception as e:
-        logger.error(f"Fehler beim Platzieren: {e}", exc_info=True)
+        logger.error(f"SL/TP-Placement fehlgeschlagen: {e}", exc_info=True)
         for oid in new_tp_ids + new_sl_ids:
             try:
                 exchange.cancel_trigger_order(oid, symbol)
             except Exception:
                 pass
+        logger.warning("Schließe Position via Housekeeper da SL/TP nicht gesetzt werden konnten.")
+        housekeeper_routine(exchange, symbol, logger)
         return
 
     # Tracker aktualisieren (Genome-Info für Self-Learning)
@@ -772,7 +783,7 @@ def place_entry_orders(
     tracker['take_profit_ids'] = new_tp_ids
     tracker['last_side'] = side
     tracker['status'] = 'ok_to_trade'
-    tracker['last_notified_entry_price'] = entry_price
+    tracker['last_notified_entry_price'] = actual_entry
     tracker['last_notified_side'] = side
     tracker['active_genome'] = {
         "genome_id": genome_signal['genome_id'],
@@ -782,7 +793,7 @@ def place_entry_orders(
         "score": genome_signal['score'],
         "winrate": genome_signal['winrate'],
         "total_occurrences": genome_signal['total_occurrences'],
-        "entry_price": entry_price,
+        "entry_price": actual_entry,
         "sl_price": sl_price,
         "tp_price": tp_price,
     }
@@ -794,22 +805,22 @@ def place_entry_orders(
     try:
         timeframe   = params['market']['timeframe']
         direction_emoji = "🟢" if side == 'long' else "🔴"
-        sl_dist_pct = abs(entry_price - sl_price) / entry_price * 100
-        tp_dist_pct = abs(tp_price - entry_price) / entry_price * 100
+        sl_dist_pct = abs(actual_entry - sl_price) / actual_entry * 100
+        tp_dist_pct = abs(tp_price - actual_entry) / actual_entry * 100
         rr_ratio    = tp_dist_pct / sl_dist_pct if sl_dist_pct > 0 else 0
         risk_usdt   = balance * risk_pct / 100.0
         msg = (
             f"🚀 dnabot SIGNAL: {symbol} ({timeframe})\n"
             f"{'─' * 32}\n"
             f"{direction_emoji} Richtung: {side.upper()}\n"
-            f"💰 Entry:        ${entry_price:.6f}\n"
+            f"💰 Entry:        ${actual_entry:.6f}\n"
             f"🛑 SL:           ${sl_price:.6f} (-{sl_dist_pct:.2f}%)\n"
             f"🎯 Trailing (ab): ${tp_price:.6f} (+{tp_dist_pct:.2f}%)\n"
             f"🔁 Callback:     {trailing_callback*100:.1f}%\n"
             f"📊 Min R:R:      1:{rr_ratio:.1f}\n"
             f"⚙️ Hebel:        {leverage}x\n"
             f"🛡️ Risiko:       {risk_pct:.1f}% ({risk_usdt:.2f} USDT)\n"
-            f"📦 Kontr.:       {amount_coins:.4f}\n"
+            f"📦 Kontr.:       {actual_contracts:.4f}\n"
             f"{'─' * 32}\n"
             f"🧬 Genome:  {genome_signal['genome_id'][:8]}... | "
             f"Score: {genome_signal['score']:.3f} | "

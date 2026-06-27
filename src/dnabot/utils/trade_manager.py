@@ -276,9 +276,9 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
     tp_ids = set(tracker.get('take_profit_ids', []))
     sl_ids = set(tracker.get('stop_loss_ids', []))
 
-    # Wenn dieser TF-Bot kein active_genome und keine Order-IDs hat, hat er die Position
-    # nicht selbst eröffnet (anderer TF-Bot für dasselbe Symbol). Nicht reparieren.
-    if not tracker.get('active_genome') and not tp_ids and not sl_ids:
+    # Wenn active_genome, IDs und last_side alle leer: jungfräulicher Tracker —
+    # diese TF-Instanz hat die Position nicht eröffnet (anderer TF-Bot für dasselbe Symbol).
+    if not tracker.get('active_genome') and not tp_ids and not sl_ids and not tracker.get('last_side'):
         logger.debug(f"Self-Repair übersprungen ({symbol}): kein aktiver Trade in diesem TF-Bot-Tracker.")
         return
 

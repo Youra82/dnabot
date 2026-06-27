@@ -74,7 +74,7 @@
     "trailing_callback_rate_pct": 1.0
   },
   "optimization_settings": {
-    "enabled": true,
+    "enabled": false,
     "schedule": {
       "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format)",
       "day_of_week": 6,
@@ -92,7 +92,7 @@
     "backtest_lookback_weeks": 2,
     "_backtest_lookback_note": "Wie viele Wochen zurück der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln.",
     "send_telegram_on_completion": true,
-    "scan_interval_hours": 24,
+    "scan_interval_hours": 168,
     "_scan_interval_note": "Wie oft der Genome-Scan läuft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",
     "reset_db_before_optimize": false,
     "reset_db_every_n_runs": 2

@@ -283,9 +283,12 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
         return
 
     def _trig_price(o: dict) -> float:
+        info = o.get('info', {})
         raw = (o.get('stopPrice') or o.get('triggerPrice')
-               or o.get('info', {}).get('triggerPrice')
-               or o.get('info', {}).get('planPrice') or 0)
+               or info.get('triggerPrice')
+               or info.get('planPrice')
+               or info.get('trailingTriggerPrice')
+               or info.get('movingPrice') or 0)
         try:
             return float(raw)
         except (TypeError, ValueError):

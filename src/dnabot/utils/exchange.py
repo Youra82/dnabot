@@ -206,10 +206,25 @@ class Exchange:
         if not self.markets:
             return []
         try:
-            return self.exchange.fetch_open_orders(symbol, params={'stop': True, 'productType': 'USDT-FUTURES'})
+            orders = self.exchange.fetch_open_orders(symbol, params={'stop': True, 'productType': 'USDT-FUTURES'})
         except Exception as e:
             logger.error(f"Fehler trigger orders {symbol}: {e}")
             return []
+
+        # Trailing-Stop-Orders (planType=track_plan) werden von Bitget getrennt verwaltet
+        # und erscheinen möglicherweise nicht im generischen stop=True Aufruf.
+        try:
+            trailing = self.exchange.fetch_open_orders(
+                symbol, params={'stop': True, 'productType': 'USDT-FUTURES', 'planType': 'track_plan'}
+            )
+            seen_ids = {o['id'] for o in orders}
+            for o in trailing:
+                if o['id'] not in seen_ids:
+                    orders.append(o)
+        except Exception:
+            pass
+
+        return orders
 
     def fetch_recent_closed_market_orders(self, symbol: str, limit: int = 10):
         """Holt zuletzt ausgeführte Market-Orders (OHNE stop=True).

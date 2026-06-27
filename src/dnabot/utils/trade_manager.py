@@ -285,22 +285,24 @@ def ensure_tp_sl(exchange: Exchange, position: dict, genome_signal: dict,
         )
         logger.info(f"SL Preis-Fallback: {sl_exists} ({len(triggers)} Trigger-Orders)")
 
-    # --- TP (Trailing Stop): ID-Check, Preis-Fallback, letzter Ausweg: IDs im Tracker ---
-    if tp_ids:
-        if bool(tp_ids & trigger_ids):
-            tp_exists = True
-        else:
-            # Trailing Stops erscheinen manchmal nicht in fetchOpenTriggerOrders (Bitget)
-            # → Preis-Richtungs-Fallback
-            tp_exists = any(
+    # --- TP (Trailing Stop): ID-Check → Preis-Fallback (immer, auch ohne gespeicherte IDs) ---
+    close_side_tp = 'sell' if pos_side == 'long' else 'buy'
+    if tp_ids and bool(tp_ids & trigger_ids):
+        tp_exists = True
+    else:
+        # Preis-Richtungs-Fallback: läuft immer (ob IDs vorhanden oder nicht).
+        # Trailing Stops haben planPrice/triggerPrice = Aktivierungspreis.
+        tp_exists = any(
+            (o.get('side', '').lower() == close_side_tp) and (
                 (pos_side == 'long' and _trig_price(o) > entry_price and entry_price > 0) or
                 (pos_side == 'short' and _trig_price(o) < entry_price and _trig_price(o) > 0)
-                for o in triggers
             )
-            if not tp_exists:
-                logger.warning("TP weder per ID noch Preis-Fallback gefunden — TP-Reparatur nötig")
-    else:
-        tp_exists = False
+            for o in triggers
+        )
+        method = "IDs+Preis-Fallback" if tp_ids else "Preis-Fallback (keine IDs)"
+        logger.info(f"TP {method}: {tp_exists} ({len(triggers)} Trigger-Orders)")
+        if tp_ids and not tp_exists:
+            logger.warning("TP weder per ID noch Preis-Fallback gefunden — TP-Reparatur nötig")
 
     if sl_exists and tp_exists:
         return

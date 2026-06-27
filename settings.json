@@ -2,41 +2,45 @@
   "live_trading_settings": {
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
-      {
-        "symbol": "VET/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "BNB/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "STX/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "DOT/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "LTC/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "HBAR/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "XLM/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      }
+      { "symbol": "DOT/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "FIL/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "TRX/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "ARB/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "NEAR/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "ETC/USDT:USDT",  "timeframe": "6h", "active": true },
+      { "symbol": "NEAR/USDT:USDT", "timeframe": "4h", "active": true },
+      { "symbol": "NEAR/USDT:USDT", "timeframe": "6h", "active": true },
+      { "symbol": "STX/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "TRX/USDT:USDT",  "timeframe": "6h", "active": true },
+      { "symbol": "XLM/USDT:USDT",  "timeframe": "6h", "active": true },
+      { "symbol": "LTC/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "XLM/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "LINK/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "BNB/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "HBAR/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "VET/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "STX/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "UNI/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "ALGO/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "ETC/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "VET/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "DOT/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "ALGO/USDT:USDT", "timeframe": "4h", "active": true },
+      { "symbol": "ARB/USDT:USDT",  "timeframe": "6h", "active": true },
+      { "symbol": "ATOM/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "AVAX/USDT:USDT", "timeframe": "4h", "active": true },
+      { "symbol": "AVAX/USDT:USDT", "timeframe": "6h", "active": true },
+      { "symbol": "SNX/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "SNX/USDT:USDT",  "timeframe": "6h", "active": true },
+      { "symbol": "TRX/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "UNI/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "SNX/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "AVAX/USDT:USDT", "timeframe": "2h", "active": true },
+      { "symbol": "LINK/USDT:USDT", "timeframe": "4h", "active": true },
+      { "symbol": "LTC/USDT:USDT",  "timeframe": "4h", "active": true },
+      { "symbol": "ATOM/USDT:USDT", "timeframe": "4h", "active": true },
+      { "symbol": "BNB/USDT:USDT",  "timeframe": "2h", "active": true },
+      { "symbol": "INJ/USDT:USDT",  "timeframe": "2h", "active": true }
     ]
   },
   "scan_settings": {

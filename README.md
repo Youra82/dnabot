@@ -46,6 +46,7 @@ dnabot/
 ├── master_runner.py               # Cronjob-Orchestrator für Live-Trading
 ├── run_pipeline.sh                # Vollständige Pipeline (Discovery → Report)
 ├── show_results.sh                # Interaktive Analyse & Backtest-Menü
+├── run_analysis.sh                # 20 wissenschaftliche Analysen (Menü, siehe unten)
 ├── auto_optimizer_scheduler.py    # Automatischer Wochentimer: Discovery + Portfolio-Opt.
 ├── run_backtest.py                # Einzel-Backtest pro Pair
 ├── run_portfolio_optimizer.py     # Automatische Portfolio-Optimierung (exhaustive)
@@ -76,6 +77,10 @@ dnabot/
         ├── trade_manager.py       # Entry/TP/SL + Self-Learning
         ├── telegram.py            # Telegram-Benachrichtigungen
         └── guardian.py            # Crash-Schutz Decorator
+
+analysis/                          # Wissenschaftliche Analysen (run_analysis.sh, Menü 1-20)
+├── fee_impact.py, monte_carlo.py, bootstrap_test.py, param_optimizer.py, ...
+└── strategy_comparison.py         # Menü 20: WF Re-Opt vs. Alle Configs (Langzeit-Vergleich)
 ```
 
 ---
@@ -449,7 +454,7 @@ Manuell erzwingen:
 
 ## Wissenschaftliche Analysen
 
-Alle 19 Analysen sind unter **einem einzigen interaktiven Befehl** zusammengefasst.
+Alle 20 Analysen sind unter **einem einzigen interaktiven Befehl** zusammengefasst.
 Jede Analyse sendet automatisch einen **Chart + Zusammenfassung via Telegram**.
 
 ```bash
@@ -489,12 +494,15 @@ Jede Analyse sendet automatisch einen **Chart + Zusammenfassung via Telegram**.
   18) Regime-adaptive Parameter
   19) Drawdown Duration Analysis
 
-   0) Alle 19 Analysen nacheinander ausführen
+  ── Strategie-Vergleich ──────────────────────────────
+  20) WF Re-Opt vs. Alle Configs       (Langzeit-Vergleich)
+
+   0) Alle 20 Analysen nacheinander ausführen
 ```
 
 Charts werden unter `docs/` gespeichert und via Telegram gesendet.
 
-> **Voraussetzung für Analysen 2–8, 11–12, 14–19:** Backtest-Daten müssen vorhanden sein.
+> **Voraussetzung für Analysen 2–8, 11–12, 14–20:** Backtest-Daten müssen vorhanden sein.
 > Erst mit einem langen Zeitraum generieren:
 > ```bash
 > ./show_results.sh  # → Mode 1 → Startdatum: 2025-01-01
@@ -807,6 +815,25 @@ Win-Rate, PnL und Calmar pro Session.
 
 ---
 
+### 20) Strategie-Vergleich: WF Re-Opt vs. Alle Configs
+
+**Frage:** Hilft die wöchentliche Walk-Forward-Re-Optimierung langfristig gegenüber dem dauerhaften Halten aller gefundenen Configs — oder nicht?
+
+**Methode:** Zwei Equity-Kurven über den gesamten verfügbaren Backtest-Zeitraum:
+- **WF Re-Opt:** Portfolio wird alle N Wochen (Standard: aus `settings.json`, Menü fragt Fenster-Größe ab) neu zusammengestellt — nur die im jeweiligen Lookback-Fenster besten Pairs, begrenzt durch das Max-Drawdown-Limit.
+- **Alle Configs:** Alle jemals gefundenen/aktiven Configs laufen durchgehend, ohne Re-Selektion.
+
+**Ergebnis:** Equity-Kurven-Vergleich (oben) + Drawdown-Verlauf (unten) beider Strategien via Telegram, inkl. PnL%, MaxDD%, Win-Rate und Trade-Anzahl je Strategie.
+
+**Was man lernt:** Wenn "Alle Configs" die WF-Re-Opt-Kurve deutlich schlägt, deutet das darauf hin, dass die Re-Optimierung zu reaktiv ist oder gute Pairs vorzeitig aus dem Portfolio wirft — dann eher `backtest_lookback_weeks` erhöhen oder das Re-Opt-Intervall verlängern. Schlägt WF Re-Opt "Alle Configs", bestätigt das den Nutzen der laufenden Neuauswahl.
+
+```bash
+./run_analysis.sh
+# → Auswahl: 20
+```
+
+---
+
 ### Option 0 — Alle Analysen auf einmal
 
 ```bash
@@ -814,7 +841,7 @@ Win-Rate, PnL und Calmar pro Session.
 # → Auswahl: 0
 ```
 
-Führt alle 19 Analysen nacheinander mit Standard-Parametern aus (Kapital 100 USDT, Risk 2.5%). Analysen die keine Daten finden (z.B. leere Genome-DB oder keine Backtest-Daten) werden übersprungen ohne Fehler. Alle Charts landen in `docs/` und werden via Telegram gesendet.
+Führt alle 20 Analysen nacheinander mit Standard-Parametern aus (Kapital 100 USDT, Risk 2.5%). Analysen die keine Daten finden (z.B. leere Genome-DB oder keine Backtest-Daten) werden übersprungen ohne Fehler. Alle Charts landen in `docs/` und werden via Telegram gesendet.
 
 ---
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_analysis.sh — dnabot Wissenschaftliche Analysen
 #
-# Alle 19 Analysen unter einem Befehl. Interaktive Auswahl.
+# Alle 20 Analysen unter einem Befehl. Interaktive Auswahl.
 # Ergebnisse werden als Chart via Telegram gesendet.
 #
 # Ausführung:

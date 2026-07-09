@@ -150,22 +150,41 @@ class Exchange:
             df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
             df.index = pd.DatetimeIndex([], tz='UTC', name='timestamp')
 
-        # Luecke am Ende schliessen: der history-candles-Endpoint liefert manchmal
-        # keine Daten mehr, sobald das Fenster zu nah an "jetzt" heranreicht (siehe
-        # die vorzeitigen Abbrueche oben). fetch_recent_ohlcv nutzt ein kleineres,
-        # aktuelles Fenster und trifft dabei zuverlaessig den richtigen Endpoint.
+        # Luecke am Ende schliessen: Bitgets history-candles-Endpoint deckt die letzten
+        # N Tage vor "jetzt" gar nicht ab (ccxt kennt diese Grenze pro Timeframe unter
+        # options['fetchOHLCV']['maxDaysPerTimeframe'], z.B. 1h=83 Tage, 30m=52 Tage).
+        # Ein Bridge-Fetch, der zu nah an diese Grenze herangeht, faellt selbst wieder
+        # auf die historische (leere) Seite - deshalb mit Sicherheitsabstand rechnen.
         now_ms = self.exchange.milliseconds()
         target_ts = min(end_ts, now_ms)
-        gap_ms = target_ts - current_ts
-        if gap_ms > tf_ms:
-            gap_candles = int(gap_ms / tf_ms) + 5
+        if target_ts - current_ts > tf_ms:
+            try:
+                max_days_recent = (
+                    self.exchange.options.get('fetchOHLCV', {})
+                    .get('maxDaysPerTimeframe', {})
+                    .get(timeframe, 30)
+                )
+            except Exception:
+                max_days_recent = 30
+            safety_margin_days = 3
+            safe_since_ms = now_ms - max(1, max_days_recent - safety_margin_days) * 86_400_000
+            fetch_since_ms = max(current_ts, safe_since_ms)
+            gap_candles = int((now_ms - fetch_since_ms) / tf_ms) + 5
             logger.info(
                 f"Schliesse Luecke {symbol} ({timeframe}) mit fetch_recent_ohlcv "
-                f"(~{gap_candles} Kerzen ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()})..."
+                f"(~{gap_candles} Kerzen ab {pd.Timestamp(fetch_since_ms, unit='ms', tz='UTC').date()}, "
+                f"Bitget-Grenze: {max_days_recent}d)..."
             )
             recent_df = self.fetch_recent_ohlcv(symbol, timeframe, limit=gap_candles)
             if not recent_df.empty:
                 df = pd.concat([df, recent_df])
+                if fetch_since_ms > current_ts + tf_ms:
+                    logger.warning(
+                        f"Rest-Luecke {symbol} ({timeframe}) zwischen "
+                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} und "
+                        f"{pd.Timestamp(fetch_since_ms, unit='ms', tz='UTC').date()} bleibt ungedeckt "
+                        f"(zu nah an Bitgets History-Grenze)."
+                    )
 
         if df.empty:
             return pd.DataFrame()

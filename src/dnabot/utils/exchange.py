@@ -33,38 +33,44 @@ class Exchange:
             self.markets = {}
 
     def fetch_recent_ohlcv(self, symbol, timeframe, limit=1000):
+        """Laedt die letzten `limit` Kerzen ueber Vorwaerts-Paginierung ab einem berechneten Startzeitpunkt.
+
+        Frueher wurde rueckwaerts paginiert und dabei angenommen, dass jeder `since`-Call
+        BATCH=1000 Kerzen zurueckliefert. Bitget liefert pro Call aber oft nur ~90-100 Kerzen,
+        wodurch der Rueckwaerts-Sprung `oldest_ts - timeframe_ms * BATCH` stillschweigend
+        Luecken von Monaten/Jahren in die Historie riss (betraf u.a. trade_manager.py's
+        Live-Signalberechnung mit FETCH_LIMIT=200 -- ATR und Gen-Sequenz liefen auf
+        luecken behafteten Daten). Vorwaerts-Paginierung ist unabhaengig von der
+        tatsaechlichen Chunk-Groesse korrekt, weil `since` immer exakt an die zuletzt
+        erhaltene Kerze anschliesst.
+        """
         if not self.markets:
             return pd.DataFrame()
-        BATCH = 1000
-        timeframe_ms = self.exchange.parse_timeframe(timeframe) * 1000
-        all_ohlcv = []
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=min(limit, BATCH))
-            if not ohlcv:
-                return pd.DataFrame()
-            all_ohlcv = ohlcv
-        except Exception as e:
-            logger.error(f"Fehler beim Laden von OHLCV für {symbol}: {e}")
-            return pd.DataFrame()
 
-        while len(all_ohlcv) < limit:
-            oldest_ts = all_ohlcv[0][0]
-            fetch_since = oldest_ts - timeframe_ms * BATCH
-            remaining = limit - len(all_ohlcv)
+        timeframe_ms = self.exchange.parse_timeframe(timeframe) * 1000
+        since = self.exchange.milliseconds() - timeframe_ms * limit
+        all_ohlcv = []
+        fetch_limit = 200
+
+        while since < self.exchange.milliseconds():
             try:
+                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, fetch_limit)
+                if not ohlcv:
+                    break
+                all_ohlcv.extend(ohlcv)
+                # +1ms statt +timeframe_ms: Bitgets `since` ist exklusiv (timestamp > since),
+                # ein voller Timeframe-Schritt trifft exakt die naechste Kerze und ueberspringt sie.
+                since = ohlcv[-1][0] + 1
                 time.sleep(self.exchange.rateLimit / 1000)
-                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, fetch_since, min(remaining + 10, BATCH))
-                if not ohlcv:
-                    break
-                ohlcv = [c for c in ohlcv if c[0] < oldest_ts]
-                if not ohlcv:
-                    break
-                all_ohlcv = ohlcv + all_ohlcv
             except ccxt.RateLimitExceeded:
                 time.sleep(5)
             except Exception as e:
-                logger.error(f"Fehler beim Laden älterer OHLCV für {symbol}: {e}")
+                logger.error(f"Fehler beim Laden von OHLCV für {symbol}: {e}")
+                time.sleep(1)
                 break
+
+        if not all_ohlcv:
+            return pd.DataFrame()
 
         df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)

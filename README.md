@@ -1030,12 +1030,24 @@ Auf 15m/30m sind 4-6 Kerzen nur 1-3 Stunden — zu kurz für statistisch bedeuts
 | **XRP** | Gut — klare Kerzenstruktur | Gut, besonders in Range-Phasen | Sehr lange Datenbasis | ✅ Gut |
 | **AVAX** | Gut — ordentliche Kerzenformen | Mittel-hoch | Ausreichend ab 2020 | ✅ Gut |
 | **LTC** | Gut — BTC-korreliert | Gut | Lange Datenbasis | ✅ Gut |
+| **ATOM** | Gut — sauberes institutionelles Verhalten | Gut | Ausreichend ab 2019 | ✅ Gut |
+| **ETC** | Gut — BTC/ETH-korreliert, diszipliniert | Gut | Lange Datenbasis ab 2016 | ✅ Gut |
+| **BCH** | Gut — BTC-Fork, ähnliche Struktur wie LTC | Gut | Lange Datenbasis ab 2017 | ✅ Gut |
+| **XLM** | Gut — ruhige, wiederholbare Muster | Gut | Sehr lange Datenbasis ab 2014 | ✅ Gut |
 | **ADA** | Mittel — wenig Körper in Seitwärts | Mittel | Gute Datenbasis | ⚠️ Mittel |
 | **ARB** | Mittel — junge Datenbasis | Noch aufbauend | Kurze Datenbasis (ab 2023) | ⚠️ Mittel |
 | **DOT** | Mittel — oft indifferente Kerzen | Gering | Ausreichend | ⚠️ Mittel |
 | **LINK** | Mittel — explosiv in Bull, träge sonst | Ungleichmäßig | Ausreichend | ⚠️ Mittel |
+| **UNI** | Mittel — solide DeFi-Blue-Chip-Struktur | Mittel-hoch | Ausreichend ab 2020 | ⚠️ Mittel |
+| **FIL** | Mittel — brauchbare, wiederkehrende Struktur | Mittel | Ausreichend ab 2020 | ⚠️ Mittel |
+| **NEAR** | Mittel — gute Trendphasen | Mittel-hoch | Ausreichend ab 2020 | ⚠️ Mittel |
+| **HBAR** | Mittel — ruhige institutionelle Muster | Mittel | Ausreichend ab 2019 | ⚠️ Mittel |
+| **VET** | Mittel — oft range-gebunden, gut für Reversal-Genome | Mittel | Ausreichend ab 2018 | ⚠️ Mittel |
+| **ALGO** | Mittel — diszipliniert, technisch sauber | Mittel | Ausreichend ab 2019 | ⚠️ Mittel |
 | **DOGE** | Schlecht — sentiment-getriebene Muster | Niedrig, nicht statistisch | Vorhanden aber unbrauchbar | ❌ Schlecht |
 | **SHIB/PEPE** | Nicht lernbar — Pump-Candles | Keine Wiederholbarkeit | Zu kurze Datenbasis | ❌❌ Nicht geeignet |
+
+> **Hinweis:** `BNB, LTC, ATOM, ETC, XLM, LINK, DOT, UNI, FIL, NEAR, HBAR, VET, ALGO` sind bereits über den Auto-Optimizer in `active_strategies` live — der Optimizer hat unabhängig von dieser Tabelle sehr ähnliche Coins gewählt (bestätigt die Einschätzung). `BTC, ETH, SOL, XRP, ADA, BCH` sind aktuell **nicht** aktiv und lohnen einen expliziten Discovery-Lauf (`scan_and_learn.py --symbol ... --timeframe ...`), da sie noch nicht in der Genome-DB stehen.
 
 ### Empfohlene Kombinationen (Ranking)
 
@@ -1049,6 +1061,11 @@ Auf 15m/30m sind 4-6 Kerzen nur 1-3 Stunden — zu kurz für statistisch bedeuts
 | 4 | **XRP 4h** | Gute Sequenzen in Range- und Trendphasen |
 | 4 | **LTC 4h** | BTC-Muster, gute Datenbasis |
 | 5 | **AVAX 4h** | Gute Bullmarkt-Sequenzen |
+| 6 | **ATOM 4h / 6h** | Sauberes institutionelles Verhalten, live bestätigt |
+| 6 | **ETC 4h / 6h** | Alte, disziplinierte BTC/ETH-korrelierte Struktur |
+| 6 | **BCH 4h** | BTC-Fork, ähnlich robust wie LTC/ETC |
+| 6 | **XLM 2h / 6h** | Ruhige, sehr lange Datenbasis, live bestätigt |
+| 7 | **LINK / DOT / UNI / FIL / NEAR / HBAR / VET / ALGO (2h–6h)** | Solide Zweitwahl, alle bereits live über Auto-Optimizer bestätigt |
 | ❌ | **Alles auf 15m / 30m** | Sequenzen zu kurz, kein statistischer Wert |
 | ❌ | **DOGE / SHIB** | Muster nicht wiederholbar, kein Lerneffekt |
 

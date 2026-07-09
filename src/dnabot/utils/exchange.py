@@ -136,11 +136,33 @@ class Exchange:
                 logger.error(f"Fehler beim historischen Download: {e}")
                 time.sleep(5)
 
-        if not all_ohlcv:
+        if all_ohlcv:
+            df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df.set_index('timestamp', inplace=True)
+        else:
+            df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+            df.index = pd.DatetimeIndex([], tz='UTC', name='timestamp')
+
+        # Luecke am Ende schliessen: der history-candles-Endpoint liefert manchmal
+        # keine Daten mehr, sobald das Fenster zu nah an "jetzt" heranreicht (siehe
+        # die vorzeitigen Abbrueche oben). fetch_recent_ohlcv nutzt ein kleineres,
+        # aktuelles Fenster und trifft dabei zuverlaessig den richtigen Endpoint.
+        now_ms = self.exchange.milliseconds()
+        target_ts = min(end_ts, now_ms)
+        gap_ms = target_ts - current_ts
+        if gap_ms > tf_ms:
+            gap_candles = int(gap_ms / tf_ms) + 5
+            logger.info(
+                f"Schliesse Luecke {symbol} ({timeframe}) mit fetch_recent_ohlcv "
+                f"(~{gap_candles} Kerzen ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()})..."
+            )
+            recent_df = self.fetch_recent_ohlcv(symbol, timeframe, limit=gap_candles)
+            if not recent_df.empty:
+                df = pd.concat([df, recent_df])
+
+        if df.empty:
             return pd.DataFrame()
-        df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-        df.set_index('timestamp', inplace=True)
         df.sort_index(inplace=True)
         df = df[~df.index.duplicated(keep='last')]
         logger.info(f"Geladen: {len(df)} Kerzen für {symbol}")

@@ -89,15 +89,37 @@ class Exchange:
         tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_ohlcv = []
         current_ts = start_ts
+        empty_retries = 0
+        MAX_EMPTY_RETRIES = 3
         logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
         while current_ts < end_ts:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, current_ts, 200)
                 if not ohlcv:
+                    empty_retries += 1
+                    if empty_retries <= MAX_EMPTY_RETRIES:
+                        logger.warning(
+                            f"Leere Antwort {symbol} ({timeframe}) ab "
+                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}, "
+                            f"Retry {empty_retries}/{MAX_EMPTY_RETRIES}..."
+                        )
+                        time.sleep(2)
+                        continue
+                    logger.warning(
+                        f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
+                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
+                        f"— wiederholt leere API-Antwort."
+                    )
                     break
+                empty_retries = 0
                 ohlcv = [c for c in ohlcv if c[0] <= end_ts]
                 if not ohlcv:
+                    logger.warning(
+                        f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
+                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
+                        f"— Antwort sprang über Zieldatum hinaus."
+                    )
                     break
                 all_ohlcv.extend(ohlcv)
                 current_ts = ohlcv[-1][0] + tf_ms

@@ -86,6 +86,48 @@ class Exchange:
             df = df.iloc[-limit:]
         return df
 
+    def _probe_next_available_ts(self, symbol, timeframe, from_ts, upper_bound_ts, tf_ms):
+        """Sucht den naechsten Zeitpunkt >= from_ts, an dem Bitget wieder Kerzen liefert.
+
+        Erst exponentiell wachsende Schritte vorwaerts tasten, bis irgendwo wieder Daten
+        auftauchen, dann per Bisektion zwischen letztem leeren und erstem gefundenen Punkt
+        die genaue Grenze eingrenzen. Praeziser und mit weniger Requests als ein blindes
+        Ueberspringen in festen Schritten. Gibt None zurueck, wenn bis upper_bound_ts nirgends
+        mehr Daten zu finden sind.
+        """
+        lo = from_ts
+        hi = from_ts
+        step = tf_ms * 200
+        found_hi = None
+        while hi < upper_bound_ts:
+            hi = min(hi + step, upper_bound_ts)
+            try:
+                probe = self.exchange.fetch_ohlcv(symbol, timeframe, hi, 5)
+            except Exception:
+                probe = None
+            time.sleep(0.5)
+            if probe:
+                found_hi = hi
+                break
+            lo = hi
+            step *= 2
+        if found_hi is None:
+            return None
+        for _ in range(12):
+            if found_hi - lo <= tf_ms:
+                break
+            mid = lo + (found_hi - lo) // 2
+            try:
+                probe = self.exchange.fetch_ohlcv(symbol, timeframe, mid, 5)
+            except Exception:
+                probe = None
+            time.sleep(0.5)
+            if probe:
+                found_hi = mid
+            else:
+                lo = mid
+        return found_hi
+
     def fetch_historical_ohlcv(self, symbol, timeframe, start_date_str, end_date_str):
         if not self.markets:
             return pd.DataFrame()
@@ -94,8 +136,6 @@ class Exchange:
         tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_ohlcv = []
         current_ts = start_ts
-        empty_skips = 0
-        MAX_CONSECUTIVE_EMPTY_SKIPS = 15  # ueberspringt bis zu ~15*200 Kerzen Luecke, bevor aufgegeben wird
         logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
         while current_ts < end_ts:
@@ -115,29 +155,28 @@ class Exchange:
                     # Bitget hat manche Fenster in der eigenen Historie schlicht nicht gespeichert
                     # (bestaetigt per Tages-Sweep: BTC 1h fehlt komplett vom 2026-04-18 bis
                     # 2026-05-10, exakt 23 Tage - davor und danach sind Daten regulaer abrufbar).
-                    # Kein Retry auf denselben Zeitpunkt, sondern ueber das leere Fenster
-                    # hinwegspringen und weitermachen. Sprungziel wird auf den naechsten
-                    # Tagesbeginn (00:00 UTC) gerundet statt auf einen krummen Zeitstempel.
-                    empty_skips += 1
-                    if empty_skips <= MAX_CONSECUTIVE_EMPTY_SKIPS:
-                        skip_from = pd.Timestamp(current_ts, unit='ms', tz='UTC').date()
-                        raw_next_ts = current_ts + 200 * tf_ms
-                        next_day = pd.Timestamp(raw_next_ts, unit='ms', tz='UTC').normalize()
-                        current_ts = int(next_day.value // 1_000_000)
-                        logger.warning(
-                            f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
-                            f"ueberspringe Fenster ({empty_skips}/{MAX_CONSECUTIVE_EMPTY_SKIPS}), "
-                            f"weiter ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} 00:00 UTC..."
-                        )
-                        time.sleep(1)
-                        continue
+                    # Statt blind in festen Schritten zu springen: aktiv nach dem naechsten
+                    # verfuegbaren Datenpunkt suchen (exponentiell + Bisektion).
+                    skip_from = pd.Timestamp(current_ts, unit='ms', tz='UTC').date()
                     logger.warning(
-                        f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
-                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
-                        f"— {MAX_CONSECUTIVE_EMPTY_SKIPS} aufeinanderfolgende leere Fenster."
+                        f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
+                        f"suche naechsten verfuegbaren Zeitpunkt..."
                     )
-                    break
-                empty_skips = 0
+                    next_ts = self._probe_next_available_ts(
+                        symbol, timeframe, current_ts, min(end_ts, now_ms), tf_ms
+                    )
+                    if next_ts is None:
+                        logger.warning(
+                            f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
+                            f"{skip_from} (Ziel: {end_date_str}) — keine weiteren Daten bis Zieldatum gefunden."
+                        )
+                        break
+                    current_ts = next_ts
+                    logger.info(
+                        f"{symbol} ({timeframe}): Daten wieder verfuegbar ab "
+                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}."
+                    )
+                    continue
                 ohlcv = [c for c in ohlcv if c[0] <= end_ts]
                 if not ohlcv:
                     logger.warning(

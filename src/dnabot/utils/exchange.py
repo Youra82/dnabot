@@ -113,17 +113,21 @@ class Exchange:
                         )
                         break
                     # Bitget hat manche Fenster in der eigenen Historie schlicht nicht gespeichert
-                    # (bestaetigt: BTC 1h fehlt komplett fuer ~10 Tage Mitte April 2026, sowohl
-                    # davor als auch danach sind Daten regulaer abrufbar). Kein Retry auf denselben
-                    # Zeitpunkt, sondern ueber das leere Fenster hinwegspringen und weitermachen.
+                    # (bestaetigt per Tages-Sweep: BTC 1h fehlt komplett vom 2026-04-18 bis
+                    # 2026-05-10, exakt 23 Tage - davor und danach sind Daten regulaer abrufbar).
+                    # Kein Retry auf denselben Zeitpunkt, sondern ueber das leere Fenster
+                    # hinwegspringen und weitermachen. Sprungziel wird auf den naechsten
+                    # Tagesbeginn (00:00 UTC) gerundet statt auf einen krummen Zeitstempel.
                     empty_skips += 1
                     if empty_skips <= MAX_CONSECUTIVE_EMPTY_SKIPS:
                         skip_from = pd.Timestamp(current_ts, unit='ms', tz='UTC').date()
-                        current_ts += 200 * tf_ms
+                        raw_next_ts = current_ts + 200 * tf_ms
+                        next_day = pd.Timestamp(raw_next_ts, unit='ms', tz='UTC').normalize()
+                        current_ts = int(next_day.value // 1_000_000)
                         logger.warning(
                             f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
                             f"ueberspringe Fenster ({empty_skips}/{MAX_CONSECUTIVE_EMPTY_SKIPS}), "
-                            f"weiter ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}..."
+                            f"weiter ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} 00:00 UTC..."
                         )
                         time.sleep(1)
                         continue

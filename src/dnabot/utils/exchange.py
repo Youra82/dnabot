@@ -56,6 +56,11 @@ class Exchange:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, fetch_limit)
                 if not ohlcv:
+                    logger.warning(
+                        f"fetch_recent_ohlcv {symbol} ({timeframe}): leere Antwort ab "
+                        f"{pd.Timestamp(since, unit='ms', tz='UTC')} — breche ab "
+                        f"({len(all_ohlcv)} Kerzen bereits geladen)."
+                    )
                     break
                 all_ohlcv.extend(ohlcv)
                 # +1ms statt +timeframe_ms: Bitgets `since` ist exklusiv (timestamp > since),

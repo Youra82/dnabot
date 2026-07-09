@@ -102,6 +102,16 @@ class Exchange:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, current_ts, 200)
                 if not ohlcv:
+                    # Kein Datenloch, sondern schlicht die Gegenwart erreicht (die aktuelle
+                    # Kerze ist noch nicht abgeschlossen / es gibt keine Zukunfts-Kerzen) -
+                    # sauber beenden statt sinnlos in die Zukunft zu "ueberspringen".
+                    now_ms = self.exchange.milliseconds()
+                    if current_ts >= now_ms - tf_ms:
+                        logger.info(
+                            f"Historischer Download {symbol} ({timeframe}) erreicht Gegenwart bei "
+                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} — keine weiteren Kerzen verfuegbar."
+                        )
+                        break
                     # Bitget hat manche Fenster in der eigenen Historie schlicht nicht gespeichert
                     # (bestaetigt: BTC 1h fehlt komplett fuer ~10 Tage Mitte April 2026, sowohl
                     # davor als auch danach sind Daten regulaer abrufbar). Kein Retry auf denselben

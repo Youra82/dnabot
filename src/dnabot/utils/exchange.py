@@ -95,21 +95,22 @@ class Exchange:
         all_ohlcv = []
         current_ts = start_ts
         empty_retries = 0
-        MAX_EMPTY_RETRIES = 3
+        EMPTY_BACKOFF_SECONDS = [10, 20, 30]
         logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
         while current_ts < end_ts:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, current_ts, 200)
                 if not ohlcv:
-                    empty_retries += 1
-                    if empty_retries <= MAX_EMPTY_RETRIES:
+                    if empty_retries < len(EMPTY_BACKOFF_SECONDS):
+                        wait_s = EMPTY_BACKOFF_SECONDS[empty_retries]
+                        empty_retries += 1
                         logger.warning(
                             f"Leere Antwort {symbol} ({timeframe}) ab "
                             f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}, "
-                            f"Retry {empty_retries}/{MAX_EMPTY_RETRIES}..."
+                            f"Retry {empty_retries}/{len(EMPTY_BACKOFF_SECONDS)} (warte {wait_s}s)..."
                         )
-                        time.sleep(2)
+                        time.sleep(wait_s)
                         continue
                     logger.warning(
                         f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "

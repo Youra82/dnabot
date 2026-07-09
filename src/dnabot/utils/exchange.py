@@ -94,31 +94,36 @@ class Exchange:
         tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_ohlcv = []
         current_ts = start_ts
-        empty_retries = 0
-        EMPTY_BACKOFF_SECONDS = [10, 20, 30]
+        empty_skips = 0
+        MAX_CONSECUTIVE_EMPTY_SKIPS = 15  # ueberspringt bis zu ~15*200 Kerzen Luecke, bevor aufgegeben wird
         logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
         while current_ts < end_ts:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, current_ts, 200)
                 if not ohlcv:
-                    if empty_retries < len(EMPTY_BACKOFF_SECONDS):
-                        wait_s = EMPTY_BACKOFF_SECONDS[empty_retries]
-                        empty_retries += 1
+                    # Bitget hat manche Fenster in der eigenen Historie schlicht nicht gespeichert
+                    # (bestaetigt: BTC 1h fehlt komplett fuer ~10 Tage Mitte April 2026, sowohl
+                    # davor als auch danach sind Daten regulaer abrufbar). Kein Retry auf denselben
+                    # Zeitpunkt, sondern ueber das leere Fenster hinwegspringen und weitermachen.
+                    empty_skips += 1
+                    if empty_skips <= MAX_CONSECUTIVE_EMPTY_SKIPS:
+                        skip_from = pd.Timestamp(current_ts, unit='ms', tz='UTC').date()
+                        current_ts += 200 * tf_ms
                         logger.warning(
-                            f"Leere Antwort {symbol} ({timeframe}) ab "
-                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}, "
-                            f"Retry {empty_retries}/{len(EMPTY_BACKOFF_SECONDS)} (warte {wait_s}s)..."
+                            f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
+                            f"ueberspringe Fenster ({empty_skips}/{MAX_CONSECUTIVE_EMPTY_SKIPS}), "
+                            f"weiter ab {pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}..."
                         )
-                        time.sleep(wait_s)
+                        time.sleep(1)
                         continue
                     logger.warning(
                         f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
                         f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
-                        f"— wiederholt leere API-Antwort."
+                        f"— {MAX_CONSECUTIVE_EMPTY_SKIPS} aufeinanderfolgende leere Fenster."
                     )
                     break
-                empty_retries = 0
+                empty_skips = 0
                 ohlcv = [c for c in ohlcv if c[0] <= end_ts]
                 if not ohlcv:
                     logger.warning(
@@ -149,42 +154,6 @@ class Exchange:
         else:
             df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
             df.index = pd.DatetimeIndex([], tz='UTC', name='timestamp')
-
-        # Luecke am Ende schliessen: Bitgets history-candles-Endpoint deckt die letzten
-        # N Tage vor "jetzt" gar nicht ab (ccxt kennt diese Grenze pro Timeframe unter
-        # options['fetchOHLCV']['maxDaysPerTimeframe'], z.B. 1h=83 Tage, 30m=52 Tage).
-        # Ein Bridge-Fetch, der zu nah an diese Grenze herangeht, faellt selbst wieder
-        # auf die historische (leere) Seite - deshalb mit Sicherheitsabstand rechnen.
-        now_ms = self.exchange.milliseconds()
-        target_ts = min(end_ts, now_ms)
-        if target_ts - current_ts > tf_ms:
-            try:
-                max_days_recent = (
-                    self.exchange.options.get('fetchOHLCV', {})
-                    .get('maxDaysPerTimeframe', {})
-                    .get(timeframe, 30)
-                )
-            except Exception:
-                max_days_recent = 30
-            safety_margin_days = 3
-            safe_since_ms = now_ms - max(1, max_days_recent - safety_margin_days) * 86_400_000
-            fetch_since_ms = max(current_ts, safe_since_ms)
-            gap_candles = int((now_ms - fetch_since_ms) / tf_ms) + 5
-            logger.info(
-                f"Schliesse Luecke {symbol} ({timeframe}) mit fetch_recent_ohlcv "
-                f"(~{gap_candles} Kerzen ab {pd.Timestamp(fetch_since_ms, unit='ms', tz='UTC').date()}, "
-                f"Bitget-Grenze: {max_days_recent}d)..."
-            )
-            recent_df = self.fetch_recent_ohlcv(symbol, timeframe, limit=gap_candles)
-            if not recent_df.empty:
-                df = pd.concat([df, recent_df])
-                if fetch_since_ms > current_ts + tf_ms:
-                    logger.warning(
-                        f"Rest-Luecke {symbol} ({timeframe}) zwischen "
-                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} und "
-                        f"{pd.Timestamp(fetch_since_ms, unit='ms', tz='UTC').date()} bleibt ungedeckt "
-                        f"(zu nah an Bitgets History-Grenze)."
-                    )
 
         if df.empty:
             return pd.DataFrame()

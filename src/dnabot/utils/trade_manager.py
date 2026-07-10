@@ -966,30 +966,28 @@ def full_trade_cycle(
         notify_new_position(exchange, position, params, tracker_path, telegram_config, logger)
         ensure_tp_sl(exchange, position, genome_signal, params, tracker_path, telegram_config, logger)
 
-        # --- Preis-Overshoot-Check: Position schließen falls Preis SL/TP bereits überschritten ---
+        # --- Preis-Overshoot-Check: Position schließen falls Preis SL bereits überschritten ---
+        # Nur fuer SL sinnvoll: das ist ein harter Stop, ein Ueberschreiten ohne Exit ist ein
+        # echter Notfall. TP ist dagegen nur der Aktivierungstrigger fuer den nativen Bitget
+        # Trailing Stop (siehe place_trailing_stop_order) - der Preis soll TP absichtlich
+        # ueberschreiten, damit der Trailing Stop den Trend weiter mitnehmen kann. Ein
+        # Force-Close dort wuerde profitable Trades genau beim Aktivieren abwuergen statt sie
+        # laufen zu lassen (siehe BCH-Vorfall 2026-07-09).
         try:
             ov_tracker = read_tracker(tracker_path)
             ov_genome = ov_tracker.get('active_genome') or {}
             sl_price_ov = ov_genome.get('sl_price')
-            tp_price_ov = ov_genome.get('tp_price')
             pos_side_ov = position.get('side', 'long')
             contracts_ov = float(position.get('contracts', 0))
             close_side_ov = 'sell' if pos_side_ov == 'long' else 'buy'
 
-            if sl_price_ov and tp_price_ov and contracts_ov > 0 and current_price > 0:
+            if sl_price_ov and contracts_ov > 0 and current_price > 0:
                 sl_val = float(sl_price_ov)
-                tp_val = float(tp_price_ov)
-                if pos_side_ov == 'long':
-                    breached = current_price <= sl_val or current_price >= tp_val
-                    overshoot_reason = "SL" if current_price <= sl_val else "TP"
-                else:
-                    breached = current_price >= sl_val or current_price <= tp_val
-                    overshoot_reason = "SL" if current_price >= sl_val else "TP"
+                breached = (current_price <= sl_val) if pos_side_ov == 'long' else (current_price >= sl_val)
                 if breached:
-                    level_ov = sl_val if overshoot_reason == "SL" else tp_val
                     logger.warning(
-                        f"Preis-Overshoot: {current_price:.6f} hat {overshoot_reason} "
-                        f"({level_ov:.6f}) überschritten — schließe {symbol} per Market."
+                        f"Preis-Overshoot: {current_price:.6f} hat SL "
+                        f"({sl_val:.6f}) überschritten — schließe {symbol} per Market."
                     )
                     try:
                         exchange.cancel_all_orders_for_symbol(symbol)
@@ -1006,7 +1004,7 @@ def full_trade_cycle(
                     send_message(
                         telegram_config.get('bot_token'), telegram_config.get('chat_id'),
                         f"⚡ dnabot NOTSCHLIESSUNG ({symbol}): Preis {current_price:.6f} hat "
-                        f"{overshoot_reason} ({level_ov:.6f}) überschritten. "
+                        f"SL ({sl_val:.6f}) überschritten. "
                         f"Position per Market geschlossen."
                     )
         except Exception as e:

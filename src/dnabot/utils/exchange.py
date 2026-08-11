@@ -138,7 +138,15 @@ class Exchange:
         current_ts = start_ts
         logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
-        while current_ts < end_ts:
+        # Schutz gegen Endlosschleife (uebernommen von ltbbot/titanbot exchange.py):
+        # manche Exchange-Fehler (z.B. Bitget 40017 bei der noch nicht abgeschlossenen
+        # aktuellsten Kerze) kommen als Exception statt als leere Antwort und wuerden
+        # sonst auf demselben current_ts ewig retryt werden. Zaehler wird bei jedem
+        # erfolgreichen Chunk zurueckgesetzt.
+        max_retries = 5
+        retries = 0
+
+        while current_ts < end_ts and retries < max_retries:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, current_ts, 200)
                 if not ohlcv:
@@ -187,8 +195,10 @@ class Exchange:
                     break
                 all_ohlcv.extend(ohlcv)
                 current_ts = ohlcv[-1][0] + tf_ms
+                retries = 0
                 time.sleep(self.exchange.rateLimit / 1000)
             except ccxt.RateLimitExceeded:
+                retries += 1
                 time.sleep(10)
             except ccxt.BadSymbol as e:
                 logger.error(f"Symbol nicht auf Bitget verfügbar: {e}")
@@ -197,8 +207,15 @@ class Exchange:
                 if 'does not have market symbol' in str(e):
                     logger.error(f"Symbol nicht auf Bitget verfügbar: {e}")
                     return None
-                logger.error(f"Fehler beim historischen Download: {e}")
+                retries += 1
+                logger.error(f"Fehler beim historischen Download ({retries}/{max_retries}): {e}")
                 time.sleep(5)
+
+        if retries >= max_retries:
+            logger.error(
+                f"Abbruch: {max_retries}x hintereinander fehlgeschlagen bei current_ts={current_ts} "
+                f"({pd.Timestamp(current_ts, unit='ms', tz='UTC')}). Gebe bisher geladene Daten zurück (falls vorhanden)."
+            )
 
         if all_ohlcv:
             df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])

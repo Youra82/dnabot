@@ -29,6 +29,15 @@ DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 MAX_NOTIONAL_USDT = 200_000.0
 
+# Feinere Timeframe je Strategie-Timeframe fuer die Trailing-Stop-Intrabar-Simulation
+# (oraclebot-Muster).
+FINE_TF_MAP = {
+    '5m': '1m', '15m': '1m', '30m': '1m',
+    '1h': '5m', '2h': '5m',
+    '4h': '15m', '6h': '15m',
+    '1d': '1h',
+}
+
 
 def _find_best_signal(genes: list[str], market: str, timeframe: str,
                        db: GenomeDB, params: dict) -> dict | None:
@@ -60,13 +69,25 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
 
 
 def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
-                    max_hold_candles: int = 20) -> dict:
+                    max_hold_candles: int = 20,
+                    trailing_callback_pct: float = None,
+                    fine_df: pd.DataFrame = None) -> dict:
     """
     Simuliert einen Trade auf historischen Daten.
 
     Entry = Close der Signal-Kerze
     SL = Low/High der letzten seq_len Kerzen
     TP = Entry ± rr_ratio × SL-Distanz
+
+    trailing_callback_pct (0-1, z.B. 0.01 = 1%): wenn gesetzt, wird tp_price nur
+    als AKTIVIERUNGS-Preis fuer einen Trailing Stop behandelt (wie live in
+    trade_manager.py via place_trailing_stop_order), statt als sofortiger Take-
+    Profit-Exit. Das ist die Live-Realitaet -- ohne diesen Parameter (None)
+    bleibt das alte Verhalten (fixer TP-Exit) fuer Rueckwaertskompatibilitaet
+    erhalten.
+    fine_df: feinere Kerzen (oraclebot-Muster) fuer eine praezisere Trailing-
+    Simulation als auf Basis der Coarse-Kerzen von `df` allein moeglich waere.
+    Ohne fine_df wird auf `df` selbst zurueckgefallen (grobere Naeherung).
     """
     seq_len = signal['seq_len']
     direction = signal['direction']
@@ -92,37 +113,73 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
 
     sl_pct = sl_dist / entry_price * 100.0
 
-    # Simulation: nächste max_hold_candles Kerzen
-    outcome = 'TIMEOUT'
-    exit_price = float(df['close'].iloc[min(entry_idx + max_hold_candles, len(df) - 1)])
-    exit_idx = min(entry_idx + max_hold_candles, len(df) - 1)
+    entry_time = df.index[entry_idx]
+    last_idx = min(entry_idx + max_hold_candles, len(df) - 1)
+    end_time = df.index[last_idx]
 
-    for j in range(entry_idx + 1, min(entry_idx + max_hold_candles + 1, len(df))):
-        h = float(df['high'].iloc[j])
-        l = float(df['low'].iloc[j])
+    # Walk-Bars: feinere Kerzen bevorzugt (praeziserer Trailing-Verlauf),
+    # sonst die Coarse-Kerzen von df selbst (altes Verhalten).
+    if fine_df is not None:
+        walk_bars = fine_df.loc[(fine_df.index > entry_time) & (fine_df.index <= end_time)]
+        using_fine = not walk_bars.empty
+    else:
+        using_fine = False
+    if not using_fine:
+        walk_bars = df.iloc[entry_idx + 1: last_idx + 1]
+
+    outcome = 'TIMEOUT'
+    exit_price = float(df['close'].iloc[last_idx])
+    exit_time = end_time
+    trailing_active = False
+    peak_price = None
+
+    for ts, bar in walk_bars.iterrows():
+        h, l = float(bar['high']), float(bar['low'])
 
         if direction == 'LONG':
             if l <= sl_price:
-                outcome = 'LOSS'
-                exit_price = sl_price
-                exit_idx = j
+                outcome, exit_price, exit_time = 'LOSS', sl_price, ts
                 break
-            if h >= tp_price:
-                outcome = 'WIN'
-                exit_price = tp_price
-                exit_idx = j
-                break
+            if trailing_callback_pct is None:
+                if h >= tp_price:
+                    outcome, exit_price, exit_time = 'WIN', tp_price, ts
+                    break
+            else:
+                if not trailing_active and h >= tp_price:
+                    trailing_active = True
+                    peak_price = h
+                if trailing_active:
+                    peak_price = max(peak_price, h)
+                    trail_level = peak_price * (1 - trailing_callback_pct)
+                    if l <= trail_level:
+                        outcome, exit_price, exit_time = 'WIN', trail_level, ts
+                        break
         else:
             if h >= sl_price:
-                outcome = 'LOSS'
-                exit_price = sl_price
-                exit_idx = j
+                outcome, exit_price, exit_time = 'LOSS', sl_price, ts
                 break
-            if l <= tp_price:
-                outcome = 'WIN'
-                exit_price = tp_price
-                exit_idx = j
-                break
+            if trailing_callback_pct is None:
+                if l <= tp_price:
+                    outcome, exit_price, exit_time = 'WIN', tp_price, ts
+                    break
+            else:
+                if not trailing_active and l <= tp_price:
+                    trailing_active = True
+                    peak_price = l
+                if trailing_active:
+                    peak_price = min(peak_price, l)
+                    trail_level = peak_price * (1 + trailing_callback_pct)
+                    if h >= trail_level:
+                        outcome, exit_price, exit_time = 'WIN', trail_level, ts
+                        break
+
+    # exit_idx (Coarse-Index) wird fuer die Fortsetzung der Hauptschleife gebraucht --
+    # bei Fein-Simulation ueber die Zeit statt ueber den Index bestimmt.
+    if using_fine:
+        exit_idx = df.index.searchsorted(exit_time)
+        exit_idx = min(exit_idx, len(df) - 1)
+    else:
+        exit_idx = last_idx if outcome == 'TIMEOUT' else df.index.get_loc(exit_time)
 
     if direction == 'LONG':
         pnl_pct = (exit_price - entry_price) / entry_price * 100.0
@@ -131,7 +188,7 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
 
     return {
         'entry_time': str(df.index[entry_idx]),
-        'exit_time': str(df.index[exit_idx]),
+        'exit_time': str(exit_time),
         'direction': direction,
         'entry_price': entry_price,
         'exit_price': exit_price,
@@ -159,6 +216,7 @@ def run_backtest(
     max_hold_candles: int = 20,
     warmup_candles: int = 35,
     leverage: int = 1,
+    fine_df: pd.DataFrame = None,
 ) -> dict:
     """
     Führt einen vollständigen Backtest durch.
@@ -171,6 +229,12 @@ def run_backtest(
         return {"trades": [], "stats": {}}
 
     logger.info(f"[Backtest] {market} ({timeframe}) | {len(df)} Kerzen | Kapital: {start_capital} USDT")
+
+    # Trailing Stop (wie live in trade_manager.py via place_trailing_stop_order) statt
+    # fixem TP-Exit -- tp_price wird zum Aktivierungspreis. None = altes Verhalten.
+    trailing_callback_pct = params.get('risk', {}).get('trailing_callback_rate_pct')
+    if trailing_callback_pct is not None:
+        trailing_callback_pct = float(trailing_callback_pct) / 100.0
 
     # Alle Gene vorberechnen
     genes = encode_dataframe(df)
@@ -192,7 +256,8 @@ def run_backtest(
             continue
 
         # Trade simulieren
-        trade = simulate_trade(signal, df, i, max_hold_candles)
+        trade = simulate_trade(signal, df, i, max_hold_candles,
+                               trailing_callback_pct=trailing_callback_pct, fine_df=fine_df)
 
         # Equity berechnen (Positionsgröße auf equity × leverage deckeln)
         risk_amount = equity * (risk_per_trade_pct / 100.0)

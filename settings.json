@@ -27,7 +27,17 @@
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6), move_threshold_pct (4h→1.0%), min_samples_to_activate (4h→80).",
     "min_samples_to_activate": 2,
     "scan_all_db_pairs": true,
-    "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies"
+    "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies",
+    "symbols": [
+      "ADA/USDT:USDT", "ALGO/USDT:USDT", "ARB/USDT:USDT", "ATOM/USDT:USDT",
+      "AVAX/USDT:USDT", "BCH/USDT:USDT", "BNB/USDT:USDT", "BTC/USDT:USDT",
+      "DOGE/USDT:USDT", "DOT/USDT:USDT", "ETC/USDT:USDT", "ETH/USDT:USDT",
+      "FIL/USDT:USDT", "HBAR/USDT:USDT", "LINK/USDT:USDT", "LTC/USDT:USDT",
+      "NEAR/USDT:USDT", "SOL/USDT:USDT", "UNI/USDT:USDT", "VET/USDT:USDT",
+      "XLM/USDT:USDT", "XRP/USDT:USDT"
+    ],
+    "timeframes": ["30m", "1h", "2h", "4h", "6h"],
+    "_symbols_timeframes_note": "Fester Scan-Pool (2026-08-12 aus genome.db extrahiert, 22 Coins x 5 TFs) -- damit ./run_pipeline.sh bei den Coin/TF-Prompts einfach mit Enter (Auto) den vollen Pool neu aufbaut."
   },
   "genome_settings": {
     "sequence_lengths": [

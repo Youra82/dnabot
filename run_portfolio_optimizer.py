@@ -731,6 +731,10 @@ def main():
     parser.add_argument('--start-date', type=str,   default=None)
     parser.add_argument('--end-date',   type=str,   default=None)
     parser.add_argument('--auto-write', action='store_true')
+    parser.add_argument('--force', action='store_true',
+                         help="Ueberschreibt settings.json auch wenn das neue Ergebnis "
+                              "nicht besser als das aktuelle Portfolio ist (z.B. nach einem "
+                              "Backtester-Fix, der die alte Vergleichsbasis unrealistisch macht).")
     args = parser.parse_args()
 
     # Startdatum-Fallback aus settings.json (wenn nicht per CLI angegeben)
@@ -841,7 +845,7 @@ def main():
 
     # settings.json Entscheidung
     settings_updated = False
-    if current_equity > 0 and not capital_changed:
+    if current_equity > 0 and not capital_changed and not args.force:
         print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
         if best_equity <= current_equity:
             print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
@@ -865,6 +869,9 @@ def main():
         write_to_settings(best_combo, best_risk)
         settings_updated = True
     else:
+        if args.force and current_equity > 0:
+            print(f"  {Y}--force: überschreibe settings.json unabhängig vom Vergleich "
+                  f"(aktuell {current_equity:.2f} USDT vs. neu {best_equity:.2f} USDT).{NC}\n")
         write_to_settings(best_combo, best_risk)
         settings_updated = True
 

@@ -20,7 +20,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
-from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP
+from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
 from scan_and_learn import (
     HISTORY_DAYS_MAP, resolve_history_days,
     load_settings, load_secrets,
@@ -188,20 +188,8 @@ def main():
         # Feinere Kerzen fuer die Trailing-Stop-Intrabar-Simulation (oraclebot-Muster) --
         # deckt denselben Zeitraum wie df ab. Best-effort: bei Fehler faellt
         # simulate_trade auf die Coarse-Kerzen-Naeherung zurueck.
-        fine_df = None
         fine_tf = FINE_TF_MAP.get(timeframe)
-        if fine_tf:
-            try:
-                fine_start = df.index[0].strftime('%Y-%m-%d')
-                fine_end   = df.index[-1].strftime('%Y-%m-%d')
-                fine_df = exchange.fetch_historical_ohlcv(symbol, fine_tf, fine_start, fine_end)
-                if fine_df is None or fine_df.empty:
-                    fine_df = None
-                else:
-                    logger.info(f"  Fein-Daten geladen: {fine_tf} ({len(fine_df)} Kerzen).")
-            except Exception as _e:
-                logger.warning(f"  Fein-Daten-Abruf ({fine_tf}) fehlgeschlagen: {_e}")
-                fine_df = None
+        fine_df = LazyFineData(symbol, fine_tf) if fine_tf else None
 
         results = run_backtest(
             df=df,

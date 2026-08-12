@@ -68,6 +68,80 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
     return best
 
 
+class LazyFineData:
+    """
+    On-Demand-Fetcher fuer Fein-Daten (Intrabar-Trailing-Simulation). Laedt
+    Fein-Kerzen nur fuer die Tage, die tatsaechlich von einem simulierten
+    Trade durchlaufen werden, statt den kompletten Backtest-Zeitraum vorab
+    herunterzuladen. Ergebnis ist identisch zum eagerly geladenen DataFrame,
+    nur Zeitpunkt und Groesse der Netzwerk-Fetches aendern sich. Ein Trade
+    kann viele Coarse-Kerzen ueberspannen, daher Tage-Bucketing ueber
+    mehrere Kalendertage hinweg.
+    """
+    def __init__(self, symbol, fine_tf):
+        self.symbol = symbol
+        self.fine_tf = fine_tf
+        self._days = {}
+        self._exchange = None
+
+    def _get_exchange(self):
+        if self._exchange is not None:
+            return self._exchange
+        try:
+            with open(os.path.join(PROJECT_ROOT, 'secret.json'), 'r') as f:
+                secrets = json.load(f)
+            accounts = secrets.get('dnabot', [])
+            if accounts:
+                from dnabot.utils.exchange import Exchange
+                self._exchange = Exchange(accounts[0])
+        except Exception:
+            self._exchange = None
+        return self._exchange
+
+    def _ensure_day(self, day):
+        if day in self._days:
+            return
+        exchange = self._get_exchange()
+        if exchange is None or not exchange.markets:
+            self._days[day] = None
+            return
+        try:
+            day_str = day.strftime('%Y-%m-%d')
+            next_day_str = (day + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, next_day_str)
+            self._days[day] = df if df is not None and not df.empty else None
+        except Exception:
+            self._days[day] = None
+
+    def get_slice(self, start_ts, end_ts):
+        if self.fine_tf is None:
+            return None
+        start_ts = pd.Timestamp(start_ts)
+        end_ts = pd.Timestamp(end_ts)
+        first_day = start_ts.floor('D')
+        last_day = (end_ts - pd.Timedelta(microseconds=1)).floor('D')
+        parts = []
+        day = first_day
+        while day <= last_day:
+            self._ensure_day(day)
+            if self._days[day] is not None:
+                parts.append(self._days[day])
+            day += pd.Timedelta(days=1)
+        if not parts:
+            return None
+        combined = pd.concat(parts).sort_index()
+        combined = combined[~combined.index.duplicated(keep='first')]
+        return combined.loc[(combined.index >= start_ts) & (combined.index < end_ts)]
+
+
+def _get_fine_slice(fine_data, start_ts, end_ts):
+    if fine_data is None:
+        return None
+    if hasattr(fine_data, 'get_slice'):
+        return fine_data.get_slice(start_ts, end_ts)
+    return fine_data.loc[(fine_data.index >= start_ts) & (fine_data.index < end_ts)]
+
+
 def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                     max_hold_candles: int = 20,
                     trailing_callback_pct: float = None,
@@ -120,8 +194,8 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
     # Walk-Bars: feinere Kerzen bevorzugt (praeziserer Trailing-Verlauf),
     # sonst die Coarse-Kerzen von df selbst (altes Verhalten).
     if fine_df is not None:
-        walk_bars = fine_df.loc[(fine_df.index > entry_time) & (fine_df.index <= end_time)]
-        using_fine = not walk_bars.empty
+        walk_bars = _get_fine_slice(fine_df, entry_time + pd.Timedelta(microseconds=1), end_time + pd.Timedelta(microseconds=1))
+        using_fine = walk_bars is not None and not walk_bars.empty
     else:
         using_fine = False
     if not using_fine:

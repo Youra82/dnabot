@@ -31,7 +31,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 sys.path.append(PROJECT_ROOT)
 
 from dnabot.genome.database import GenomeDB
-from dnabot.analysis.backtester import run_backtest, FINE_TF_MAP
+from dnabot.analysis.backtester import run_backtest, FINE_TF_MAP, LazyFineData
 
 logger = logging.getLogger(__name__)
 
@@ -625,19 +625,8 @@ def run_interactive_chart(settings: dict, secrets: dict):
             continue
         print(f"  {len(df)} Kerzen geladen.")
 
-        fine_df = None
         fine_tf = FINE_TF_MAP.get(timeframe)
-        if fine_tf:
-            try:
-                fine_df = exchange.fetch_historical_ohlcv(
-                    symbol, fine_tf,
-                    fetch_start.strftime('%Y-%m-%d'),
-                    fetch_end.strftime('%Y-%m-%d'),
-                )
-                if fine_df is None or fine_df.empty:
-                    fine_df = None
-            except Exception:
-                fine_df = None
+        fine_df = LazyFineData(symbol, fine_tf) if fine_tf else None
 
         # Backtest auf vollem DataFrame
         db = GenomeDB(DB_PATH)

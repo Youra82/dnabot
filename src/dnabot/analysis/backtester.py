@@ -40,11 +40,22 @@ FINE_TF_MAP = {
 
 
 def _find_best_signal(genes: list[str], market: str, timeframe: str,
-                       db: GenomeDB, params: dict) -> dict | None:
-    """Sucht das beste aktive Genome-Signal in den letzten 6 Genen."""
-    min_score = params.get('genome', {}).get('min_score', 0.05)
-    seq_lengths = params.get('genome', {}).get('sequence_lengths', [4, 5, 6])
+                       db: GenomeDB, params: dict, cutoff_iso: str = None) -> dict | None:
+    """Sucht das beste aktive Genome-Signal in den letzten 6 Genen.
+
+    Wenn cutoff_iso gesetzt ist, werden Genome-Stats point-in-time aus
+    genome_occurrences berechnet (nur Occurrences vor cutoff_iso) statt aus
+    der aktuellen All-Time-Aggregation -- verhindert Hindsight-Bias im
+    Backtest (siehe get_genome_as_of() in database.py). Ohne cutoff_iso
+    (z.B. Live-Nutzung) bleibt das alte Verhalten über db.get_genome().
+    """
+    genome_cfg = params.get('genome', {})
+    min_score = genome_cfg.get('min_score', 0.05)
+    seq_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
     rr_ratio = params.get('risk', {}).get('rr_ratio', 2.0)
+    min_winrate = genome_cfg.get('min_winrate', 0.45)
+    min_samples = genome_cfg.get('min_samples', 20)
+    half_life_days = genome_cfg.get('half_life_days', 180.0)
 
     best = None
     best_score = -1.0
@@ -55,7 +66,14 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
         seq = genes_to_sequence_string(genes[-seq_len:])
 
         for direction in ['LONG', 'SHORT']:
-            g = db.get_genome(seq, market, timeframe, direction)
+            if cutoff_iso is not None:
+                g = db.get_genome_as_of(
+                    seq, market, timeframe, direction, cutoff_iso,
+                    min_samples=min_samples, min_winrate=min_winrate,
+                    score_threshold=min_score, half_life_days=half_life_days,
+                )
+            else:
+                g = db.get_genome(seq, market, timeframe, direction)
             if g and g['active'] and g['score'] >= min_score and g['score'] > best_score:
                 best_score = g['score']
                 best = {
@@ -321,8 +339,9 @@ def run_backtest(
     while i < len(df) - max_hold_candles:
         current_genes = genes[:i + 1]
 
-        # Signal suchen
-        signal = _find_best_signal(current_genes, market, timeframe, db, params)
+        # Signal suchen (point-in-time -- kein Hindsight-Bias aus zukünftigen Occurrences)
+        cutoff_iso = df.index[i].isoformat()
+        signal = _find_best_signal(current_genes, market, timeframe, db, params, cutoff_iso=cutoff_iso)
 
         if signal is None:
             i += 1

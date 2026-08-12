@@ -97,6 +97,7 @@ def discover_genomes(
 
             entry_idx = i + seq_len
             entry_price = closes[entry_idx - 1]
+            occurred_at = df.index[entry_idx - 1].isoformat()
 
             if entry_price <= 0:
                 continue
@@ -136,6 +137,7 @@ def discover_genomes(
                     is_win=is_win,
                     move_pct=move,
                     regime=regime,
+                    occurred_at=occurred_at,
                 )
                 if is_new:
                     new_genomes += 1

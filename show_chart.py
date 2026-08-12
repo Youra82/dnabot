@@ -45,6 +45,7 @@ def _load_settings():
 def _build_params(symbol: str, timeframe: str, settings: dict) -> dict:
     global_risk   = settings.get('risk_settings', {})
     global_genome = settings.get('genome_settings', {})
+    global_scan   = settings.get('scan_settings', {})
     return {
         'market':   {'symbol': symbol, 'timeframe': timeframe},
         'risk': {
@@ -58,6 +59,8 @@ def _build_params(symbol: str, timeframe: str, settings: dict) -> dict:
             'min_winrate':      global_genome.get('min_winrate', 0.45),
             'sequence_lengths': global_genome.get('sequence_lengths', [4, 5, 6]),
             'allowed_regimes':  global_genome.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
+            'min_samples':      global_scan.get('min_samples_to_activate', 20),
+            'half_life_days':   global_genome.get('half_life_days', 180.0),
         },
         'behavior': {'use_longs': True, 'use_shorts': True},
     }

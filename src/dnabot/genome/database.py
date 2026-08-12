@@ -21,6 +21,7 @@ import sqlite3
 import hashlib
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 import os
@@ -32,6 +33,25 @@ def _genome_id(sequence: str, market: str, timeframe: str, direction: str) -> st
     """Erzeugt einen deterministischen Hash-ID für ein Genome."""
     raw = f"{sequence}::{market}::{timeframe}::{direction}"
     return hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
+def _decay_as_of(occurred_iso: str, cutoff_iso: str, effective_half_life: float) -> float:
+    """Wie evolver.py::compute_decay(), aber relativ zu einem simulierten
+    Stichtag (cutoff_iso) statt zur echten aktuellen Zeit -- Basis fuer
+    zeitpunktbezogene Backtest-Auswertung ohne Hindsight-Bias."""
+    if effective_half_life <= 0:
+        return 1.0
+    try:
+        occurred = datetime.fromisoformat(occurred_iso)
+        cutoff = datetime.fromisoformat(cutoff_iso)
+        if occurred.tzinfo is None:
+            occurred = occurred.replace(tzinfo=timezone.utc)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        age_days = max((cutoff - occurred).days, 0)
+        return math.exp(-age_days / effective_half_life)
+    except Exception:
+        return 1.0
 
 
 class GenomeDB:
@@ -77,11 +97,23 @@ class GenomeDB:
         data_end_date       TEXT DEFAULT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS genome_occurrences (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        genome_id           TEXT NOT NULL,
+        occurred_at         TEXT NOT NULL,
+        is_win              INTEGER NOT NULL,
+        move_pct            REAL NOT NULL,
+        regime              TEXT NOT NULL DEFAULT 'NEUTRAL'
+    );
+
     CREATE INDEX IF NOT EXISTS idx_genomes_market_tf
         ON genomes (market, timeframe, active);
 
     CREATE INDEX IF NOT EXISTS idx_genomes_sequence
         ON genomes (sequence, market, timeframe, direction);
+
+    CREATE INDEX IF NOT EXISTS idx_occurrences_genome_time
+        ON genome_occurrences (genome_id, occurred_at);
     """
 
     # Regime-Column-Mapping: regime → (occ_col, wins_col)
@@ -157,19 +189,35 @@ class GenomeDB:
         is_win: bool,
         move_pct: float,
         regime: str = 'NEUTRAL',
+        occurred_at: str = None,
     ) -> bool:
         """
         Erstellt oder aktualisiert ein Genome mit einem Trade-Ergebnis.
         Inkrementiert die richtigen per-Regime-Zähler.
         Setzt last_seen = jetzt (Basis für Decay).
         Gibt True zurück wenn es ein neues Genome war, sonst False.
+
+        occurred_at: Zeitpunkt DIESES Vorkommens (z.B. Kerzen-Zeitstempel bei
+        Discovery-Scans historischer Daten). Standardmaessig "jetzt" (fuer
+        Live-Self-Learning-Aufrufe, wo das Vorkommen tatsaechlich jetzt
+        passiert ist). Wird zusaetzlich zu den Aggregat-Spalten in
+        genome_occurrences gespeichert -- Basis fuer zeitpunktbezogene
+        ("as-of") Backtest-Auswertungen ohne Hindsight-Bias (siehe
+        get_genome_as_of()).
         """
         gid = _genome_id(sequence, market, timeframe, direction)
         now = datetime.now(timezone.utc).isoformat()
+        occ_ts = occurred_at or now
 
         # Regime auf bekannte Werte beschränken (HIGH_VOL zählen wir nicht)
         regime_key = regime if regime in self._REGIME_COLS else 'NEUTRAL'
         occ_col, wins_col = self._REGIME_COLS[regime_key]
+
+        self._conn.execute(
+            "INSERT INTO genome_occurrences (genome_id, occurred_at, is_win, move_pct, regime) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (gid, occ_ts, 1 if is_win else 0, move_pct, regime_key)
+        )
 
         existing = self._conn.execute(
             "SELECT genome_id, total_occurrences, wins, sum_move_pct FROM genomes WHERE genome_id = ?",
@@ -223,6 +271,92 @@ class GenomeDB:
             "SELECT * FROM genomes WHERE genome_id = ?", (gid,)
         ).fetchone()
         return dict(row) if row else None
+
+    def get_genome_as_of(
+        self,
+        sequence: str,
+        market: str,
+        timeframe: str,
+        direction: str,
+        cutoff_iso: str,
+        regime: str = None,
+        min_samples: int = 100,
+        min_winrate: float = 0.45,
+        score_threshold: float = 0.08,
+        half_life_days: float = 180.0,
+        vol_factor: float = 1.0,
+    ) -> Optional[dict]:
+        """
+        Wie get_genome(), aber Score/Winrate/Aktivierung werden NUR aus
+        Occurrences berechnet, die VOR cutoff_iso passiert sind (point-in-
+        time), statt aus der aktuellen All-Time-Aggregation der genomes-
+        Tabelle. Repliziert die Score-/Decay-/Aktivierungs-Formel aus
+        evolver.py::evolve() 1:1, aber relativ zu cutoff_iso statt "jetzt".
+
+        Gedacht für Backtests, die keinen Hindsight-Bias haben sollen:
+        genome_logic.py (live) nutzt weiterhin get_genome() unverändert.
+
+        Gibt None zurück, wenn keine Occurrences vor cutoff_iso existieren
+        (z.B. weil die DB noch keine genome_occurrences-Historie hat) oder
+        kein Regime die Aktivierungs-Schwellen erreicht.
+        """
+        gid = _genome_id(sequence, market, timeframe, direction)
+        rows = self._conn.execute(
+            "SELECT is_win, move_pct, regime, occurred_at FROM genome_occurrences "
+            "WHERE genome_id = ? AND occurred_at < ? ORDER BY occurred_at",
+            (gid, cutoff_iso)
+        ).fetchall()
+        if not rows:
+            return None
+
+        vol_factor_clamped = max(0.5, min(vol_factor, 3.0))
+        effective_half_life = half_life_days / vol_factor_clamped if half_life_days > 0 else 0.0
+
+        def _score_from(subset):
+            total = len(subset)
+            wins = sum(r['is_win'] for r in subset)
+            avg_move = sum(r['move_pct'] for r in subset) / total
+            winrate = wins / total
+            last_occurred = subset[-1]['occurred_at']
+            decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
+            effective_occ = total * decay
+            score = 0.0 if effective_occ < 0.5 else winrate * avg_move * math.log(1.0 + effective_occ)
+            return {'total': total, 'wins': wins, 'winrate': winrate, 'avg_move_pct': avg_move, 'score': score}
+
+        regimes_to_try = [regime] if regime else ['TREND', 'RANGE', 'NEUTRAL']
+        best = None
+        for r in regimes_to_try:
+            subset = [row for row in rows if row['regime'] == r]
+            if len(subset) < min_samples:
+                continue
+            stats = _score_from(subset)
+            if stats['winrate'] >= min_winrate and stats['score'] >= score_threshold:
+                if best is None or stats['score'] > best['score']:
+                    stats['regime'] = r
+                    best = stats
+
+        if best is None and len(rows) >= min_samples:
+            stats = _score_from(rows)
+            if stats['winrate'] >= min_winrate and stats['score'] >= score_threshold:
+                stats['regime'] = 'NEUTRAL'
+                best = stats
+
+        if best is None:
+            return None
+
+        return {
+            'genome_id': gid,
+            'sequence': sequence,
+            'market': market,
+            'timeframe': timeframe,
+            'direction': direction,
+            'total_occurrences': best['total'],
+            'wins': best['wins'],
+            'avg_move_pct': best['avg_move_pct'],
+            'score': best['score'],
+            'regime': best['regime'],
+            'active': True,
+        }
 
     def get_active_genomes_for_market(self, market: str, timeframe: str) -> list[dict]:
         """Gibt alle aktiven Genomes für ein Markt/Timeframe zurück."""

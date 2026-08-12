@@ -602,6 +602,8 @@ def run_interactive_chart(settings: dict, secrets: dict):
             'min_score':        genome_cfg.get('min_score', 0.08),
             'min_winrate':      genome_cfg.get('min_winrate', 0.45),
             'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
+            'min_samples':      scan_cfg.get('min_samples_to_activate', 20),
+            'half_life_days':   genome_cfg.get('half_life_days', 180.0),
         },
         'risk': {'rr_ratio': risk_cfg.get('rr_ratio', 2.0)},
     }

@@ -25,7 +25,7 @@
   },
   "scan_settings": {
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
-    "min_samples_to_activate": 10,
+    "min_samples_to_activate": 30,
     "scan_all_db_pairs": true,
     "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies",
     "symbols": [

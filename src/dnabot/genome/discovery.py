@@ -4,13 +4,26 @@
 # Ablauf:
 #   1. OHLCV-Daten laden und Kerzen codieren
 #   2. Sliding-Window über alle Kerzen (Längen 4, 5, 6)
-#   3. Für jedes Fenster: Was passierte danach? (Horizon-Kerzen)
-#   4. LONG-Outcome: max Up-Move > Threshold UND > max Down-Move
-#   5. SHORT-Outcome: max Down-Move > Threshold UND > max Up-Move
-#   6. Regime zum Zeitpunkt der Sequenz erfassen
-#   7. Genome-DB aktualisieren
+#   3. Für jedes Fenster: strukturelles SL/TP wie live/backtester (seq_low/high + rr_ratio)
+#   4. Pfadabhängige Simulation über die nächsten Horizon-Kerzen: SL oder TP zuerst?
+#   5. Regime zum Zeitpunkt der Sequenz erfassen
+#   6. Genome-DB aktualisieren
+#
+# Win/Loss-Definition bewusst identisch zu backtester.py::simulate_trade und
+# genome_logic.py::_build_signal gehalten (siehe dortige SL/TP-Formel) — vorher
+# nutzte Discovery einen pfadunabhängigen "max Exkursion > Threshold"-Check, der
+# nichts mit der echten Backtest-/Live-Trade-Mechanik zu tun hatte und deshalb
+# eine Genome-Winrate produzierte, die nicht mit der Backtest-Winrate übereinstimmte.
+#
+# Vereinfachung ggü. backtester.py: Pfadauflösung laeuft auf den Grob-Kerzen des
+# gescannten Timeframes (kein Fein-Timeframe-Fetch pro Fenster wie im Backtester,
+# das waere bei zehntausenden Fenstern pro Symbol/Timeframe nicht praktikabel) —
+# das entspricht exakt backtester.py's eigenem Fallback-Pfad, wenn keine
+# Fein-Daten verfuegbar sind (bar-fuer-bar SL-zuerst-Check), hier vektorisiert
+# per np.argmax auf Bool-Masken statt Python-Schleife mit break.
 
 import logging
+import numpy as np
 import pandas as pd
 
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
@@ -23,6 +36,36 @@ logger = logging.getLogger(__name__)
 REGIME_RECALC_INTERVAL = 20
 
 
+def _simulate_sl_tp_path(sl_price: float, tp_price: float, future_highs: np.ndarray,
+                          future_lows: np.ndarray, direction: str, timeout_price: float) -> tuple[str, float]:
+    """
+    Prueft pfadabhaengig, ob SL oder TP innerhalb von future_highs/future_lows
+    zuerst getroffen wird (Grob-Kerzen-Naeherung, siehe Modul-Docstring).
+
+    Bei einem Treffer beider Bedingungen in derselben Kerze gewinnt SL (gleiche
+    konservative Tie-Break-Konvention wie backtester.py::simulate_trade, das SL
+    pro Bar vor TP prueft).
+
+    Returns:
+        (outcome, exit_price) mit outcome in {"WIN", "LOSS", "TIMEOUT"}
+    """
+    if direction == "LONG":
+        sl_hit_mask = future_lows <= sl_price
+        tp_hit_mask = future_highs >= tp_price
+    else:
+        sl_hit_mask = future_highs >= sl_price
+        tp_hit_mask = future_lows <= tp_price
+
+    sl_idx = int(np.argmax(sl_hit_mask)) if sl_hit_mask.any() else None
+    tp_idx = int(np.argmax(tp_hit_mask)) if tp_hit_mask.any() else None
+
+    if sl_idx is not None and (tp_idx is None or sl_idx <= tp_idx):
+        return "LOSS", sl_price
+    if tp_idx is not None:
+        return "WIN", tp_price
+    return "TIMEOUT", timeout_price
+
+
 def discover_genomes(
     df: pd.DataFrame,
     market: str,
@@ -30,7 +73,7 @@ def discover_genomes(
     db: GenomeDB,
     sequence_lengths: list[int] = None,
     discovery_horizon: int = 5,
-    move_threshold_pct: float = 1.0,
+    rr_ratio: float = 2.0,
     start_candle_index: int = 0,
 ) -> dict:
     """
@@ -42,8 +85,13 @@ def discover_genomes(
         timeframe: Zeitrahmen z.B. "4h"
         db: GenomeDB-Instanz
         sequence_lengths: Fenstergrößen zu prüfen (Standard: [4, 5, 6])
-        discovery_horizon: Wie viele Kerzen nach der Sequenz beobachtet werden
-        move_threshold_pct: Mindest-Preisbewegung in % für ein gültiges Outcome
+        discovery_horizon: Wie viele Kerzen nach der Sequenz simuliert werden
+                            (entspricht backtester.py's max_hold_candles — nach
+                            dieser Anzahl Kerzen ohne SL/TP-Treffer gilt der
+                            simulierte Trade als TIMEOUT)
+        rr_ratio: Risk:Reward-Verhältnis für die TP-Berechnung (aus
+                  settings.json risk_settings.rr_ratio), identisch zur
+                  Live-/Backtest-Formel in genome_logic.py/backtester.py
 
     Returns:
         dict mit Statistiken über den Discovery-Lauf
@@ -57,7 +105,7 @@ def discover_genomes(
 
     logger.info(
         f"[Discovery] {market} ({timeframe}) | {len(df)} Kerzen | "
-        f"Horizon={discovery_horizon} | Threshold={move_threshold_pct}%"
+        f"Horizon={discovery_horizon} | RR={rr_ratio}"
     )
 
     # Alle Kerzen codieren
@@ -68,7 +116,6 @@ def discover_genomes(
 
     new_genomes = 0
     updated_genomes = 0
-    threshold_factor = move_threshold_pct / 100.0
 
     # Regime-Cache: wird alle REGIME_RECALC_INTERVAL Kerzen neu berechnet
     regime_cache = {}
@@ -112,22 +159,37 @@ def discover_genomes(
             if len(future_highs) == 0:
                 continue
 
-            max_high = float(future_highs.max())
-            min_low = float(future_lows.min())
+            timeout_price = float(closes[entry_idx + len(future_highs) - 1])
 
-            max_up_pct = (max_high - entry_price) / entry_price
-            max_down_pct = (entry_price - min_low) / entry_price
+            # Strukturelles SL aus dem Sequenz-Fenster selbst (i:i+seq_len) --
+            # identisch zu genome_logic.py::_build_signal / backtester.py::simulate_trade.
+            seq_low = float(lows[i:i + seq_len].min())
+            seq_high = float(highs[i:i + seq_len].max())
 
-            long_outcome = (max_up_pct >= threshold_factor) and (max_up_pct > max_down_pct)
-            short_outcome = (max_down_pct >= threshold_factor) and (max_down_pct > max_up_pct)
+            # LONG
+            long_sl = seq_low
+            long_sl_dist = entry_price - long_sl
+            if long_sl_dist <= 0:
+                long_sl = entry_price * 0.98
+                long_sl_dist = entry_price - long_sl
+            long_tp = entry_price + rr_ratio * long_sl_dist
+
+            # SHORT
+            short_sl = seq_high
+            short_sl_dist = short_sl - entry_price
+            if short_sl_dist <= 0:
+                short_sl = entry_price * 1.02
+                short_sl_dist = short_sl - entry_price
+            short_tp = entry_price - rr_ratio * short_sl_dist
+
+            long_result = _simulate_sl_tp_path(long_sl, long_tp, future_highs, future_lows, "LONG", timeout_price)
+            short_result = _simulate_sl_tp_path(short_sl, short_tp, future_highs, future_lows, "SHORT", timeout_price)
 
             # Immer BEIDE Richtungen aufzeichnen — gibt realistische Win/Loss-Statistiken.
-            # LONG gewinnt wenn Up > Threshold und Up > Down, sonst verliert LONG.
-            # SHORT gewinnt wenn Down > Threshold und Down > Up, sonst verliert SHORT.
-            for direction, is_win, move in [
-                ("LONG",  long_outcome,  max_up_pct   * 100.0),
-                ("SHORT", short_outcome, max_down_pct * 100.0),
-            ]:
+            for direction, (outcome, exit_price) in [("LONG", long_result), ("SHORT", short_result)]:
+                is_win = outcome == "WIN"
+                move_pct = abs((exit_price - entry_price) / entry_price * 100.0)
+
                 is_new = db.upsert_genome_outcome(
                     sequence=sequence,
                     market=market,
@@ -135,7 +197,7 @@ def discover_genomes(
                     direction=direction,
                     seq_length=seq_len,
                     is_win=is_win,
-                    move_pct=move,
+                    move_pct=move_pct,
                     regime=regime,
                     occurred_at=occurred_at,
                 )

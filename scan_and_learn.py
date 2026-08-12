@@ -78,21 +78,6 @@ DISCOVERY_HORIZON_MAP = {
     '1w':  2,
 }
 
-# Mindest-Bewegung in % für ein gültiges Outcome (typische Volatilität je Timeframe)
-MOVE_THRESHOLD_MAP = {
-    '5m':  0.15,
-    '15m': 0.25,
-    '30m': 0.4,
-    '1h':  0.5,
-    '2h':  0.7,
-    '4h':  1.0,
-    '6h':  1.2,
-    '8h':  1.5,
-    '12h': 1.5,
-    '1d':  2.0,
-    '1w':  3.0,
-}
-
 # Mindest-Vorkommen für Aktivierung.
 # Da jeder Candle-Scan BEIDE Richtungen (LONG + SHORT) aufzeichnet, akkumulieren
 # Genome realistischere Statistiken. Trotzdem bleiben Werte bewusst niedrig, da
@@ -123,10 +108,6 @@ def resolve_history_days(timeframe: str, override) -> int:
 
 def resolve_discovery_horizon(timeframe: str, override) -> int:
     return _resolve(timeframe, override, DISCOVERY_HORIZON_MAP, 6)
-
-
-def resolve_move_threshold(timeframe: str, override) -> float:
-    return _resolve(timeframe, override, MOVE_THRESHOLD_MAP, 1.0)
 
 
 def resolve_min_samples(timeframe: str, override) -> int:
@@ -255,12 +236,13 @@ def main():
     # Manuelle Overrides: CLI hat Vorrang vor settings.json, dann auto nach Timeframe
     history_days_override    = args.history_days or scan_cfg.get('history_days', None)
     discovery_horizon_override = scan_cfg.get('discovery_horizon', None)
-    move_threshold_override  = scan_cfg.get('move_threshold_pct', None)
     min_samples_override     = scan_cfg.get('min_samples_to_activate', None)
     sequence_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
     min_winrate = genome_cfg.get('min_winrate', 0.45)
     min_score = genome_cfg.get('min_score', 0.08)
     half_life_days = genome_cfg.get('half_life_days', 180.0)
+    risk_cfg = settings.get('risk_settings', {})
+    rr_ratio = risk_cfg.get('rr_ratio', 2.0)
 
     # CLI-Filter
     if args.symbol and args.timeframe:
@@ -290,14 +272,13 @@ def main():
         # Alle Scan-Parameter werden pro Timeframe automatisch aufgelöst
         history_days      = resolve_history_days(timeframe, history_days_override)
         discovery_horizon = resolve_discovery_horizon(timeframe, discovery_horizon_override)
-        move_threshold    = resolve_move_threshold(timeframe, move_threshold_override)
         min_samples       = resolve_min_samples(timeframe, min_samples_override)
 
         logger.info(f"\n{'─' * 50}")
         logger.info(
             f"  Scanne: {symbol} ({timeframe}) | "
             f"history={history_days}d | horizon={discovery_horizon} | "
-            f"move≥{move_threshold}% | min_samples={min_samples}"
+            f"rr={rr_ratio} | min_samples={min_samples}"
         )
         logger.info(f"{'─' * 50}")
 
@@ -345,7 +326,7 @@ def main():
             db=db,
             sequence_lengths=sequence_lengths,
             discovery_horizon=discovery_horizon,
-            move_threshold_pct=move_threshold,
+            rr_ratio=rr_ratio,
             start_candle_index=start_candle_index,
         )
         total_new += result.get('new_genomes', 0)

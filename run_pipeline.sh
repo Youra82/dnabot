@@ -76,7 +76,7 @@ elif [ -n "$TF_INPUT" ]; then
     export DNABOT_OVERRIDE_TFS="$TF_INPUT"
     echo -e "${CYAN}ℹ  Coins: aus active_strategies | Timeframes: $TF_INPUT${NC}"
 else
-    echo -e "${GREEN}✔ Coins und Timeframes werden aus active_strategies übernommen.${NC}"
+    echo -e "${GREEN}✔ Coins und Timeframes werden aus scan_settings (falls gesetzt) bzw. active_strategies übernommen.${NC}"
 fi
 
 # ── 3. History-Tage ──────────────────────────────────────────────────────────

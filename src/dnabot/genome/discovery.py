@@ -123,7 +123,11 @@ def discover_genomes(
     def get_regime_at(idx: int) -> str:
         bucket = (idx // REGIME_RECALC_INTERVAL) * REGIME_RECALC_INTERVAL
         if bucket not in regime_cache:
-            sub_df = df.iloc[max(0, bucket - 50): bucket + 1]
+            # detect_regime() braucht mind. atr_ma_period(=50) + 5 = 55 Kerzen,
+            # sonst greift intern ihr eigener "zu wenig Daten"-Fallback auf NEUTRAL
+            # (Bug bis 2026-08-13: Fenster war nur 51 Kerzen -> IMMER NEUTRAL,
+            # TREND/RANGE-Occurrences wurden nie erfasst). 70 Kerzen Puffer.
+            sub_df = df.iloc[max(0, bucket - 70): bucket + 1]
             regime_cache[bucket] = detect_regime(sub_df)
         return regime_cache[bucket]
 

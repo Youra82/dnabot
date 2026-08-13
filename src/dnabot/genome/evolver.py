@@ -23,22 +23,17 @@
 #   last_updated (inkl. Evolver) = wird ignoriert für Decay.
 #
 # Bewertungslogik pro Regime (TREND, RANGE, NEUTRAL):
-#   - Wilson-Score-Untergrenze der Winrate < min_winrate  → Regime inaktiv
-#   - score < score_threshold                              → Regime inaktiv
-#   - Alles andere                                          → Regime aktiv
+#   - raw occ_regime < min_samples  → Regime inaktiv (nicht genug echte Daten)
+#   - winrate < min_winrate         → Regime inaktiv
+#   - score < score_threshold       → Regime inaktiv
+#   - Alles andere                  → Regime aktiv
 #
-# WICHTIG (Aenderung 2026-08-12): ein fester `min_samples`-Cutoff auf rohe
-# Occurrences wurde ersetzt durch eine Wilson-Score-Konfidenzuntergrenze auf
-# die Winrate (siehe scoring.py::wilson_lower_bound). Ein fixer Cutoff steckte
-# in einer Zwickmuehle -- zu niedrig (2) liess Kleinstichproben-Rauschen durch
-# (2 Beobachtungen = Muenzwurf-Winrate klettert trivial ueber jede Schwelle),
-# zu hoch (30) liess bei der typischen Vorkommen-Sparsity der Discovery
-# (meiste Gen-Sequenzen kommen in einer Symbol-Historie nur 1x vor) praktisch
-# nichts mehr durch. Wilson-Score bestraft kleine Stichproben automatisch,
-# ohne einen willkuerlichen Cutoff-Wert zu brauchen. `min_samples` bleibt als
-# Parameter erhalten (API-Kompatibilitaet mit backtester.py/run_backtest.py),
-# wirkt aber nur noch als niedrige Sicherheits-Untergrenze, nicht mehr als
-# Haupt-Filterkriterium.
+# HINWEIS (2026-08-13): kurzzeitig auf eine Wilson-Score-Konfidenzuntergrenze
+# umgestellt, dann bewusst wieder auf die einfache Punktschaetzung zurueckgesetzt.
+# Genome-Menge ist die Prioritaet (Genome sind die Handelsbasis) -- Qualitaets-
+# filterung passiert stattdessen als separate Schicht ueber einen Wochentrend-
+# Filter beim Live-Signal, nicht ueber eine strengere Aktivierungsschwelle, die
+# die Menge zu stark reduziert.
 #
 # active_regimes = JSON-Liste der Regime, in denen das Genome gehandelt wird.
 
@@ -48,7 +43,7 @@ import math
 from datetime import datetime, timezone
 
 from dnabot.genome.database import GenomeDB
-from dnabot.genome.scoring import compute_score, wilson_lower_bound
+from dnabot.genome.scoring import compute_score
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +105,8 @@ def evolve(
         db: GenomeDB-Instanz
         market: Optional — nur Genome für diesen Markt bewerten
         timeframe: Optional — nur Genome für diesen Timeframe bewerten
-        min_samples: niedrige Sicherheits-Untergrenze an RAW Regime-Occurrences
-                     (verhindert occ=0-Division) -- die eigentliche Aktivierungs-
-                     Filterung läuft über die Wilson-Score-Konfidenzuntergrenze,
-                     siehe Moduldocstring. Kann jetzt wieder niedrig stehen
-                     (z.B. 2), ohne dass Kleinstichproben-Rauschen durchrutscht.
-        min_winrate: Mindest-Winrate (Wilson-Untergrenze, z.B. 0.45 = 45%)
+        min_samples: Mindestanzahl an RAW Regime-Occurrences für Aktivierung
+        min_winrate: Mindest-Winrate (z.B. 0.45 = 45%)
         score_threshold: Mindest-Score für Aktivierung (nach Decay)
         half_life_days: Basis-Halbwertszeit für Decay (0 = kein Decay)
         vol_factor: ATR/ATR_MA des aktuellen Symbols — passt Halbwertszeit an.
@@ -151,23 +142,21 @@ def evolve(
             occ = genome.get(occ_col, 0) or 0
             wins = genome.get(wins_col, 0) or 0
 
-            # min_samples ist nur noch eine niedrige Sicherheits-Untergrenze
-            # (verhindert occ=0-Division) -- die eigentliche Filterung passiert
-            # ueber die Wilson-Score-Konfidenzuntergrenze unten.
+            # Schwellwert auf rohe Occurrences (wir wollen echte Datenbasis)
             if occ < min_samples:
                 continue
 
-            winrate_lb = wilson_lower_bound(wins, occ)
+            winrate = wins / occ
             effective_occ = occ * decay
-            score = compute_score(winrate_lb, avg_move, effective_occ)
+            score = compute_score(winrate, avg_move, effective_occ)
 
-            if winrate_lb >= min_winrate and score >= score_threshold:
+            if winrate >= min_winrate and score >= score_threshold:
                 active_regimes.append(regime)
                 best_score = max(best_score, score)
                 total_regime_activations[regime] += 1
                 logger.debug(
                     f"[{regime}] Aktiv: {genome['sequence']} [{genome['direction']}] "
-                    f"WR_lb={winrate_lb:.1%} (roh {wins/occ:.1%}) Score={score:.3f} "
+                    f"WR={winrate:.1%} Score={score:.3f} "
                     f"(eff_occ={effective_occ:.0f}, decay={decay:.2f}) n={occ}"
                 )
 
@@ -179,20 +168,20 @@ def evolve(
             total = genome['total_occurrences'] or 0
             global_wins = genome['wins'] or 0
             if total >= min_samples:
-                global_winrate_lb = wilson_lower_bound(global_wins, total)
+                global_winrate = global_wins / total
                 effective_occ = total * decay
-                best_score = compute_score(global_winrate_lb, avg_move, effective_occ)
-                if global_winrate_lb >= min_winrate and best_score >= score_threshold:
+                best_score = compute_score(global_winrate, avg_move, effective_occ)
+                if global_winrate >= min_winrate and best_score >= score_threshold:
                     active_regimes = ['NEUTRAL']
                     is_active = True
                     total_regime_activations['NEUTRAL'] += 1
                     logger.debug(
                         f"[NEUTRAL/global fallback] Aktiv: {genome['sequence']} [{genome['direction']}] "
-                        f"WR_lb={global_winrate_lb:.1%} Score={best_score:.3f} n={total}"
+                        f"WR={global_winrate:.1%} Score={best_score:.3f} n={total}"
                     )
             elif best_score == 0.0 and total > 0:
-                global_winrate_lb = wilson_lower_bound(global_wins, total)
-                best_score = compute_score(global_winrate_lb, avg_move, total * decay)
+                global_winrate = global_wins / total if total > 0 else 0.0
+                best_score = compute_score(global_winrate, avg_move, total * decay)
 
         db.update_genome_evolution(gid, best_score, is_active, active_regimes)
 

@@ -13,41 +13,31 @@ Kein Import von evolver.py/database.py hier -- vermeidet Zirkel-Importe
 import math
 
 
-def wilson_lower_bound(wins: int, n: int, z: float = 1.645) -> float:
+def breakeven_winrate(rr_ratio: float, margin_pct: float = 0.05) -> float:
     """
-    Konfidenzintervall-Untergrenze einer Winrate (Wilson-Score-Intervall,
-    einseitig). Ersetzt einen festen `min_samples`-Cutoff: bestraft kleine
-    Stichproben automatisch (n=1, 1 Win -> Untergrenze ~0.27, faellt bei
-    min_winrate=0.45 durch), ohne einen willkuerlichen Schwellenwert zu
-    brauchen. z=1.645 entspricht einer einseitigen ~95%-Konfidenz.
+    Mindest-Winrate, die ein Genome mit gegebenem Risk:Reward-Verhaeltnis
+    (rr_ratio = Ø Gewinn / Ø Verlust bei TP/SL-Treffer) braucht, um profitabel
+    zu sein -- plus Sicherheitspuffer fuer Gebuehren/Slippage.
 
-    Hintergrund: ein fester min_samples-Cutoff steckt in einer Zwickmuehle --
-    zu niedrig (z.B. 2) laesst Rauschen durch (2 Beobachtungen = Muenzwurf-
-    Winrate), zu hoch (z.B. 30) laesst bei der typischen Vorkommen-Sparsity
-    der Genome-Discovery praktisch nichts mehr durch. Wilson-Score loest das
-    strukturell statt nur den Cutoff-Wert zu verschieben.
+    Herleitung (Erwartungswert = 0):
+        WR * rr_ratio - (1 - WR) = 0  =>  WR = 1 / (1 + rr_ratio)
+
+    z.B. rr_ratio=2.0 -> Breakeven bei 33.3%, plus margin_pct (Standard 5
+    Prozentpunkte) ergibt eine Aktivierungsschwelle von ~38.3% statt einer
+    pauschalen, vom tatsaechlich konfigurierten R:R unabhaengigen Zahl.
     """
-    if n <= 0:
-        return 0.0
-    p = wins / n
-    denom = 1.0 + z * z / n
-    center = p + z * z / (2 * n)
-    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
-    return max(0.0, (center - margin) / denom)
+    if rr_ratio <= 0:
+        return 1.0
+    return 1.0 / (1.0 + rr_ratio) + margin_pct
 
 
-def compute_score(winrate_lower_bound: float, avg_move_pct: float, effective_occ: float) -> float:
+def compute_score(winrate: float, avg_move_pct: float, effective_occ: float) -> float:
     """
-    Score = Wilson-Untergrenze x Avg. Move (%) x log(1 + effective_occ).
+    Score = Winrate x Avg. Move (%) x log(1 + effective_occ).
 
-    Nutzt bewusst die Wilson-Untergrenze statt der rohen Punktschaetzung der
-    Winrate, damit auch das Ranking (nicht nur das Aktivierungs-Gate)
-    unsichere Kleinstichproben-Genome nicht ueber robustere Genome mit
-    mehr Vorkommen stellt. effective_occ = raw_occ x Decay -- aeltere
-    Samples zaehlen fuers Decay weniger, die Wilson-Untergrenze selbst
-    bleibt aber auf rohen (nicht decay-gewichteten) Vorkommen berechnet,
-    da Konfidenz eine Frage der Beobachtungsmenge ist, nicht der Aktualitaet.
+    effective_occ = raw_occ x Decay -- aeltere Samples zaehlen fuers Decay
+    weniger.
     """
     if effective_occ < 0.5:
         return 0.0
-    return winrate_lower_bound * avg_move_pct * math.log(1.0 + effective_occ)
+    return winrate * avg_move_pct * math.log(1.0 + effective_occ)

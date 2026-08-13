@@ -15,6 +15,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.utils.telegram import send_message
 from dnabot.utils.trade_manager import full_trade_cycle, get_tracker_file_path
 from dnabot.utils.guardian import guardian_decorator
+from dnabot.genome.scoring import breakeven_winrate
 
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
@@ -79,6 +80,14 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     risk_ov = overrides['risk']
     genome_ov = overrides['genome']
 
+    _rr_ratio = risk_ov.get('rr_ratio', global_risk.get('rr_ratio', 2.0))
+    # min_winrate: explizit gesetzt (pro Strategie oder global) hat Vorrang,
+    # sonst aus der fuer DIESE Strategie geltenden rr_ratio abgeleitet
+    # (Breakeven-Winrate + Sicherheitspuffer statt pauschaler fester Zahl).
+    _min_winrate = (genome_ov.get('min_winrate')
+                    or global_genome.get('min_winrate')
+                    or breakeven_winrate(_rr_ratio))
+
     return {
         "market": {
             "symbol": symbol,
@@ -91,14 +100,27 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
                                    global_risk.get('leverage', 5)),
             "margin_mode":        risk_ov.get('margin_mode',
                                    global_risk.get('margin_mode', 'isolated')),
-            "rr_ratio":           risk_ov.get('rr_ratio',
-                                   global_risk.get('rr_ratio', 2.0)),
+            "rr_ratio":           _rr_ratio,
+            # Kelly-Positionsgroesse: standardmaessig AUS, aendert live nichts
+            # am bisherigen Verhalten, bis explizit aktiviert.
+            "use_kelly_sizing":   risk_ov.get('use_kelly_sizing',
+                                   global_risk.get('use_kelly_sizing', False)),
+            # Multiplikator auf risk_per_entry_pct, normiert auf 1.0x an der
+            # Aktivierungsschwelle (min_winrate) -- staerkere Genome bekommen
+            # proportional mehr, gedeckelt zwischen kelly_min_mult/kelly_max_mult.
+            "kelly_min_mult":     risk_ov.get('kelly_min_mult',
+                                   global_risk.get('kelly_min_mult', 0.5)),
+            "kelly_max_mult":     risk_ov.get('kelly_max_mult',
+                                   global_risk.get('kelly_max_mult', 3.0)),
+            # Daempft wie steil der Multiplikator oberhalb 1.0x mitwaechst
+            # (0=immer 1.0x, 1=voller ungedaempfter Kelly-Multiplikator).
+            "kelly_dampening":    risk_ov.get('kelly_dampening',
+                                   global_risk.get('kelly_dampening', 0.3)),
         },
         "genome": {
             "min_score":       genome_ov.get('min_score',
                                 global_genome.get('min_score', 0.08)),
-            "min_winrate":     genome_ov.get('min_winrate',
-                                global_genome.get('min_winrate', 0.45)),
+            "min_winrate":     _min_winrate,
             "sequence_lengths": genome_ov.get('sequence_lengths',
                                  global_genome.get('sequence_lengths', [4, 5, 6])),
             "allowed_regimes": genome_ov.get('allowed_regimes',

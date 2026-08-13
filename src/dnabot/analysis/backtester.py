@@ -12,6 +12,7 @@ import sys
 import json
 import logging
 import argparse
+import bisect
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -22,6 +23,39 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
+
+
+class Bias:
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    NEUTRAL = "NEUTRAL"
+
+
+def _compute_weekly_bias(df: pd.DataFrame, ema_period: int = 8):
+    """
+    Woechentlicher EMA-Trend-Bias als zusaetzliche Qualitaetsschicht ueber den
+    Genomen (portiert aus stbot/analysis/backtester.py, dort bereits über
+    Bull/Bear/Seitwaerts-Regime validiert). Kein Look-Ahead: der Bias einer
+    Wochenkerze gilt erst ab ihrem Close, daher werden die Zeitstempel um eine
+    Kerze verschoben, bevor per bisect auf die zuletzt abgeschlossene Woche
+    gemappt wird.
+
+    Rueckgabe: (bias_times, bias_values) -- beide leer, wenn zu wenig Historie
+    fuer eine belastbare EMA vorhanden ist (Aufrufer ueberspringt den Filter
+    dann und verhaelt sich wie ohne Filter).
+    """
+    try:
+        weekly = df[['open', 'high', 'low', 'close']].resample('1W').agg(
+            {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}
+        ).dropna()
+        if len(weekly) < ema_period + 5:
+            return [], []
+        ema = weekly['close'].ewm(span=ema_period, adjust=False).mean()
+        bias_series = np.where(weekly['close'] > ema, Bias.BULLISH,
+                       np.where(weekly['close'] < ema, Bias.BEARISH, Bias.NEUTRAL))
+        return list(weekly.index[1:]), list(bias_series[:-1])
+    except Exception:
+        return [], []
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +75,7 @@ FINE_TF_MAP = {
 
 def _find_best_signal(genes: list[str], market: str, timeframe: str,
                        db: GenomeDB, params: dict, cutoff_iso: str = None) -> dict | None:
-    """Sucht das beste aktive Genome-Signal in den letzten 6 Genen.
+    """Sucht das beste aktive Genome-Signal in den letzten genome_cfg['sequence_lengths'] Genen.
 
     Wenn cutoff_iso gesetzt ist, werden Genome-Stats point-in-time aus
     genome_occurrences berechnet (nur Occurrences vor cutoff_iso) statt aus
@@ -328,6 +362,15 @@ def run_backtest(
     if trailing_callback_pct is not None:
         trailing_callback_pct = float(trailing_callback_pct) / 100.0
 
+    # Wochentrend-Filter (optional, standardmaessig aus): zusaetzliche Qualitaets-
+    # schicht ueber den Genomen, statt die Aktivierungsschwelle weiter zu verschaerfen
+    # -- Genome-Menge bleibt die Basis, der Filter blockt nur Signale gegen den Trend.
+    use_weekly_trend_filter = bool(params.get('genome', {}).get('use_weekly_trend_filter', False))
+    weekly_bias_times, weekly_bias_values = [], []
+    if use_weekly_trend_filter:
+        weekly_ema = int(params.get('genome', {}).get('weekly_trend_ema', 8))
+        weekly_bias_times, weekly_bias_values = _compute_weekly_bias(df, ema_period=weekly_ema)
+
     # Alle Gene vorberechnen
     genes = encode_dataframe(df)
 
@@ -342,6 +385,15 @@ def run_backtest(
         # Signal suchen (point-in-time -- kein Hindsight-Bias aus zukünftigen Occurrences)
         cutoff_iso = df.index[i].isoformat()
         signal = _find_best_signal(current_genes, market, timeframe, db, params, cutoff_iso=cutoff_iso)
+
+        if signal is not None and use_weekly_trend_filter and weekly_bias_times:
+            _wpos = bisect.bisect_right(weekly_bias_times, df.index[i]) - 1
+            if _wpos >= 0:
+                weekly_bias = weekly_bias_values[_wpos]
+                if weekly_bias == Bias.BEARISH and signal['direction'] == 'LONG':
+                    signal = None
+                elif weekly_bias == Bias.BULLISH and signal['direction'] == 'SHORT':
+                    signal = None
 
         if signal is None:
             i += 1

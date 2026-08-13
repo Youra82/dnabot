@@ -21,6 +21,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
+from dnabot.genome.scoring import breakeven_winrate
 from scan_and_learn import (
     HISTORY_DAYS_MAP, resolve_history_days,
     load_settings, load_secrets,
@@ -143,16 +144,20 @@ def main():
     db = GenomeDB(DB_PATH)
 
     # Backtest-Parameter
+    _rr_ratio = risk_cfg.get('rr_ratio', 2.0)
     params = {
         'genome': {
             'min_score':        genome_cfg.get('min_score', 0.08),
-            'min_winrate':      genome_cfg.get('min_winrate', 0.45),
+            # explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
+            'min_winrate':      genome_cfg.get('min_winrate') or breakeven_winrate(_rr_ratio),
             'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
             'min_samples':      scan_cfg.get('min_samples_to_activate', 20),
             'half_life_days':   genome_cfg.get('half_life_days', 180.0),
+            'use_weekly_trend_filter': genome_cfg.get('use_weekly_trend_filter', False),
+            'weekly_trend_ema':        genome_cfg.get('weekly_trend_ema', 8),
         },
         'risk': {
-            'rr_ratio': risk_cfg.get('rr_ratio', 2.0),
+            'rr_ratio': _rr_ratio,
             'trailing_callback_rate_pct': risk_cfg.get('trailing_callback_rate_pct'),
         },
     }

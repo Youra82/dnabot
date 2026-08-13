@@ -32,7 +32,15 @@ MAX_NOTIONAL_USDT = 200_000.0
 MIN_TRADES        = 2
 
 PARAM_RANGES = {
-    'rr':       [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+    # RR-Sweep bewusst auf 1.0-4.0 begrenzt (Payoff-Ratio "Sweet Spot" zwischen
+    # Mean-Reversion- und Trend-Following-Extremen -- siehe Breakeven-Winrate-
+    # Kurve WR=1/(1+RR): unter 1.0 braucht man >50% Trefferquote (Mean-
+    # Reversion-Extrem, hohe Erwartungswert-Fehleranfaelligkeit), ueber 4.0
+    # braucht man <20% (Trend-Following-Extrem, hohes Drawdown-/Ruin-Risiko
+    # durch lange Verlustserien vor seltenen grossen Gewinnern). Beide
+    # Extreme koennen im Backtest "profitabel" aussehen, sind aber fragiler
+    # als Werte im mittleren Band -- siehe scoring.py::breakeven_winrate).
+    'rr':       [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     'score':    [0.01, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20, 0.30],
     'callback': [0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0],
 }

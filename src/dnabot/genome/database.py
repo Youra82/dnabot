@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Optional
 import os
 
-from dnabot.genome.scoring import compute_score as _compute_score, wilson_lower_bound
+from dnabot.genome.scoring import compute_score as _compute_score
 
 logger = logging.getLogger(__name__)
 
@@ -295,11 +295,6 @@ class GenomeDB:
         Tabelle. Repliziert die Score-/Decay-/Aktivierungs-Formel aus
         evolver.py::evolve() 1:1, aber relativ zu cutoff_iso statt "jetzt".
 
-        min_samples ist nur noch eine niedrige Sicherheits-Untergrenze (verhindert
-        total=0-Division) -- die eigentliche Aktivierungs-Filterung laeuft ueber
-        die Wilson-Score-Konfidenzuntergrenze der Winrate, siehe scoring.py und
-        evolver.py-Moduldocstring.
-
         Gedacht für Backtests, die keinen Hindsight-Bias haben sollen:
         genome_logic.py (live) nutzt weiterhin get_genome() unverändert.
 
@@ -323,17 +318,13 @@ class GenomeDB:
             total = len(subset)
             wins = sum(r['is_win'] for r in subset)
             avg_move = sum(r['move_pct'] for r in subset) / total
-            winrate_lb = wilson_lower_bound(wins, total)
+            winrate = wins / total
             last_occurred = subset[-1]['occurred_at']
             decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
             effective_occ = total * decay
-            score = _compute_score(winrate_lb, avg_move, effective_occ)
-            return {'total': total, 'wins': wins, 'winrate': winrate_lb, 'avg_move_pct': avg_move, 'score': score}
+            score = _compute_score(winrate, avg_move, effective_occ)
+            return {'total': total, 'wins': wins, 'winrate': winrate, 'avg_move_pct': avg_move, 'score': score}
 
-        # min_samples ist nur noch eine niedrige Sicherheits-Untergrenze (verhindert
-        # total=0-Division) -- die eigentliche Filterung laeuft ueber die
-        # Wilson-Score-Konfidenzuntergrenze in _score_from(), identisch zu
-        # evolver.py::evolve() (siehe dortiger Moduldocstring fuer die Begruendung).
         regimes_to_try = [regime] if regime else ['TREND', 'RANGE', 'NEUTRAL']
         best = None
         for r in regimes_to_try:

@@ -46,7 +46,7 @@
       6
     ],
     "min_score": 0.08,
-    "min_winrate": 0.45,
+    "_min_winrate_note": "Nicht gesetzt -> automatisch aus risk_settings.rr_ratio abgeleitet (Breakeven-Winrate 1/(1+rr_ratio) + 5 Prozentpunkte Puffer, siehe scoring.py::breakeven_winrate). Explizit hier setzen um das zu ueberschreiben.",
     "half_life_days": 180,
     "score_formula": "winrate * avg_move_pct * log(1 + occ_regime) * decay",
     "allowed_regimes": [

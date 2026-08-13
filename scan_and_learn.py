@@ -29,6 +29,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.discovery import discover_genomes
 from dnabot.genome.evolver import evolve, print_genome_report
+from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.regime import get_atr_ratio
 
 logging.basicConfig(
@@ -238,11 +239,13 @@ def main():
     discovery_horizon_override = scan_cfg.get('discovery_horizon', None)
     min_samples_override     = scan_cfg.get('min_samples_to_activate', None)
     sequence_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
-    min_winrate = genome_cfg.get('min_winrate', 0.45)
     min_score = genome_cfg.get('min_score', 0.08)
     half_life_days = genome_cfg.get('half_life_days', 180.0)
     risk_cfg = settings.get('risk_settings', {})
     rr_ratio = risk_cfg.get('rr_ratio', 2.0)
+    # min_winrate: explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
+    # (Breakeven-Winrate + Sicherheitspuffer statt pauschaler fester Zahl).
+    min_winrate = genome_cfg.get('min_winrate') or breakeven_winrate(rr_ratio)
 
     # CLI-Filter
     if args.symbol and args.timeframe:

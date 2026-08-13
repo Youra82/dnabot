@@ -25,6 +25,7 @@ from dnabot.utils.trade_manager import _generate_genome_chart_png
 from dnabot.utils.telegram import send_photo, send_message
 from dnabot.genome.database import GenomeDB
 from dnabot.strategy.genome_logic import get_genome_signal
+from dnabot.genome.scoring import breakeven_winrate
 
 logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] %(message)s')
 
@@ -46,17 +47,19 @@ def _build_params(symbol: str, timeframe: str, settings: dict) -> dict:
     global_risk   = settings.get('risk_settings', {})
     global_genome = settings.get('genome_settings', {})
     global_scan   = settings.get('scan_settings', {})
+    _rr_ratio = global_risk.get('rr_ratio', 2.0)
     return {
         'market':   {'symbol': symbol, 'timeframe': timeframe},
         'risk': {
             'risk_per_entry_pct': global_risk.get('risk_per_entry_pct', 1.0),
             'leverage':           global_risk.get('leverage', 5),
             'margin_mode':        global_risk.get('margin_mode', 'isolated'),
-            'rr_ratio':           global_risk.get('rr_ratio', 2.0),
+            'rr_ratio':           _rr_ratio,
         },
         'genome': {
             'min_score':        global_genome.get('min_score', 0.08),
-            'min_winrate':      global_genome.get('min_winrate', 0.45),
+            # explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
+            'min_winrate':      global_genome.get('min_winrate') or breakeven_winrate(_rr_ratio),
             'sequence_lengths': global_genome.get('sequence_lengths', [4, 5, 6]),
             'allowed_regimes':  global_genome.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
             'min_samples':      global_scan.get('min_samples_to_activate', 20),

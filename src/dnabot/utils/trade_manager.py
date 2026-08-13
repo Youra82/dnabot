@@ -28,6 +28,44 @@ from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_t
 
 MIN_NOTIONAL_USDT = 5.0
 MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
+
+
+def _kelly_risk_pct(winrate: float, rr_ratio: float, threshold_winrate: float,
+                     min_mult: float, max_mult: float, fallback_risk_pct: float,
+                     dampening: float = 0.3) -> float:
+    """
+    Kelly-Positionsgroesse als MULTIPLIKATOR auf fallback_risk_pct (Edge-
+    Realization: "Extraction" -- Kapitaleinsatz proportional zur gemessenen
+    Kantenstaerke, statt pauschal gleich fuer jedes Signal).
+
+    Normiert auf die Kelly-Fraction GENAU an der Aktivierungsschwelle
+    (threshold_winrate): ein Genome das gerade so aktiviert bekommt
+    Multiplikator 1.0 (= unveraendert fallback_risk_pct).
+
+    Rohes Kelly waechst bei typischen rr_ratio-Werten (z.B. 2.0) so steil mit
+    der Winrate, dass der reine Verhaeltnis-Multiplikator (kelly/kelly_at_
+    threshold) schon knapp oberhalb der Schwelle jeden vernuenftigen Deckel
+    saettigt (z.B. WR=50% bei Schwelle=38.3% ergibt bereits ~3.4x) -- das gilt
+    unabhaengig davon, ob man das Ergebnis als absolute Risk% oder als
+    Multiplikator ausdrueckt, es liegt an der Steilheit der Kelly-Formel
+    selbst. `dampening` (0-1) daempft deshalb, wie stark der Multiplikator
+    oberhalb von 1.0 mitwaechst: multiplier = 1 + (roh_multiplier - 1) *
+    dampening. Bei dampening=0.3 verteilt sich der typische 40-85%-Winrate-
+    Bereich sanft zwischen 1x und max_mult, statt fast ueberall am Deckel zu
+    haengen.
+    """
+    if rr_ratio <= 0:
+        return fallback_risk_pct
+    kelly = winrate - (1.0 - winrate) / rr_ratio
+    kelly_at_threshold = threshold_winrate - (1.0 - threshold_winrate) / rr_ratio
+    if kelly_at_threshold <= 0:
+        return fallback_risk_pct
+    raw_multiplier = kelly / kelly_at_threshold
+    multiplier = 1.0 + (raw_multiplier - 1.0) * dampening
+    multiplier = max(min_mult, min(multiplier, max_mult))
+    return fallback_risk_pct * multiplier
+
+
 FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
 
 
@@ -675,7 +713,25 @@ def place_entry_orders(
 
     risk = params['risk']
     leverage = risk['leverage']
-    risk_pct = risk.get('risk_per_entry_pct', 1.0)
+    fallback_risk_pct = risk.get('risk_per_entry_pct', 1.0)
+    if risk.get('use_kelly_sizing', False):
+        threshold_winrate = params.get('genome', {}).get('min_winrate', 0.45)
+        risk_pct = _kelly_risk_pct(
+            winrate=genome_signal.get('winrate', 0.0),
+            rr_ratio=risk.get('rr_ratio', 2.0),
+            threshold_winrate=threshold_winrate,
+            min_mult=risk.get('kelly_min_mult', 0.5),
+            max_mult=risk.get('kelly_max_mult', 3.0),
+            fallback_risk_pct=fallback_risk_pct,
+            dampening=risk.get('kelly_dampening', 0.3),
+        )
+        logger.info(
+            f"[Kelly Sizing] WR={genome_signal.get('winrate', 0.0):.1%} "
+            f"(Schwelle {threshold_winrate:.1%}) RR={risk.get('rr_ratio', 2.0)} "
+            f"-> Risk={risk_pct:.2f}% (statt fix {fallback_risk_pct:.2f}%)"
+        )
+    else:
+        risk_pct = fallback_risk_pct
     trailing_callback = risk.get('trailing_callback_rate_pct', 1.0) / 100.0
 
     # Risiko-Reduktion bei schlechter Performance

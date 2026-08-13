@@ -118,6 +118,25 @@ if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "
     if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=$RISK_INPUT; fi
 fi
 
+# ── 5. min_samples-Optuna-Sweep danach? ─────────────────────────────────────
+# Laeuft bewusst NACH Discovery, nicht parallel dazu -- zwei Prozesse, die
+# gleichzeitig in dieselbe genome.db schreiben/lesen, koennen sich blockieren
+# (SQLite-Locking) und der Sweep wuerde fuer noch nicht fertig gescannte
+# Pairs unvollstaendige Ergebnisse liefern.
+echo ""
+echo -e "${YELLOW}Optuna-Sweep fuer min_samples_to_activate pro Timeframe (analysis/min_samples_sweep.py)${NC}"
+echo "  Sucht NACH der Discovery den PnL-besten min_samples-Wert je Timeframe."
+echo "  Kann je nach Pool-Groesse mehrere Stunden dauern -- fuer Overnight-Laeufe gedacht."
+read -p "Im Anschluss starten? (j/n) [Standard: n]: " RUN_SWEEP
+RUN_SWEEP="${RUN_SWEEP//[$'\r\n ']/}"
+
+SWEEP_TRIALS=150
+if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN_SWEEP" == "Y" ]]; then
+    read -p "Optuna-Trials pro Timeframe [Standard: 150]: " TRIALS_INPUT
+    TRIALS_INPUT="${TRIALS_INPUT//[$'\r\n ']/}"
+    if [[ "$TRIALS_INPUT" =~ ^[0-9]+$ ]]; then SWEEP_TRIALS=$TRIALS_INPUT; fi
+fi
+
 # ── Pipeline starten ─────────────────────────────────────────────────────────
 echo ""
 echo "======================================================="
@@ -228,5 +247,16 @@ echo "    1. Ergebnisse prüfen:   ./show_results.sh"
 echo "    2. Strategien aktivieren: settings.json → \"active\": true"
 echo "    3. Cronjob einrichten:  crontab -e"
 echo "======================================================="
+
+# Bonus-Schritt: min_samples-Sweep (laeuft NACH der kompletten Pipeline,
+# damit genome.db beim Sweep-Start bereits vollstaendig ist)
+if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN_SWEEP" == "Y" ]]; then
+    echo ""
+    echo "======================================================="
+    echo -e "  ${YELLOW}Bonus: min_samples-Optuna-Sweep${NC}"
+    echo "  ${SWEEP_TRIALS} Trials pro Timeframe -- das kann laenger dauern."
+    echo "======================================================="
+    $PYTHON "$SCRIPT_DIR/analysis/min_samples_sweep.py" --n-trials "$SWEEP_TRIALS"
+fi
 
 deactivate

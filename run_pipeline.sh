@@ -118,16 +118,20 @@ if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "
     if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=$RISK_INPUT; fi
 fi
 
-# ── 5. min_samples-Optuna-Sweep danach? ─────────────────────────────────────
-# Laeuft bewusst NACH Discovery, nicht parallel dazu -- zwei Prozesse, die
+# ── 5. min_samples-Optuna-Sweep? ────────────────────────────────────────────
+# Laeuft NACH Discovery (braucht die Genome-Occurrences), aber VOR dem
+# Backtest (damit der Backtest die optimierten Werte nutzt, nicht die alten
+# Default-Werte). Nicht parallel zur Discovery -- zwei Prozesse, die
 # gleichzeitig in dieselbe genome.db schreiben/lesen, koennen sich blockieren
 # (SQLite-Locking) und der Sweep wuerde fuer noch nicht fertig gescannte
 # Pairs unvollstaendige Ergebnisse liefern.
 echo ""
 echo -e "${YELLOW}Optuna-Sweep fuer min_samples_to_activate pro Timeframe (analysis/min_samples_sweep.py)${NC}"
-echo "  Sucht NACH der Discovery den PnL-besten min_samples-Wert je Timeframe."
+echo "  Sucht nach der Discovery den PnL-besten min_samples-Wert je Timeframe,"
+echo "  uebernimmt ihn in settings.json und laesst den Evolver damit neu laufen --"
+echo "  bevor Backtest und Ergebnisse folgen."
 echo "  Kann je nach Pool-Groesse mehrere Stunden dauern -- fuer Overnight-Laeufe gedacht."
-read -p "Im Anschluss starten? (j/n) [Standard: n]: " RUN_SWEEP
+read -p "Starten? (j/n) [Standard: n]: " RUN_SWEEP
 RUN_SWEEP="${RUN_SWEEP//[$'\r\n ']/}"
 
 SWEEP_TRIALS=150
@@ -217,6 +221,58 @@ fi
 
 echo ""
 
+# Zusatzschritt: min_samples-Optuna-Sweep + Uebernahme (LAEUFT VOR dem
+# Backtest, nicht danach -- der Backtest soll die optimierten Werte schon
+# nutzen, nicht mit den alten Default-Werten laufen und dann ungenutzt
+# verpuffen).
+if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN_SWEEP" == "Y" ]]; then
+    echo "======================================================="
+    echo -e "  ${YELLOW}Zusatzschritt: min_samples-Optuna-Sweep${NC}"
+    echo "  ${SWEEP_TRIALS} Trials pro Timeframe -- das kann laenger dauern."
+    echo "======================================================="
+    $PYTHON "$SCRIPT_DIR/analysis/min_samples_sweep.py" --n-trials "$SWEEP_TRIALS"
+
+    echo ""
+    echo -e "${CYAN}  Uebernehme Sweep-Ergebnisse in settings.json (scan_settings.min_samples_by_timeframe)...${NC}"
+    $PYTHON - <<'PYEOF'
+import json, os
+
+SETTINGS_PATH = os.path.join(os.getcwd(), 'settings.json')
+SWEEP_PATH = os.path.join(os.getcwd(), 'artifacts', 'results', 'min_samples_sweep.json')
+
+if not os.path.exists(SWEEP_PATH):
+    print("  Keine Sweep-Ergebnisse gefunden -- ueberspringe Uebernahme.")
+else:
+    with open(SWEEP_PATH) as f:
+        sweep_results = json.load(f)
+    with open(SETTINGS_PATH) as f:
+        settings = json.load(f)
+
+    scan_settings = settings.setdefault('scan_settings', {})
+    by_tf = scan_settings.setdefault('min_samples_by_timeframe', {})
+    for tf, r in sweep_results.items():
+        if 'min_samples' in r:
+            by_tf[tf] = r['min_samples']
+            print(f"  {tf}: min_samples={r['min_samples']} (PnL {r.get('pnl_usdt', 0):+.2f}, "
+                  f"Trades {r.get('trades', '?')}, MaxDD {r.get('max_drawdown_pct', '?')}%)")
+
+    with open(SETTINGS_PATH, 'w') as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
+    print("  settings.json aktualisiert.")
+PYEOF
+
+    echo ""
+    echo -e "${CYAN}  Evolver neu mit den optimierten min_samples-Werten...${NC}"
+    if [ -n "${PAIRS:-}" ]; then
+        echo "$PAIRS" | while IFS=' ' read -r sym tf; do
+            $PYTHON "$SCRIPT_DIR/scan_and_learn.py" --symbol "$sym" --timeframe "$tf" $HISTORY_ARG
+        done
+    else
+        $PYTHON "$SCRIPT_DIR/scan_and_learn.py" $HISTORY_ARG
+    fi
+    echo ""
+fi
+
 # Schritt 2: Backtest
 if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "Y" ]]; then
     echo -e "${YELLOW}[Schritt 2/3] Backtest...${NC}"
@@ -247,16 +303,5 @@ echo "    1. Ergebnisse prüfen:   ./show_results.sh"
 echo "    2. Strategien aktivieren: settings.json → \"active\": true"
 echo "    3. Cronjob einrichten:  crontab -e"
 echo "======================================================="
-
-# Bonus-Schritt: min_samples-Sweep (laeuft NACH der kompletten Pipeline,
-# damit genome.db beim Sweep-Start bereits vollstaendig ist)
-if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN_SWEEP" == "Y" ]]; then
-    echo ""
-    echo "======================================================="
-    echo -e "  ${YELLOW}Bonus: min_samples-Optuna-Sweep${NC}"
-    echo "  ${SWEEP_TRIALS} Trials pro Timeframe -- das kann laenger dauern."
-    echo "======================================================="
-    $PYTHON "$SCRIPT_DIR/analysis/min_samples_sweep.py" --n-trials "$SWEEP_TRIALS"
-fi
 
 deactivate

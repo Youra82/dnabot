@@ -115,6 +115,21 @@ def resolve_min_samples(timeframe: str, override) -> int:
     return _resolve(timeframe, override, MIN_SAMPLES_MAP, 80)
 
 
+def get_min_samples_override(scan_cfg: dict, timeframe: str):
+    """
+    Ermittelt den min_samples-Override fuer EINEN Timeframe.
+
+    Prioritaet: scan_settings.min_samples_by_timeframe[timeframe] (z.B. per
+    analysis/min_samples_sweep.py Optuna-optimiert) > scan_settings.
+    min_samples_to_activate (pauschaler fester Wert) > None (dann greift
+    resolve_min_samples()'s MIN_SAMPLES_MAP).
+    """
+    by_tf = scan_cfg.get('min_samples_by_timeframe', {})
+    if timeframe in by_tf:
+        return by_tf[timeframe]
+    return scan_cfg.get('min_samples_to_activate', None)
+
+
 def load_settings() -> dict:
     with open(os.path.join(PROJECT_ROOT, 'settings.json'), 'r') as f:
         return json.load(f)
@@ -191,7 +206,6 @@ def main():
 
     scan_cfg = settings.get('scan_settings', {})
     genome_cfg = settings.get('genome_settings', {})
-    genome_min_samples = settings.get('scan_settings', {}).get('min_samples_to_activate', 20)
 
     # Symbol/Timeframe-Paare: aus active_strategies ableiten (ODER explizite Overrides nutzen)
     active_strategies = settings.get('live_trading_settings', {}).get('active_strategies', [])
@@ -237,7 +251,6 @@ def main():
     # Manuelle Overrides: CLI hat Vorrang vor settings.json, dann auto nach Timeframe
     history_days_override    = args.history_days or scan_cfg.get('history_days', None)
     discovery_horizon_override = scan_cfg.get('discovery_horizon', None)
-    min_samples_override     = scan_cfg.get('min_samples_to_activate', None)
     sequence_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
     min_score = genome_cfg.get('min_score', 0.08)
     half_life_days = genome_cfg.get('half_life_days', 180.0)
@@ -275,7 +288,7 @@ def main():
         # Alle Scan-Parameter werden pro Timeframe automatisch aufgelöst
         history_days      = resolve_history_days(timeframe, history_days_override)
         discovery_horizon = resolve_discovery_horizon(timeframe, discovery_horizon_override)
-        min_samples       = resolve_min_samples(timeframe, min_samples_override)
+        min_samples       = resolve_min_samples(timeframe, get_min_samples_override(scan_cfg, timeframe))
 
         logger.info(f"\n{'─' * 50}")
         logger.info(

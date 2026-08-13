@@ -22,10 +22,13 @@
 #     summiert PnL ueber ALLE Coins dieses Timeframes. Pro-Coin-Optimierung
 #     wuerde bei Pairs mit nur 1-10 historischen Trades reines Rauschen
 #     fitten statt einen echten Edge zu finden.
-#   - Trial-Ergebnisse mit zu wenigen Gesamt-Trades (MIN_TRADES_FOR_VALID_TRIAL)
-#     werden hart bestraft (-1e6) -- sonst konvergiert Optuna trivial auf
-#     "so hoch, dass nie gehandelt wird" (PnL=0 sieht sonst besser aus als
-#     jeder verlustreiche, aber echte Wert).
+#   - Trial-Ergebnisse mit zu wenigen Gesamt-Trades (MIN_TRADES_BY_TIMEFRAME,
+#     je kleiner der Timeframe desto hoeher die Anforderung -- mehr Kerzen
+#     verfuegbar) werden hart bestraft (-1e6) -- sonst konvergiert Optuna
+#     trivial auf "so hoch, dass nie gehandelt wird" (PnL=0 sieht sonst besser
+#     aus als jeder verlustreiche, aber echte Wert). Referenzpunkt: der volle
+#     22-Coin x 5-Timeframe-Pool (110 Strategien) soll zusammen > 200
+#     Trades/Jahr ergeben -- print_summary() zeigt die erreichte Summe an.
 #   - fine_df wird bewusst NICHT genutzt (keine Intrabar-Feindaten-Simulation)
 #     -- das dominiert sonst die Laufzeit durch viele einzelne Tages-API-Calls.
 #     Fuer den relativen Vergleich zwischen min_samples-Werten reicht die
@@ -77,9 +80,28 @@ RESULTS_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'results', 'min_samples_s
 MIN_SAMPLES_RANGE = (1, 30)
 N_TRIALS_DEFAULT = 150  # grosszuegig fuer einen Overnight-Lauf -- genug Budget, damit
                         # Optuna die (oft schmale) produktive Zone zuverlaessig findet
-MIN_TRADES_FOR_VALID_TRIAL = 5  # weniger Trades gesamt -> Trial wird hart bestraft
 MAX_DRAWDOWN_PCT = 30.0  # harte Nebenbedingung -- Trials darueber werden bestraft,
                          # unabhaengig davon wie gut ihr PnL sonst waere
+
+# Mindest-Trade-Anzahl (gepoolt ueber alle Coins eines Timeframes), unter der
+# ein Trial als statistisch nicht belastbar verworfen wird -- je kleiner der
+# Timeframe, desto mehr Kerzen/Gelegenheiten stehen zur Verfuegung, also auch
+# eine hoehere Anforderung. Referenzpunkt: 22 Coins x 5 Timeframes (110
+# Strategien) sollen zusammen > 200 Trades/Jahr ergeben -- diese Floors sind
+# bewusst niedriger als der Zielwert (sie sollen nur eindeutigen Unsinn
+# rausfiltern, nicht das Optimum vorwegnehmen).
+MIN_TRADES_BY_TIMEFRAME = {
+    '15m': 40,
+    '30m': 30,
+    '1h':  20,
+    '2h':  15,
+    '4h':  10,
+    '6h':  8,
+    '8h':  6,
+    '12h': 5,
+    '1d':  4,
+}
+DEFAULT_MIN_TRADES = 10
 
 
 def _date_range(history_days: int):
@@ -117,7 +139,8 @@ def make_objective(dfs_by_market: dict, timeframe: str, db: GenomeDB,
         trial.set_user_attr('total_pnl', round(total_pnl, 2))
         trial.set_user_attr('worst_drawdown_pct', round(worst_dd, 2))
 
-        if total_trades < MIN_TRADES_FOR_VALID_TRIAL:
+        min_trades_required = MIN_TRADES_BY_TIMEFRAME.get(timeframe, DEFAULT_MIN_TRADES)
+        if total_trades < min_trades_required:
             # Zu wenig Daten, um PnL sinnvoll zu bewerten -- klar unattraktiv
             # machen, statt Optuna auf "nie handeln" (PnL=0) konvergieren zu lassen.
             return -1e6 + total_trades  # leichte Praeferenz fuer "naeher an auswertbar"
@@ -205,10 +228,11 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
         else:
             logger.info(f"  Bereits {len(study.trials)} Trials vorhanden -- ueberspringe.")
 
+        min_trades_required = MIN_TRADES_BY_TIMEFRAME.get(tf, DEFAULT_MIN_TRADES)
         feasible = [
             t for t in study.trials
             if t.value is not None
-            and t.user_attrs.get('total_trades', 0) >= MIN_TRADES_FOR_VALID_TRIAL
+            and t.user_attrs.get('total_trades', 0) >= min_trades_required
             and t.user_attrs.get('worst_drawdown_pct', 999) <= MAX_DRAWDOWN_PCT
         ]
         if feasible:
@@ -251,10 +275,11 @@ def print_summary():
         # nicht ueber den Penalty-Wert selbst filtern, da die DD-Strafzone
         # (~-1e5) und die Zu-wenig-Trades-Strafzone (~-1e6) unterschiedlich
         # tief liegen und ein einzelner Schwellenwert das nicht sauber trennt.
+        min_trades_required = MIN_TRADES_BY_TIMEFRAME.get(tf, DEFAULT_MIN_TRADES)
         valid_trials = [
             t for t in study.trials
             if t.value is not None
-            and t.user_attrs.get('total_trades', 0) >= MIN_TRADES_FOR_VALID_TRIAL
+            and t.user_attrs.get('total_trades', 0) >= min_trades_required
             and t.user_attrs.get('worst_drawdown_pct', 999) <= MAX_DRAWDOWN_PCT
         ]
         if not valid_trials:
@@ -280,6 +305,13 @@ def print_summary():
 
     with open(RESULTS_PATH, 'w') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+
+    total_trades_all = sum(r.get('trades', 0) or 0 for r in results.values())
+    print(f"\n{'-' * 78}")
+    print(f"  Trades gesamt (alle Timeframes, beste Werte): {total_trades_all}")
+    print(f"  Referenz: bei vollem 22-Coin-Pool ueber alle Timeframes werden > 200")
+    print(f"  Trades/Jahr erwartet -- deutlich weniger deutet auf zu wenige gescannte")
+    print(f"  Coins/Timeframes ODER zu strenge min_samples-Werte hin.")
 
     print(f"\n{'=' * 78}")
     print(f"  Ergebnisse gespeichert: {RESULTS_PATH}")

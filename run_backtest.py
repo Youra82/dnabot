@@ -23,7 +23,7 @@ from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
 from dnabot.genome.scoring import breakeven_winrate
 from scan_and_learn import (
-    HISTORY_DAYS_MAP, resolve_history_days,
+    HISTORY_DAYS_MAP, resolve_history_days, resolve_min_samples, get_min_samples_override,
     load_settings, load_secrets,
 )
 
@@ -151,7 +151,10 @@ def main():
             # explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
             'min_winrate':      genome_cfg.get('min_winrate') or breakeven_winrate(_rr_ratio),
             'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
-            'min_samples':      scan_cfg.get('min_samples_to_activate', 20),
+            # min_samples wird PRO PAIR gesetzt (siehe Schleife unten) -- haengt
+            # vom jeweiligen Timeframe ab (scan_settings.min_samples_by_timeframe,
+            # z.B. per analysis/min_samples_sweep.py optimiert, sonst
+            # min_samples_to_activate/MIN_SAMPLES_MAP als Fallback).
             'half_life_days':   genome_cfg.get('half_life_days', 180.0),
             'use_weekly_trend_filter': genome_cfg.get('use_weekly_trend_filter', False),
             'weekly_trend_ema':        genome_cfg.get('weekly_trend_ema', 8),

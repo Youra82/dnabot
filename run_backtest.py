@@ -155,6 +155,9 @@ def main():
             'half_life_days':   genome_cfg.get('half_life_days', 180.0),
             'use_weekly_trend_filter': genome_cfg.get('use_weekly_trend_filter', False),
             'weekly_trend_ema':        genome_cfg.get('weekly_trend_ema', 8),
+            'use_cvd_filter':          genome_cfg.get('use_cvd_filter', False),
+            'cvd_slope_period':        genome_cfg.get('cvd_slope_period', 5),
+            'allowed_regimes':         genome_cfg.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
         },
         'risk': {
             'rr_ratio': _rr_ratio,

@@ -23,6 +23,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
+from dnabot.genome.regime import detect_regime, is_regime_allowed
 
 
 class Bias:
@@ -57,6 +58,42 @@ def _compute_weekly_bias(df: pd.DataFrame, ema_period: int = 8):
     except Exception:
         return [], []
 
+
+def _compute_cvd_slope(df: pd.DataFrame, slope_period: int = 5) -> pd.Series:
+    """
+    Cumulative Volume Delta (CVD) als Order-Flow-Bestaetigung -- portiert aus
+    probebot/features/volume.py::add_all_volume (dort als cvd_slope bereits
+    als Feature genutzt) und mbots Layer-5-Volumen-Bestaetigung, unabhaengig
+    voneinander auf denselben Ansatz gekommen. Approximation ohne Tick-Daten:
+    Delta = Volumen * Vorzeichen(close-open) pro Kerze. Positiver Slope =
+    Kaufdruck ueberwiegt (fuer LONG), negativer = Verkaufsdruck (fuer SHORT).
+    Rein rueckwaertsgewandt (cumsum + diff auf bereits geschlossenen Kerzen),
+    kein Look-Ahead.
+    """
+    delta = df['volume'] * np.sign(df['close'] - df['open'])
+    cvd = delta.cumsum()
+    return cvd.diff(slope_period)
+
+
+# Regime wird alle N Kerzen neu berechnet (Performance, wie discovery.py)
+REGIME_RECALC_INTERVAL_BT = 20
+
+
+def _get_backtest_regime(df: pd.DataFrame, idx: int, cache: dict, window: int = 100) -> str:
+    """
+    Live-aequivalente Regime-Erkennung fuer den Backtest (bisher fehlte das hier
+    komplett -- der Backtest hat JEDES Genom unabhaengig vom aktuellen Markt-
+    regime gematcht, waehrend genome_logic.py live nur Genome zulaesst, deren
+    active_regimes das AKTUELLE Regime enthalten. Vor dem discovery.py-Regime-
+    Fix (2026-08-13) fiel das nicht auf, weil ohnehin alles NEUTRAL war.
+    """
+    bucket = (idx // REGIME_RECALC_INTERVAL_BT) * REGIME_RECALC_INTERVAL_BT
+    if bucket not in cache:
+        sub_df = df.iloc[max(0, bucket - window): bucket + 1]
+        cache[bucket] = detect_regime(sub_df)
+    return cache[bucket]
+
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
@@ -74,7 +111,8 @@ FINE_TF_MAP = {
 
 
 def _find_best_signal(genes: list[str], market: str, timeframe: str,
-                       db: GenomeDB, params: dict, cutoff_iso: str = None) -> dict | None:
+                       db: GenomeDB, params: dict, cutoff_iso: str = None,
+                       current_regime: str = None) -> dict | None:
     """Sucht das beste aktive Genome-Signal in den letzten genome_cfg['sequence_lengths'] Genen.
 
     Wenn cutoff_iso gesetzt ist, werden Genome-Stats point-in-time aus
@@ -82,6 +120,15 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
     der aktuellen All-Time-Aggregation -- verhindert Hindsight-Bias im
     Backtest (siehe get_genome_as_of() in database.py). Ohne cutoff_iso
     (z.B. Live-Nutzung) bleibt das alte Verhalten über db.get_genome().
+
+    current_regime: aktuelles Markt-Regime (TREND/RANGE/NEUTRAL). Wird an
+    get_genome_as_of() durchgereicht, damit nur Genome zaehlen, die GENAU in
+    diesem Regime aktiviert waeren -- Aequivalent zu genome_logic.py's
+    _regime_active() live. Faellt get_genome_as_of() auf ihren globalen
+    NEUTRAL-Fallback zurueck (zu wenig Regime-spezifische Samples), wird das
+    hier verworfen, wenn current_regime nicht NEUTRAL ist -- sonst wuerde der
+    Backtest Genome zulassen, die live wegen fehlender TREND/RANGE-Samples
+    gar nicht aktiv waeren.
     """
     genome_cfg = params.get('genome', {})
     min_score = genome_cfg.get('min_score', 0.05)
@@ -103,9 +150,12 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
             if cutoff_iso is not None:
                 g = db.get_genome_as_of(
                     seq, market, timeframe, direction, cutoff_iso,
+                    regime=current_regime,
                     min_samples=min_samples, min_winrate=min_winrate,
                     score_threshold=min_score, half_life_days=half_life_days,
                 )
+                if g and current_regime is not None and g['regime'] != current_regime:
+                    g = None
             else:
                 g = db.get_genome(seq, market, timeframe, direction)
             if g and g['active'] and g['score'] >= min_score and g['score'] > best_score:
@@ -371,6 +421,20 @@ def run_backtest(
         weekly_ema = int(params.get('genome', {}).get('weekly_trend_ema', 8))
         weekly_bias_times, weekly_bias_values = _compute_weekly_bias(df, ema_period=weekly_ema)
 
+    # CVD-Bestaetigungsfilter (optional, standardmaessig aus): Order-Flow-Schicht
+    # orthogonal zum Wochentrend -- blockt Signale gegen den aktuellen Kauf-/
+    # Verkaufsdruck statt gegen den uebergeordneten Trend.
+    use_cvd_filter = bool(params.get('genome', {}).get('use_cvd_filter', False))
+    cvd_slope = None
+    if use_cvd_filter:
+        cvd_period = int(params.get('genome', {}).get('cvd_slope_period', 5))
+        cvd_slope = _compute_cvd_slope(df, slope_period=cvd_period)
+
+    # Markt-Regime-Gate (Aequivalent zu genome_logic.py live) -- fehlte hier bisher
+    # komplett, siehe _get_backtest_regime()-Docstring.
+    allowed_regimes = params.get('genome', {}).get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL'])
+    regime_cache_bt = {}
+
     # Alle Gene vorberechnen
     genes = encode_dataframe(df)
 
@@ -380,11 +444,18 @@ def run_backtest(
     i = warmup_candles
 
     while i < len(df) - max_hold_candles:
+        current_regime = _get_backtest_regime(df, i, regime_cache_bt)
+        if not is_regime_allowed(current_regime, allowed_regimes):
+            i += 1
+            equity_curve.append(equity)
+            continue
+
         current_genes = genes[:i + 1]
 
         # Signal suchen (point-in-time -- kein Hindsight-Bias aus zukünftigen Occurrences)
         cutoff_iso = df.index[i].isoformat()
-        signal = _find_best_signal(current_genes, market, timeframe, db, params, cutoff_iso=cutoff_iso)
+        signal = _find_best_signal(current_genes, market, timeframe, db, params,
+                                    cutoff_iso=cutoff_iso, current_regime=current_regime)
 
         if signal is not None and use_weekly_trend_filter and weekly_bias_times:
             _wpos = bisect.bisect_right(weekly_bias_times, df.index[i]) - 1
@@ -393,6 +464,14 @@ def run_backtest(
                 if weekly_bias == Bias.BEARISH and signal['direction'] == 'LONG':
                     signal = None
                 elif weekly_bias == Bias.BULLISH and signal['direction'] == 'SHORT':
+                    signal = None
+
+        if signal is not None and use_cvd_filter and cvd_slope is not None:
+            _cvd_val = cvd_slope.iloc[i]
+            if pd.notna(_cvd_val):
+                if _cvd_val < 0 and signal['direction'] == 'LONG':
+                    signal = None
+                elif _cvd_val > 0 and signal['direction'] == 'SHORT':
                     signal = None
 
         if signal is None:

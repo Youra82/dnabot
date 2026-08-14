@@ -227,25 +227,35 @@ def main():
     explicit_symbols = scan_cfg.get('symbols', [])
     explicit_timeframes = scan_cfg.get('timeframes', [])
 
-    if explicit_symbols or explicit_timeframes:
+    # Prioritaet (seit 2026-08-15): scan_all_db_pairs VOR der statischen
+    # scan_settings.symbols/timeframes-Liste, wenn die DB tatsaechlich schon
+    # Paare enthaelt -- "was wir tatsaechlich im Gesamtpool haben" (die
+    # gewachsene, echte Genome-DB) soll Vorrang vor einer manuell gepflegten,
+    # potenziell veralteten Coin-Liste haben. Vorher war scan_all_db_pairs
+    # totes Feature: es stand zwar auf true in settings.json, wurde aber nie
+    # erreicht, weil scan_settings.symbols/timeframes IMMER zuerst griff,
+    # sobald die gesetzt waren. Bootstrap-Fall (DB noch leer) faellt weiter
+    # unten automatisch auf die statische Liste zurueck, damit ein Reset der
+    # DB nicht auf einen einzelnen Notfall-Coin zusammenschrumpft.
+    _db_pairs_for_pool = []
+    if scan_cfg.get('scan_all_db_pairs', False):
+        _db_tmp = GenomeDB(DB_PATH)
+        _db_pairs_for_pool = _db_tmp.get_all_market_pairs()
+        _db_tmp.close()
+
+    if _db_pairs_for_pool:
+        scan_pairs = _db_pairs_for_pool
+        logger.debug(f"  scan_all_db_pairs=true (Basis-Pool): {len(scan_pairs)} Paare aus Genome-DB")
+    elif explicit_symbols or explicit_timeframes:
         # Expliziter Override: kartesisches Produkt wie bisher
         symbols = explicit_symbols or list(dict.fromkeys(
             s['symbol'] for s in active_strategies if s.get('symbol')
         )) or ['BTC/USDT:USDT']
         timeframes_global = explicit_timeframes or ['4h']
         scan_pairs = [(sym, tf) for sym in symbols for tf in timeframes_global]
+        if scan_cfg.get('scan_all_db_pairs', False):
+            logger.info("  scan_all_db_pairs=true, aber Genome-DB noch leer — Bootstrap aus scan_settings-Liste.")
         logger.debug(f"  Explizite Overrides (Basis-Pool vor --symbol/--timeframe-Filter): {len(scan_pairs)} Paare: {scan_pairs}")
-    elif scan_cfg.get('scan_all_db_pairs', False):
-        # Alle (market, timeframe)-Paare aus der Genome-DB scannen
-        _db_tmp = GenomeDB(DB_PATH)
-        db_pairs = _db_tmp.get_all_market_pairs()
-        _db_tmp.close()
-        if db_pairs:
-            scan_pairs = db_pairs
-            logger.debug(f"  scan_all_db_pairs=true (Basis-Pool): {len(scan_pairs)} Paare aus Genome-DB")
-        else:
-            scan_pairs = [('BTC/USDT:USDT', '4h')]
-            logger.warning("  scan_all_db_pairs=true aber DB leer — Fallback auf BTC/USDT:USDT 4h")
     else:
         # Auto-Ableitung: (symbol, timeframe) direkt aus active_strategies
         seen = set()

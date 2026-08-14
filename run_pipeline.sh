@@ -134,9 +134,9 @@ echo "  Kann je nach Pool-Groesse mehrere Stunden dauern -- fuer Overnight-Laeuf
 read -p "Starten? (j/n) [Standard: n]: " RUN_SWEEP
 RUN_SWEEP="${RUN_SWEEP//[$'\r\n ']/}"
 
-SWEEP_TRIALS=40
+SWEEP_TRIALS=20
 if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN_SWEEP" == "Y" ]]; then
-    read -p "Optuna-Trials pro Timeframe [Standard: 40]: " TRIALS_INPUT
+    read -p "Optuna-Trials pro Timeframe [Standard: 20]: " TRIALS_INPUT
     TRIALS_INPUT="${TRIALS_INPUT//[$'\r\n ']/}"
     if [[ "$TRIALS_INPUT" =~ ^[0-9]+$ ]]; then SWEEP_TRIALS=$TRIALS_INPUT; fi
 fi

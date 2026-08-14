@@ -89,9 +89,10 @@ MIN_SAMPLES_RANGE = (1, 10)  # weiter verengt (2026-08-14, VPS-Lauf 1h+2h/22 Coi
                              # Optimum bei min_samples=3, deutlich innerhalb 1-10 --
                              # ein Bereich bis 15 verschwendet Trial-Budget in der
                              # toten Zone, ohne die Aussage zu verbessern.
-N_TRIALS_DEFAULT = 40  # bei nur noch 10 moeglichen Werten reichen 40 Trials fuer
-                       # zuverlaessige Konvergenz (~4x Abdeckung je Wert im Schnitt) --
-                       # halbiert die Laufzeit ggue. 80 nochmal
+N_TRIALS_DEFAULT = 20  # weiter reduziert -- 30m zeigte bei 30/40 Trials bereits ein
+                       # stabiles Optimum (min_samples=1), 20 Trials bei 10 moeglichen
+                       # Werten (~2x Abdeckung je Wert) reichen fuer die grossen,
+                       # zeitfressenden Timeframes (30m/1h) mit vielen Kerzen pro Coin
 MAX_DRAWDOWN_PCT = 30.0  # harte Nebenbedingung -- Trials darueber werden bestraft,
                          # unabhaengig davon wie gut ihr PnL sonst waere
 

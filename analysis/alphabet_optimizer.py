@@ -317,29 +317,34 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
         f"({split_idx} Kerzen) | OOS ab {split_ts.date()} ({len(df) - split_idx} Kerzen)"
     )
 
+    # Jeder Lauf startet frisch -- n_trials ist "N neue Trials ab jetzt", nicht
+    # "Ziel-Gesamtzahl einer fortlaufenden Studie" (letzteres verwirrte beim
+    # ersten echten Einsatz: 50 eingegeben, aber nur ~30 liefen, weil schon
+    # ~20 aus einem frueheren Lauf mit demselben Pair/Fenster gespeichert
+    # waren). Alte Studie fuer dieses Pair/Fenster wird verworfen.
+    study_name = _study_name(market, timeframe, history_days)
+    try:
+        optuna.delete_study(study_name=study_name, storage=f"sqlite:///{STORAGE_PATH}")
+    except KeyError:
+        pass  # existierte noch nicht
+
     study = optuna.create_study(
-        study_name=_study_name(market, timeframe, history_days),
+        study_name=study_name,
         storage=f"sqlite:///{STORAGE_PATH}",
-        load_if_exists=True,
         direction='maximize',
         sampler=optuna.samplers.TPESampler(seed=42),
     )
-    if len(study.trials) == 0:
-        study.enqueue_trial(dict(DEFAULT_ALPHABET))
+    study.enqueue_trial(dict(DEFAULT_ALPHABET))
 
-    remaining = max(0, n_trials - len(study.trials))
-    if remaining > 0:
-        with tqdm(total=remaining, desc=f"{market} {timeframe}", unit="trial") as pbar:
-            def _progress(study, trial):
-                pbar.update(1)
-            study.optimize(
-                make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
-                                discovery_horizon, split_ts, capital, min_is_trades),
-                n_trials=remaining,
-                callbacks=[_progress],
-            )
-    else:
-        print(f"{market} ({timeframe}): bereits {len(study.trials)} Trials -- ueberspringe.")
+    with tqdm(total=n_trials, desc=f"{market} {timeframe}", unit="trial") as pbar:
+        def _progress(study, trial):
+            pbar.update(1)
+        study.optimize(
+            make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
+                            discovery_horizon, split_ts, capital, min_is_trades),
+            n_trials=n_trials,
+            callbacks=[_progress],
+        )
 
     baseline_trial = next((t for t in study.trials if t.user_attrs.get('is_baseline')), None)
     if baseline_trial is None or baseline_trial.value is None:

@@ -193,46 +193,12 @@ fi
 SCAN_ARGS=""
 
 if [ -n "${DNABOT_OVERRIDE_COINS:-}" ] || [ -n "${DNABOT_OVERRIDE_TFS:-}" ]; then
-    # Generiere temporäre Pair-Liste via Python
-    PAIRS=$($PYTHON - <<'PYEOF'
-import os, sys, json
-
-coins_raw = os.environ.get('DNABOT_OVERRIDE_COINS', '').strip()
-tfs_raw   = os.environ.get('DNABOT_OVERRIDE_TFS', '').strip()
-
-# Aus settings.json fallback holen
-try:
-    with open('settings.json') as f:
-        s = json.load(f)
-    active = s.get('live_trading_settings', {}).get('active_strategies', [])
-    auto_coins = list(dict.fromkeys(x['symbol'] for x in active if x.get('symbol')))
-    auto_tfs   = list(dict.fromkeys(x['timeframe'] for x in active if x.get('timeframe')))
-except Exception:
-    auto_coins = ['BTC/USDT:USDT']
-    auto_tfs   = ['4h']
-
-def to_symbol(coin):
-    coin = coin.strip().upper()
-    if '/' not in coin:
-        return f"{coin}/USDT:USDT"
-    return coin
-
-if coins_raw:
-    coins = [to_symbol(c) for c in coins_raw.split()]
-else:
-    coins = auto_coins
-
-if tfs_raw:
-    tfs = [t.strip() for t in tfs_raw.split()]
-else:
-    tfs = auto_tfs
-
-# Kartesisches Produkt ausgeben
-for sym in coins:
-    for tf in tfs:
-        print(f"{sym} {tf}")
-PYEOF
-    )
+    # Pair-Liste ueber ein echtes Skript statt eines inline Python-Heredocs --
+    # letzteres war auf mindestens einem Zielsystem reproduzierbar leer
+    # (0 statt der erwarteten Paare), obwohl identische Logik als eigenstaendige
+    # .py-Datei und lokal immer korrekt lief (vermutlich Heredoc-Terminator-/
+    # Zeilenenden-Empfindlichkeit) -- siehe analysis/resolve_scan_pairs.py.
+    PAIRS=$($PYTHON "$SCRIPT_DIR/analysis/resolve_scan_pairs.py")
 
     if [ -z "$PAIRS" ]; then
         echo -e "${RED}FEHLER: Konnte aus der Eingabe keine Scan-Paare erzeugen ${NC}"
@@ -281,32 +247,7 @@ if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN
 
     echo ""
     echo -e "${CYAN}  Uebernehme Sweep-Ergebnisse in settings.json (scan_settings.min_samples_by_timeframe)...${NC}"
-    $PYTHON - <<'PYEOF'
-import json, os
-
-SETTINGS_PATH = os.path.join(os.getcwd(), 'settings.json')
-SWEEP_PATH = os.path.join(os.getcwd(), 'artifacts', 'results', 'min_samples_sweep.json')
-
-if not os.path.exists(SWEEP_PATH):
-    print("  Keine Sweep-Ergebnisse gefunden -- ueberspringe Uebernahme.")
-else:
-    with open(SWEEP_PATH) as f:
-        sweep_results = json.load(f)
-    with open(SETTINGS_PATH) as f:
-        settings = json.load(f)
-
-    scan_settings = settings.setdefault('scan_settings', {})
-    by_tf = scan_settings.setdefault('min_samples_by_timeframe', {})
-    for tf, r in sweep_results.items():
-        if 'min_samples' in r:
-            by_tf[tf] = r['min_samples']
-            print(f"  {tf}: min_samples={r['min_samples']} (PnL {r.get('pnl_usdt', 0):+.2f}, "
-                  f"Trades {r.get('trades', '?')}, MaxDD {r.get('max_drawdown_pct', '?')}%)")
-
-    with open(SETTINGS_PATH, 'w') as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
-    print("  settings.json aktualisiert.")
-PYEOF
+    $PYTHON "$SCRIPT_DIR/analysis/apply_min_samples_sweep.py"
 
     echo ""
     echo -e "${CYAN}  Evolver neu mit den optimierten min_samples-Werten...${NC}"

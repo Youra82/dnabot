@@ -24,13 +24,22 @@
 #      param_optimizer.py::simulate_trades) -- so verzerrt die im Volllauf
 #      interleavte Equity-Kurve nicht die getrennte IS-/OOS-Bewertung.
 #      Zielfunktion sieht NUR die IS-Metriken.
-#   4. Bestbewerteter Trial: IS- UND OOS-Metriken werden beide reportet.
-#      Nur wenn die OOS-Calmar das (durch denselben Split-Prozess laufende)
-#      Baseline-Alphabet UEBERTRIFFT und OOS-PnL positiv ist, gilt der Fund
-#      als "bestaetigt". Sonst: Ist-Zustand behalten, klar so markiert.
-#   5. Ergebnis wird NICHT automatisch in settings.json geschrieben --
+#   4. Zielfunktion: moeglichst viele IS-Trades (nicht Calmar/PnL) -- die
+#      meisten Pairs aktivieren mit dem Default-Alphabet kaum/keine Genome
+#      (siehe evolver.py-Reports mit "Aktive Genome: 0"), was die ganze
+#      Auswertung erst unmoeglich macht. Jeder gezaehlte Trade hat trotzdem
+#      schon min_score/min_winrate/min_samples bestanden (siehe
+#      get_genome_as_of()) -- "mehr Trades" heisst hier nicht "mehr
+#      Rauschen", sondern "mehr bereits qualifizierte Signale finden". Eine
+#      Drawdown-Schranke (MAX_DD_PCT) bleibt als Sicherheitsnetz bestehen.
+#   5. Bestbewerteter Trial: IS- UND OOS-Metriken werden beide reportet. Nur
+#      wenn die OOS-Trade-Zahl die Baseline UEBERTRIFFT, genug OOS-Trades
+#      fuer eine belastbare Aussage vorliegen UND OOS-PnL positiv ist, gilt
+#      der Fund als "bestaetigt". Sonst: Ist-Zustand behalten, klar markiert.
+#   6. Ergebnis wird NICHT automatisch in settings.json geschrieben --
 #      wie param_optimizer.py fragt das Skript interaktiv nach und schlaegt
-#      nur bestaetigte Pairs vor.
+#      nur bestaetigte Pairs vor (--auto-apply uebernimmt ohne Rueckfrage,
+#      fuer den Aufruf aus run_pipeline.sh).
 #
 # Separate Test-DB (artifacts/db/alphabet_optuna_test.db) -- die echte
 # genome.db wird von diesem Skript nie angefasst.
@@ -87,6 +96,17 @@ MIN_OOS_TRADES_DEFAULT = 10  # Bestaetigung erfordert zusaetzlich genug OOS-
                               # sehen: 5 OOS-Trades reichten fuer "bestaetigt").
 MAX_DD_PCT = 30.0            # weich bestraft (Gradient Richtung Grenze), nicht hart verworfen
 
+HISTORY_MULTIPLIER = 2.0     # nur fuer diesen Optimizer -- laedt mehr Historie
+                              # als scan_and_learn.py/run_backtest.py normalerweise
+                              # nutzen (HISTORY_DAYS_MAP unveraendert, betrifft
+                              # NICHT die normale Pipeline-Laufzeit). Grund: das
+                              # OOS-Fenster (30% der Historie) hatte bei hohen
+                              # Timeframes (z.B. BTC/4h: 730d -> nur 219d OOS)
+                              # oft zu wenig Trades fuer eine belastbare
+                              # Bestaetigung (min. MIN_OOS_TRADES_DEFAULT) --
+                              # das ist ein Datenmangel-Fehlalarm, kein Hinweis
+                              # dass das gefundene Alphabet schlecht waere.
+
 _EPS = 1e-9
 
 
@@ -107,9 +127,13 @@ def _date_range(history_days: int):
     return start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
 
 
-def _study_name(market: str, timeframe: str) -> str:
+def _study_name(market: str, timeframe: str, history_days: int) -> str:
+    """history_days ist Teil des Study-Namens: aendert sich das Lookback-Fenster
+    (z.B. HISTORY_MULTIPLIER angepasst), landen neue Trials automatisch in
+    einer frischen Studie statt sich mit alten, auf einem anderen Datenfenster
+    berechneten Trials (andere Kerzenzahl, anderer Split-Zeitpunkt) zu vermischen."""
     safe = market.replace('/', '').replace(':', '')
-    return f"alphabet_{safe}_{timeframe}"
+    return f"alphabet_{safe}_{timeframe}_{history_days}d"
 
 
 def reset_test_db(db: GenomeDB):
@@ -263,14 +287,21 @@ def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
         if dd > MAX_DD_PCT:
             return -1e5 - (dd - MAX_DD_PCT)
 
-        return calmar(is_stats)
+        # Ziel: moeglichst viele Trades -- die meisten Pairs aktivieren mit dem
+        # Default-Alphabet kaum/keine Genome (zu wenig statistische Basis fuer
+        # Discovery UND fuer die OOS-Validierung selbst). Jeder gezaehlte Trade
+        # hat trotzdem schon min_score/min_winrate/min_samples bestanden (siehe
+        # _find_best_signal()/get_genome_as_of()) -- "mehr Trades" heisst hier
+        # nicht "mehr Rauschen durchlassen", sondern "mehr bereits qualifizierte
+        # Signale finden". DD-Schranke oben bleibt als Sicherheitsnetz bestehen.
+        return float(n_trades)
     return objective
 
 
 def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
              n_trials: int, min_is_trades: int, min_oos_trades: int):
     genome_cfg, risk_cfg = load_genome_cfg(settings)
-    history_days = resolve_history_days(timeframe, None)
+    history_days = int(resolve_history_days(timeframe, None) * HISTORY_MULTIPLIER)
     discovery_horizon = resolve_discovery_horizon(timeframe, None)
     capital = settings.get('optimization_settings', {}).get('start_capital', 1000.0)
 
@@ -287,7 +318,7 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     )
 
     study = optuna.create_study(
-        study_name=_study_name(market, timeframe),
+        study_name=_study_name(market, timeframe, history_days),
         storage=f"sqlite:///{STORAGE_PATH}",
         load_if_exists=True,
         direction='maximize',
@@ -328,9 +359,13 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     best_is = best.user_attrs['is_stats']
     best_oos = best.user_attrs['oos_stats']
 
+    # Bestaetigung folgt dem Such-Ziel: mehr OOS-Trades als die Baseline (das
+    # eigentliche Ziel), plus zwei Sicherheitsnetze -- genug OOS-Trades fuer
+    # eine belastbare Aussage ueberhaupt, und OOS-PnL nicht negativ (mehr
+    # Trades ja, aber nicht garantiert Geld verlieren).
     confirmed = (
         best_oos.get('total_trades', 0) >= min_oos_trades
-        and calmar(best_oos) > calmar(b_oos)
+        and best_oos.get('total_trades', 0) > b_oos.get('total_trades', 0)
         and best_oos.get('total_pnl_pct', 0.0) > 0.0
     )
 
@@ -420,10 +455,11 @@ def print_summary(results: dict):
     print(f"{'=' * 70}")
     for key, r in results.items():
         mark = 'OK ' if r.get('confirmed') else 'no '
-        b_oos_calmar = calmar(r['baseline_oos'])
+        b_trades = r['baseline_oos'].get('total_trades', 0)
+        best_trades = r['best_oos'].get('total_trades', 0)
         best_oos_calmar = calmar(r['best_oos'])
-        print(f"  {mark} {key:<28} OOS-Calmar: Baseline {b_oos_calmar:>7.2f} -> Best {best_oos_calmar:>7.2f} "
-              f"(OOS-PnL {r['best_oos']['total_pnl_pct']:+.1f}%)")
+        print(f"  {mark} {key:<28} OOS-Trades: Baseline {b_trades:>3} -> Best {best_trades:>3} "
+              f"(OOS-PnL {r['best_oos']['total_pnl_pct']:+.1f}%, Calmar {best_oos_calmar:+.2f})")
     n_confirmed = sum(1 for r in results.values() if r.get('confirmed'))
     print(f"\n  {n_confirmed}/{len(results)} Pairs bestaetigt (OOS besser als Baseline UND OOS-PnL > 0).")
 

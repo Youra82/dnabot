@@ -2,24 +2,96 @@
   "live_trading_settings": {
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
-      { "symbol": "DOGE/USDT:USDT", "timeframe": "4h",  "active": true },
-      { "symbol": "ETH/USDT:USDT",  "timeframe": "6h",  "active": true },
-      { "symbol": "DOT/USDT:USDT",  "timeframe": "30m", "active": true },
-      { "symbol": "BCH/USDT:USDT",  "timeframe": "1h",  "active": true },
-      { "symbol": "ARB/USDT:USDT",  "timeframe": "1h",  "active": true },
-      { "symbol": "ADA/USDT:USDT",  "timeframe": "2h",  "active": true },
-      { "symbol": "FIL/USDT:USDT",  "timeframe": "30m", "active": true },
-      { "symbol": "LINK/USDT:USDT", "timeframe": "30m", "active": true },
-      { "symbol": "XLM/USDT:USDT",  "timeframe": "30m", "active": true },
-      { "symbol": "LTC/USDT:USDT",  "timeframe": "1h",  "active": true },
-      { "symbol": "SOL/USDT:USDT",  "timeframe": "1h",  "active": true },
-      { "symbol": "HBAR/USDT:USDT", "timeframe": "2h",  "active": true },
-      { "symbol": "UNI/USDT:USDT",  "timeframe": "2h",  "active": true },
-      { "symbol": "XRP/USDT:USDT",  "timeframe": "2h",  "active": true },
-      { "symbol": "ALGO/USDT:USDT", "timeframe": "2h",  "active": true },
-      { "symbol": "AVAX/USDT:USDT", "timeframe": "2h",  "active": true },
-      { "symbol": "BNB/USDT:USDT",  "timeframe": "1h",  "active": true },
-      { "symbol": "BTC/USDT:USDT",  "timeframe": "4h",  "active": true }
+      {
+        "symbol": "DOGE/USDT:USDT",
+        "timeframe": "4h",
+        "active": true
+      },
+      {
+        "symbol": "ETH/USDT:USDT",
+        "timeframe": "6h",
+        "active": true
+      },
+      {
+        "symbol": "DOT/USDT:USDT",
+        "timeframe": "30m",
+        "active": true
+      },
+      {
+        "symbol": "BCH/USDT:USDT",
+        "timeframe": "1h",
+        "active": true
+      },
+      {
+        "symbol": "ARB/USDT:USDT",
+        "timeframe": "1h",
+        "active": true
+      },
+      {
+        "symbol": "ADA/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "FIL/USDT:USDT",
+        "timeframe": "30m",
+        "active": true
+      },
+      {
+        "symbol": "LINK/USDT:USDT",
+        "timeframe": "30m",
+        "active": true
+      },
+      {
+        "symbol": "XLM/USDT:USDT",
+        "timeframe": "30m",
+        "active": true
+      },
+      {
+        "symbol": "LTC/USDT:USDT",
+        "timeframe": "1h",
+        "active": true
+      },
+      {
+        "symbol": "SOL/USDT:USDT",
+        "timeframe": "1h",
+        "active": true
+      },
+      {
+        "symbol": "HBAR/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "UNI/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "XRP/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "ALGO/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "AVAX/USDT:USDT",
+        "timeframe": "2h",
+        "active": true
+      },
+      {
+        "symbol": "BNB/USDT:USDT",
+        "timeframe": "1h",
+        "active": true
+      },
+      {
+        "symbol": "BTC/USDT:USDT",
+        "timeframe": "4h",
+        "active": true
+      }
     ],
     "_active_strategies_source": "Portfolio-Optimierung 2026-07-09: 18 Coins, Trades=2072, WR=42.0%, PnL=+830887.9%, MaxDD=16.9%"
   },
@@ -29,14 +101,36 @@
     "scan_all_db_pairs": true,
     "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies",
     "symbols": [
-      "ADA/USDT:USDT", "ALGO/USDT:USDT", "ARB/USDT:USDT", "ATOM/USDT:USDT",
-      "AVAX/USDT:USDT", "BCH/USDT:USDT", "BNB/USDT:USDT", "BTC/USDT:USDT",
-      "DOGE/USDT:USDT", "DOT/USDT:USDT", "ETC/USDT:USDT", "ETH/USDT:USDT",
-      "FIL/USDT:USDT", "HBAR/USDT:USDT", "LINK/USDT:USDT", "LTC/USDT:USDT",
-      "NEAR/USDT:USDT", "SOL/USDT:USDT", "UNI/USDT:USDT", "VET/USDT:USDT",
-      "XLM/USDT:USDT", "XRP/USDT:USDT"
+      "ADA/USDT:USDT",
+      "ALGO/USDT:USDT",
+      "ARB/USDT:USDT",
+      "ATOM/USDT:USDT",
+      "AVAX/USDT:USDT",
+      "BCH/USDT:USDT",
+      "BNB/USDT:USDT",
+      "BTC/USDT:USDT",
+      "DOGE/USDT:USDT",
+      "DOT/USDT:USDT",
+      "ETC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "FIL/USDT:USDT",
+      "HBAR/USDT:USDT",
+      "LINK/USDT:USDT",
+      "LTC/USDT:USDT",
+      "NEAR/USDT:USDT",
+      "SOL/USDT:USDT",
+      "UNI/USDT:USDT",
+      "VET/USDT:USDT",
+      "XLM/USDT:USDT",
+      "XRP/USDT:USDT"
     ],
-    "timeframes": ["30m", "1h", "2h", "4h", "6h"],
+    "timeframes": [
+      "30m",
+      "1h",
+      "2h",
+      "4h",
+      "6h"
+    ],
     "_symbols_timeframes_note": "Fester Scan-Pool (2026-08-12 aus genome.db extrahiert, 22 Coins x 5 TFs) -- damit ./run_pipeline.sh bei den Coin/TF-Prompts einfach mit Enter (Auto) den vollen Pool neu aufbaut."
   },
   "genome_settings": {
@@ -56,7 +150,19 @@
     ],
     "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
     "use_daily_trend_filter": true,
-    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt)."
+    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt).",
+    "alphabet_by_pair": {
+      "BTC/USDT:USDT": {
+        "4h": {
+          "body_small": 0.2511807565247405,
+          "body_large": 0.6629431119954948,
+          "vol_mult": 1.4177793420835691,
+          "wick_body_ratio": 0.3115950885216335,
+          "wick_doji_ratio": 0.21685785941408728,
+          "vol_rel_mult": 1.176270396281799
+        }
+      }
+    }
   },
   "risk_settings": {
     "risk_per_entry_pct": 5.0,

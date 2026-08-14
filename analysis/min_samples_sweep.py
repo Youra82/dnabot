@@ -84,14 +84,14 @@ DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 STORAGE_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'min_samples_optuna.db')
 RESULTS_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'results', 'min_samples_sweep.json')
 
-MIN_SAMPLES_RANGE = (1, 15)  # empirisch verengt (2026-08-14, VPS-Lauf 1h/22 Coins):
-                             # die produktive Zone lag durchgehend nur bei ~1-3, alles
-                             # darueber ergab so gut wie ueberall 0 Trades -- ein
-                             # breiterer Bereich verschwendet Trial-Budget in der toten
-                             # Zone, ohne die Aussage zu verbessern.
-N_TRIALS_DEFAULT = 80  # mit dem verengten Suchraum reicht weniger Budget fuer
-                       # zuverlaessige Konvergenz -- wichtig, da 5 Timeframes x
-                       # 22 Coins sonst leicht 20+ Stunden brauchen
+MIN_SAMPLES_RANGE = (1, 10)  # weiter verengt (2026-08-14, VPS-Lauf 1h+2h/22 Coins):
+                             # beide bisher abgeschlossenen Timeframes fanden ihr
+                             # Optimum bei min_samples=3, deutlich innerhalb 1-10 --
+                             # ein Bereich bis 15 verschwendet Trial-Budget in der
+                             # toten Zone, ohne die Aussage zu verbessern.
+N_TRIALS_DEFAULT = 40  # bei nur noch 10 moeglichen Werten reichen 40 Trials fuer
+                       # zuverlaessige Konvergenz (~4x Abdeckung je Wert im Schnitt) --
+                       # halbiert die Laufzeit ggue. 80 nochmal
 MAX_DRAWDOWN_PCT = 30.0  # harte Nebenbedingung -- Trials darueber werden bestraft,
                          # unabhaengig davon wie gut ihr PnL sonst waere
 

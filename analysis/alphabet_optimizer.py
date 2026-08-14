@@ -521,9 +521,18 @@ def _env_override_pairs(settings: dict):
         coin = coin.strip().upper()
         return coin if '/' in coin else f"{coin}/USDT:USDT"
 
+    # Fallback-Prioritaet MUSS scan_and_learn.py entsprechen: zuerst
+    # scan_settings.symbols/timeframes (breiterer Discovery-Pool), erst dann
+    # active_strategies (schmalere Live-Trading-Auswahl). War vorher nur auf
+    # active_strategies gestuetzt -- bei leerem active_strategies (aber
+    # vollem scan_settings-Pool) kam faelschlich nur der 1-Coin-Notfall-
+    # Default statt des eigentlich vorhandenen Pools raus.
+    scan_cfg = settings.get('scan_settings', {})
     active = settings.get('live_trading_settings', {}).get('active_strategies', [])
-    auto_coins = list(dict.fromkeys(s['symbol'] for s in active if s.get('symbol'))) or ['BTC/USDT:USDT']
-    auto_tfs = list(dict.fromkeys(s['timeframe'] for s in active if s.get('timeframe'))) or ['4h']
+    active_coins = list(dict.fromkeys(s['symbol'] for s in active if s.get('symbol')))
+    active_tfs = list(dict.fromkeys(s['timeframe'] for s in active if s.get('timeframe')))
+    auto_coins = scan_cfg.get('symbols') or active_coins or ['BTC/USDT:USDT']
+    auto_tfs = scan_cfg.get('timeframes') or active_tfs or ['4h']
 
     coins = [to_symbol(c) for c in coins_raw.split()] if coins_raw else auto_coins
     tfs = [t.strip() for t in tfs_raw.split()] if tfs_raw else auto_tfs

@@ -35,12 +35,22 @@ def main():
     coins_raw = os.environ.get('DNABOT_OVERRIDE_COINS', '').strip()
     tfs_raw = os.environ.get('DNABOT_OVERRIDE_TFS', '').strip()
 
+    # Fallback-Kette fuer "auto" (kein Override eingegeben) -- MUSS dieselbe
+    # Prioritaet wie scan_and_learn.py haben: zuerst scan_settings.symbols/
+    # timeframes (der breitere, fuer Discovery gedachte Pool), erst wenn das
+    # nicht gesetzt ist active_strategies (die schmalere Live-Trading-Auswahl).
+    # War vorher NUR auf active_strategies gestuetzt -- lieferte bei leerem
+    # active_strategies (aber vollem scan_settings-Pool) nur den 1-Coin-
+    # Notfall-Default statt des eigentlich vorhandenen Pools.
     try:
         with open(os.path.join(PROJECT_ROOT, 'settings.json'), encoding='utf-8') as f:
             settings = json.load(f)
+        scan_cfg = settings.get('scan_settings', {})
         active = settings.get('live_trading_settings', {}).get('active_strategies', [])
-        auto_coins = list(dict.fromkeys(s['symbol'] for s in active if s.get('symbol')))
-        auto_tfs = list(dict.fromkeys(s['timeframe'] for s in active if s.get('timeframe')))
+        active_coins = list(dict.fromkeys(s['symbol'] for s in active if s.get('symbol')))
+        active_tfs = list(dict.fromkeys(s['timeframe'] for s in active if s.get('timeframe')))
+        auto_coins = scan_cfg.get('symbols') or active_coins
+        auto_tfs = scan_cfg.get('timeframes') or active_tfs
     except Exception as e:
         print(f"WARNUNG: settings.json nicht lesbar ({e}) -- Fallback BTC/USDT:USDT 4h.", file=sys.stderr)
         auto_coins = []

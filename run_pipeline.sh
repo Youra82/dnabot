@@ -118,6 +118,33 @@ if [[ "$RUN_BT" == "j" || "$RUN_BT" == "J" || "$RUN_BT" == "y" || "$RUN_BT" == "
     if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=$RISK_INPUT; fi
 fi
 
+# ── 4b. Alphabet-Optimizer? ──────────────────────────────────────────────────
+# Laeuft VOR der Discovery (Schritt 1) -- jeder Trial macht seinen eigenen
+# vollstaendigen Discovery+Backtest-Durchlauf mit einem Kandidaten-Alphabet,
+# eine vorherige Default-Alphabet-Discovery waere sonst verschwendete Arbeit
+# (database.py erkennt Alphabet-Wechsel zwar und rescanned automatisch neu,
+# aber dann eben zweimal statt einmal). Uebernimmt bestaetigte Pairs (per
+# In-Sample/Out-of-Sample-Split, siehe alphabet_optimizer.py) automatisch in
+# settings.json::genome_settings.alphabet_by_pair -- die folgende Discovery
+# nutzt das dann direkt (encoder.py::resolve_alphabet()).
+echo ""
+echo -e "${YELLOW}Alphabet-Optimizer pro Pair (analysis/alphabet_optimizer.py)${NC}"
+echo "  Sucht per Optuna (mit echtem In-Sample/Out-of-Sample-Split) ein eigenes"
+echo "  Encoder-Alphabet pro Coin/Timeframe -- z.B. wenn mit dem Standard-Alphabet"
+echo "  kaum/keine Genome aktiviert werden. Uebernimmt nur Pairs, die sich Out-of-"
+echo "  Sample bestaetigen, automatisch in settings.json."
+echo "  Läuft VOR der Discovery. Je Pair mehrere Minuten (je nach Trials) --"
+echo "  bei vielen Pairs (--all-scan-pairs) fuer Overnight-Laeufe gedacht."
+read -p "Starten? (j/n) [Standard: n]: " RUN_ALPHABET
+RUN_ALPHABET="${RUN_ALPHABET//[$'\r\n ']/}"
+
+ALPHABET_TRIALS=20
+if [[ "$RUN_ALPHABET" == "j" || "$RUN_ALPHABET" == "J" || "$RUN_ALPHABET" == "y" || "$RUN_ALPHABET" == "Y" ]]; then
+    read -p "Optuna-Trials pro Pair [Standard: 20]: " ALPHA_TRIALS_INPUT
+    ALPHA_TRIALS_INPUT="${ALPHA_TRIALS_INPUT//[$'\r\n ']/}"
+    if [[ "$ALPHA_TRIALS_INPUT" =~ ^[0-9]+$ ]]; then ALPHABET_TRIALS=$ALPHA_TRIALS_INPUT; fi
+fi
+
 # ── 5. min_samples-Optuna-Sweep? ────────────────────────────────────────────
 # Laeuft NACH Discovery (braucht die Genome-Occurrences), aber VOR dem
 # Backtest (damit der Backtest die optimierten Werte nutzt, nicht die alten
@@ -147,6 +174,19 @@ echo "======================================================="
 echo "  Pipeline startet..."
 echo "======================================================="
 echo ""
+
+# Schritt 0 (falls gewaehlt): Alphabet-Optimizer -- VOR der Discovery, damit
+# diese direkt mit dem optimierten/bestaetigten Alphabet laeuft statt mit dem
+# Default und spaeter neu scannen zu muessen. Nutzt dieselben
+# DNABOT_OVERRIDE_COINS/_TFS wie Schritt 1 (bereits oben exportiert, falls
+# gesetzt) -- kein eigener --symbol/--timeframe-Loop noetig, das Skript
+# loest die Pairs selbst genauso auf.
+if [[ "$RUN_ALPHABET" == "j" || "$RUN_ALPHABET" == "J" || "$RUN_ALPHABET" == "y" || "$RUN_ALPHABET" == "Y" ]]; then
+    echo -e "${YELLOW}[Schritt 0] Alphabet-Optimizer (Optuna, IS/OOS-Split)...${NC}"
+    $PYTHON "$SCRIPT_DIR/analysis/alphabet_optimizer.py" \
+        --n-trials "$ALPHABET_TRIALS" --auto-apply
+    echo ""
+fi
 
 # Schritt 1: Discovery + Evolver
 # Coin/TF-Overrides via Python-Helfer in Scan-Pairs umwandeln

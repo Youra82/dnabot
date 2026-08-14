@@ -360,7 +360,7 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     return result
 
 
-def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int):
+def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int, auto_apply: bool = False):
     settings = load_settings()
     secrets = load_secrets()
     accounts = secrets.get('dnabot', [])
@@ -408,7 +408,7 @@ def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: in
     print(f"{'=' * 70}")
 
     print_summary(results)
-    offer_apply(results, settings)
+    offer_apply(results, settings, auto_apply=auto_apply)
 
 
 def print_summary(results: dict):
@@ -428,7 +428,7 @@ def print_summary(results: dict):
     print(f"\n  {n_confirmed}/{len(results)} Pairs bestaetigt (OOS besser als Baseline UND OOS-PnL > 0).")
 
 
-def offer_apply(results: dict, settings: dict):
+def offer_apply(results: dict, settings: dict, auto_apply: bool = False):
     confirmed = {k: r for k, r in results.items() if r.get('confirmed')}
     if not confirmed:
         print("\nKeine bestaetigten Pairs -- settings.json bleibt unveraendert.")
@@ -436,14 +436,18 @@ def offer_apply(results: dict, settings: dict):
     print(f"\n{len(confirmed)} bestaetigte(s) Pair(s) koennen als Alphabet-Override uebernommen werden:")
     for key in confirmed:
         print(f"  - {key}")
-    try:
-        ans = input("\nIn settings.json uebernehmen (genome_settings.alphabet_by_pair)? (j/n): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\n(nicht-interaktiv -- settings.json bleibt unveraendert)")
-        return
-    if ans not in ('j', 'ja', 'y', 'yes'):
-        print("Abgebrochen -- settings.json bleibt unveraendert.")
-        return
+
+    if auto_apply:
+        print("\n--auto-apply gesetzt -- uebernehme ohne Rueckfrage.")
+    else:
+        try:
+            ans = input("\nIn settings.json uebernehmen (genome_settings.alphabet_by_pair)? (j/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n(nicht-interaktiv -- settings.json bleibt unveraendert)")
+            return
+        if ans not in ('j', 'ja', 'y', 'yes'):
+            print("Abgebrochen -- settings.json bleibt unveraendert.")
+            return
 
     settings_path = os.path.join(PROJECT_ROOT, 'settings.json')
     with open(settings_path) as f:
@@ -459,9 +463,38 @@ def offer_apply(results: dict, settings: dict):
     print("  und fuehrt fuer diese Pairs einen vollstaendigen Rescan durch (alte Genome werden geloescht).")
 
 
+def _env_override_pairs(settings: dict):
+    """
+    DNABOT_OVERRIDE_COINS/DNABOT_OVERRIDE_TFS -- dieselben Env-Vars, mit denen
+    run_pipeline.sh die interaktive Coin/Timeframe-Auswahl an run_backtest.py
+    durchreicht. Erlaubt run_pipeline.sh, denselben Pair-Pool fuer den
+    Alphabet-Optimizer zu verwenden wie fuer Discovery/Backtest, ohne die
+    Pair-Liste zweimal zu bauen. None wenn keine der beiden Vars gesetzt ist.
+    """
+    coins_raw = os.environ.get('DNABOT_OVERRIDE_COINS', '').strip()
+    tfs_raw = os.environ.get('DNABOT_OVERRIDE_TFS', '').strip()
+    if not coins_raw and not tfs_raw:
+        return None
+
+    def to_symbol(coin: str) -> str:
+        coin = coin.strip().upper()
+        return coin if '/' in coin else f"{coin}/USDT:USDT"
+
+    active = settings.get('live_trading_settings', {}).get('active_strategies', [])
+    auto_coins = list(dict.fromkeys(s['symbol'] for s in active if s.get('symbol'))) or ['BTC/USDT:USDT']
+    auto_tfs = list(dict.fromkeys(s['timeframe'] for s in active if s.get('timeframe'))) or ['4h']
+
+    coins = [to_symbol(c) for c in coins_raw.split()] if coins_raw else auto_coins
+    tfs = [t.strip() for t in tfs_raw.split()] if tfs_raw else auto_tfs
+    return [(c, t) for c in coins for t in tfs]
+
+
 def resolve_pairs(args, settings: dict) -> list:
     if args.symbol and args.timeframe:
         return [(args.symbol, args.timeframe)]
+    env_pairs = _env_override_pairs(settings)
+    if env_pairs is not None:
+        return env_pairs
     if args.all_scan_pairs:
         scan_cfg = settings.get('scan_settings', {})
         symbols = scan_cfg.get('symbols', [])
@@ -489,7 +522,20 @@ if __name__ == '__main__':
     parser.add_argument('--min-is-trades', type=int, default=MIN_IS_TRADES_DEFAULT)
     parser.add_argument('--min-oos-trades', type=int, default=MIN_OOS_TRADES_DEFAULT)
     parser.add_argument('--analyze-only', action='store_true', help="Nur bestehende Ergebnisse zeigen")
+    parser.add_argument('--auto-apply', action='store_true',
+                        help="Bestaetigte Pairs ohne Rueckfrage in settings.json uebernehmen "
+                             "(fuer nicht-interaktive Aufrufe, z.B. aus run_pipeline.sh)")
     args = parser.parse_args()
+
+    # Ein leerer (aber uebergebener) --symbol/--timeframe ist immer ein
+    # Aufrufer-Bug -- niemals still auf active_strategies zurueckfallen (siehe
+    # scan_and_learn.py/run_backtest.py, derselbe Fix).
+    if args.symbol is not None and not args.symbol.strip():
+        logger.critical("--symbol wurde leer uebergeben -- Abbruch statt stillem Fallback.")
+        sys.exit(1)
+    if args.timeframe is not None and not args.timeframe.strip():
+        logger.critical("--timeframe wurde leer uebergeben -- Abbruch statt stillem Fallback.")
+        sys.exit(1)
 
     if args.analyze_only:
         results = {}
@@ -501,4 +547,4 @@ if __name__ == '__main__':
 
     _settings = load_settings()
     _pairs = resolve_pairs(args, _settings)
-    run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades)
+    run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades, auto_apply=args.auto_apply)

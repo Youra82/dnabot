@@ -193,6 +193,9 @@
     "scan_interval_hours": 168,
     "_scan_interval_note": "Wie oft der Genome-Scan läuft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",
     "reset_db_before_optimize": false,
-    "reset_db_every_n_runs": 2
+    "reset_db_every_n_runs": 2,
+    "alphabet_optimizer_enabled": true,
+    "alphabet_optimizer_trials": 20,
+    "_alphabet_optimizer_note": "Laeuft VOR der Discovery (siehe auto_optimizer_scheduler.py::_run_alphabet_optimizer): sucht per Optuna ein eigenes Encoder-Alphabet fuer jedes Pair im aktuellen Scan-Pool (analysis/alphabet_optimizer.py --all-scan-pairs --auto-apply). Pairs mit bereits bestaetigtem Alphabet werden automatisch uebersprungen (kein wiederholtes Neu-Optimieren). Verlaengert den Optimierungslauf spuerbar -- bei Bedarf hier deaktivieren."
   }
 }

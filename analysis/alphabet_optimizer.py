@@ -82,6 +82,9 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 TEST_DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'alphabet_optuna_test.db')
 STORAGE_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'alphabet_optuna.db')
 RESULTS_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'results', 'alphabet_sweep.json')
+# Nur lesend verwendet (resolve_full_pool_pairs()) -- Discovery/Backtest-Trials
+# selbst laufen ausschliesslich gegen TEST_DB_PATH, nie gegen die echte DB.
+PROD_DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 
 IS_FRACTION = 0.70          # vorderer Teil der Historie: Alphabet-Suche (In-Sample)
                              # hinterer Teil (0.70-1.0): reine Validierung (Out-of-Sample)
@@ -400,7 +403,8 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     return result
 
 
-def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int, auto_apply: bool = False):
+def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int,
+              auto_apply: bool = False, skip_confirmed: bool = True):
     settings = load_settings()
     secrets = load_secrets()
     accounts = secrets.get('dnabot', [])
@@ -412,6 +416,23 @@ def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: in
 
     os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+
+    # Pairs mit bereits bestaetigtem (in settings.json uebernommenem) Alphabet
+    # standardmaessig ueberspringen -- "nicht zweites Mal drueberbuegeln".
+    # --recheck-confirmed erzwingt eine erneute Pruefung (z.B. nach neuen
+    # Kerzen/deutlich veraendertem Markt).
+    if skip_confirmed:
+        by_pair = settings.get('genome_settings', {}).get('alphabet_by_pair', {})
+        kept = [(m, t) for (m, t) in pairs if t not in by_pair.get(m, {})]
+        skipped = len(pairs) - len(kept)
+        if skipped:
+            print(f"  {skipped} Pair(s) mit bereits bestaetigtem Alphabet uebersprungen "
+                  f"(--recheck-confirmed zum Erzwingen).")
+        pairs = kept
+
+    if not pairs:
+        print("\nAlle Pairs haben bereits ein bestaetigtes Alphabet -- nichts zu tun.")
+        return
 
     print(f"\n{'=' * 70}")
     print(f"  Alphabet-Optimizer: {len(pairs)} Pair(s) | {n_trials} Trials/Pair | "
@@ -539,6 +560,36 @@ def _env_override_pairs(settings: dict):
     return [(c, t) for c in coins for t in tfs]
 
 
+def resolve_full_pool_pairs(settings: dict) -> list:
+    """
+    Pool-Aufloesung fuer --all-scan-pairs / auto_optimizer_scheduler.py --
+    MUSS dieselbe Prioritaet wie scan_and_learn.py haben (siehe dortiger Fix
+    2026-08-15): scan_all_db_pairs (wenn die echte Genome-DB schon Paare
+    hat) vor der statischen scan_settings-Liste, sonst active_strategies,
+    sonst Einzel-Default. Sonst wuerde der Alphabet-Optimizer einen anderen
+    Pool optimieren als scan_and_learn.py danach tatsaechlich scannt.
+    """
+    scan_cfg = settings.get('scan_settings', {})
+    if scan_cfg.get('scan_all_db_pairs', False) and os.path.exists(PROD_DB_PATH):
+        _db = GenomeDB(PROD_DB_PATH)
+        db_pairs = _db.get_all_market_pairs()
+        _db.close()
+        if db_pairs:
+            return db_pairs
+
+    symbols = scan_cfg.get('symbols')
+    timeframes = scan_cfg.get('timeframes')
+    if symbols and timeframes:
+        return [(s, t) for s in symbols for t in timeframes]
+
+    active = settings.get('live_trading_settings', {}).get('active_strategies', [])
+    pairs = [(s['symbol'], s['timeframe']) for s in active if s.get('active', True)]
+    if pairs:
+        return pairs
+
+    return [('BTC/USDT:USDT', '4h')]
+
+
 def resolve_pairs(args, settings: dict) -> list:
     if args.symbol and args.timeframe:
         return [(args.symbol, args.timeframe)]
@@ -546,13 +597,7 @@ def resolve_pairs(args, settings: dict) -> list:
     if env_pairs is not None:
         return env_pairs
     if args.all_scan_pairs:
-        scan_cfg = settings.get('scan_settings', {})
-        symbols = scan_cfg.get('symbols', [])
-        timeframes = scan_cfg.get('timeframes', [])
-        if not symbols or not timeframes:
-            logger.critical("scan_settings.symbols/timeframes nicht gesetzt.")
-            sys.exit(1)
-        return [(s, t) for s in symbols for t in timeframes]
+        return resolve_full_pool_pairs(settings)
     # Default: aktive Live-Strategien
     active = settings.get('live_trading_settings', {}).get('active_strategies', [])
     pairs = [(s['symbol'], s['timeframe']) for s in active if s.get('active', True)]
@@ -575,6 +620,9 @@ if __name__ == '__main__':
     parser.add_argument('--auto-apply', action='store_true',
                         help="Bestaetigte Pairs ohne Rueckfrage in settings.json uebernehmen "
                              "(fuer nicht-interaktive Aufrufe, z.B. aus run_pipeline.sh)")
+    parser.add_argument('--recheck-confirmed', action='store_true',
+                        help="Auch Pairs mit bereits bestaetigtem Alphabet neu pruefen "
+                             "(Standard: ueberspringen -- nicht zweimal drueberbuegeln)")
     args = parser.parse_args()
 
     # Ein leerer (aber uebergebener) --symbol/--timeframe ist immer ein
@@ -597,4 +645,5 @@ if __name__ == '__main__':
 
     _settings = load_settings()
     _pairs = resolve_pairs(args, _settings)
-    run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades, auto_apply=args.auto_apply)
+    run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades,
+              auto_apply=args.auto_apply, skip_confirmed=not args.recheck_confirmed)

@@ -379,6 +379,14 @@ Die Pipeline lädt historische Daten, entdeckt Muster, bewertet sie und zeigt ei
 - Jeder Trade riskiert `risk_pct%` des **aktuellen** Equity (Kompoundierung)
 - Constraint: max. 1 Timeframe pro Coin (Bitget erlaubt nur 1 offene Position pro Symbol)
 
+> ⚠️ **Portfolio-Optimierung liest ALLE vorhandenen `artifacts/results/backtest_*.json`**,
+> unabhängig davon wann/womit sie erzeugt wurden — auch von Pairs, die gerade gar nicht
+> neu gescannt wurden. Nach Änderungen an der Discovery-/Backtest-Logik (Alphabet,
+> min_samples, Filter, …) sind alte Backtest-Dateien anderer Pairs nicht mehr vergleichbar
+> mit frisch erzeugten. Vor einer Portfolio-Optimierung nach so einer Änderung erst
+> `rm -f artifacts/results/backtest_*.json` und alle relevanten Pairs neu scannen/backtesten,
+> sonst mischt die Auswahl alten und neuen Pipeline-Stand.
+
 #### 4. Strategien live schalten
 
 Nach der Portfolio-Optimierung (Modus 3) werden die optimalen Strategien automatisch in `settings.json` eingetragen. Alternativ manuell:

@@ -33,6 +33,7 @@ TRIGGER_LOG      = os.path.join(LOG_DIR, 'auto_optimizer_trigger.log')
 
 SCAN_SCRIPT      = os.path.join(PROJECT_ROOT, 'scan_and_learn.py')
 PORTFOLIO_SCRIPT = os.path.join(PROJECT_ROOT, 'run_portfolio_optimizer.py')
+ALPHABET_SCRIPT  = os.path.join(PROJECT_ROOT, 'analysis', 'alphabet_optimizer.py')
 PYTHON_EXE       = os.path.join(PROJECT_ROOT, '.venv', 'bin', 'python3')
 
 
@@ -198,6 +199,32 @@ def _send_telegram(message: str):
 # Pipeline-Ausführung
 # ---------------------------------------------------------------------------
 
+def _run_alphabet_optimizer(opt_settings: dict) -> int:
+    """
+    Führt analysis/alphabet_optimizer.py --all-scan-pairs --auto-apply aus,
+    VOR dem eigentlichen Scan (jeder Optuna-Trial macht seinen eigenen
+    vollstaendigen Discovery+Backtest-Durchlauf -- ein vorheriger Scan mit
+    dem Default-Alphabet waere sonst verschwendete Arbeit, siehe
+    scan_and_learn.py's Alphabet-Wechsel-Erkennung).
+
+    Bestaetigte Pairs werden automatisch in settings.json::genome_settings.
+    alphabet_by_pair uebernommen -- der direkt danach laufende _run_scan()
+    nutzt das dann sofort. Pairs mit bereits bestaetigtem Alphabet werden
+    von alphabet_optimizer.py standardmaessig uebersprungen (kein
+    wiederholtes Neu-Optimieren bereits abgeschlossener Pairs).
+
+    Steuerbar via optimization_settings.alphabet_optimizer_enabled (Default
+    false -- explizit aktivieren, da das den Optimierungslauf deutlich
+    verlaengert) und .alphabet_optimizer_trials (Default 20).
+    """
+    trials = int(opt_settings.get('alphabet_optimizer_trials', 20))
+    cmd = [PYTHON_EXE, ALPHABET_SCRIPT, '--all-scan-pairs', '--n-trials', str(trials), '--auto-apply']
+    _log(f"ALPHABET_START trials={trials}")
+    result = subprocess.run(cmd)
+    _log(f"ALPHABET_EXIT rc={result.returncode}")
+    return result.returncode
+
+
 def _run_scan(opt_settings: dict) -> int:
     """Führt scan_and_learn.py aus."""
     cmd = [PYTHON_EXE, SCAN_SCRIPT]
@@ -305,19 +332,36 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
     with open(IN_PROGRESS_FILE, 'w') as f:
         f.write(start_time.isoformat())
 
+    alphabet_enabled = opt_settings.get('alphabet_optimizer_enabled', False)
+    steps_desc = (
+        "Schritt 1: Alphabet-Optimierung pro Pair\n"
+        "Schritt 2: Genome Discovery (scan_and_learn)\n"
+        "Schritt 3: Portfolio-Optimierung"
+    ) if alphabet_enabled else (
+        "Schritt 1: Genome Discovery (scan_and_learn)\n"
+        "Schritt 2: Portfolio-Optimierung"
+    )
     if send_tg:
         _send_telegram(
             f"🚀 dnabot Auto-Optimizer GESTARTET\n"
             f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"DB-Reset: {reset_info}\n"
-            f"Schritt 1: Genome Discovery (scan_and_learn)\n"
-            f"Schritt 2: Portfolio-Optimierung"
+            f"{steps_desc}"
         )
 
     start_perf = time.time()
     success    = False
 
     try:
+        # Alphabet-Optimierung VOR der Discovery -- jeder Optuna-Trial macht
+        # seinen eigenen vollstaendigen Discovery+Backtest-Durchlauf, ein
+        # vorheriger Scan mit dem Default-Alphabet waere sonst verschwendete
+        # Arbeit. Bereits bestaetigte Pairs werden automatisch uebersprungen.
+        if alphabet_enabled:
+            rc_alpha = _run_alphabet_optimizer(opt_settings)
+            if rc_alpha != 0:
+                _log(f"ALPHABET_FAILED rc={rc_alpha} -- fahre trotzdem mit Discovery fort")
+
         rc_scan = _run_scan(opt_settings)
         if rc_scan != 0:
             _log(f"SCAN_FAILED rc={rc_scan}")

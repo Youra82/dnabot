@@ -199,6 +199,18 @@ def main():
         if df is None:
             continue
 
+        # min_samples PRO PAIR (haengt vom Timeframe ab, siehe scan_and_learn.py::
+        # resolve_min_samples -- dieselbe Aufloesung, die auch der Evolver nutzt).
+        # War hier trotz gegenteiligem Kommentar nie tatsaechlich gesetzt --
+        # backtester.py::_find_best_signal() fiel dadurch lautlos auf seinen
+        # eigenen Default (20) zurueck, unabhaengig vom viel niedrigeren
+        # scan_settings.min_samples_to_activate (z.B. 2), mit dem der Evolver
+        # tatsaechlich aktiviert hat -- Backtest fand dadurch oft 0 Trades,
+        # obwohl der Evolver-Report viele aktive Genome zeigte.
+        params['genome']['min_samples'] = resolve_min_samples(
+            timeframe, get_min_samples_override(scan_cfg, timeframe)
+        )
+
         # Datumsfilter: Warmup-Puffer vor start_date laden, damit Indikatoren
         # schon fertig aufgewärmt sind wenn der gewünschte Zeitraum beginnt.
         if args.start_date:

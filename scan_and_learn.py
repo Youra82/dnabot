@@ -234,7 +234,7 @@ def main():
         )) or ['BTC/USDT:USDT']
         timeframes_global = explicit_timeframes or ['4h']
         scan_pairs = [(sym, tf) for sym in symbols for tf in timeframes_global]
-        logger.info(f"  Explizite Overrides — Scanne {len(scan_pairs)} Paare: {scan_pairs}")
+        logger.debug(f"  Explizite Overrides (Basis-Pool vor --symbol/--timeframe-Filter): {len(scan_pairs)} Paare: {scan_pairs}")
     elif scan_cfg.get('scan_all_db_pairs', False):
         # Alle (market, timeframe)-Paare aus der Genome-DB scannen
         _db_tmp = GenomeDB(DB_PATH)
@@ -242,7 +242,7 @@ def main():
         _db_tmp.close()
         if db_pairs:
             scan_pairs = db_pairs
-            logger.info(f"  scan_all_db_pairs=true → {len(scan_pairs)} Paare aus Genome-DB")
+            logger.debug(f"  scan_all_db_pairs=true (Basis-Pool): {len(scan_pairs)} Paare aus Genome-DB")
         else:
             scan_pairs = [('BTC/USDT:USDT', '4h')]
             logger.warning("  scan_all_db_pairs=true aber DB leer — Fallback auf BTC/USDT:USDT 4h")
@@ -258,8 +258,8 @@ def main():
                 seen.add((sym, tf))
         if not scan_pairs:
             scan_pairs = [('BTC/USDT:USDT', '4h')]
-        logger.info(
-            f"  scan_settings.symbols/timeframes nicht gesetzt — "
+        logger.debug(
+            f"  scan_settings.symbols/timeframes nicht gesetzt (Basis-Pool) — "
             f"übernehme Paare aus active_strategies: {scan_pairs}"
         )
 
@@ -283,6 +283,13 @@ def main():
                      [(args.symbol, scan_cfg.get('timeframes', ['4h'])[0])]
     elif args.timeframe:
         scan_pairs = [(sym, args.timeframe) for (sym, _) in scan_pairs]
+
+    # Der Basis-Pool oben kann (je nach scan_settings) viel groesser sein als
+    # das, was tatsaechlich laeuft -- diese Zeile zeigt immer die FINALE,
+    # nach --symbol/--timeframe gefilterte Liste (frueher stand hier nur die
+    # Basis-Pool-Groesse, was bei explizitem --symbol/--timeframe faelschlich
+    # nach "scannt alles" aussah, obwohl nur 1 Pair lief).
+    logger.info(f"  Scanne tatsaechlich: {len(scan_pairs)} Paar(e): {scan_pairs}")
 
     # Exchange-Verbindung (nur für Download, keine API-Keys für Discovery nötig
     # → wir nehmen ersten Account aus secret.json)

@@ -51,12 +51,14 @@
 import os
 import sys
 import json
+import time
 import argparse
 import logging
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 import optuna
+from tqdm import tqdm
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
@@ -68,7 +70,12 @@ from dnabot.analysis.backtester import run_backtest
 from dnabot.genome.scoring import breakeven_winrate
 from scan_and_learn import load_settings, load_secrets, resolve_history_days
 
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s: %(message)s')
+# force=True: scan_and_learn.py setzt beim Import bereits sein eigenes
+# basicConfig(INFO) -- ohne force wuerde unser WARNING-Level ignoriert
+# (Pythons logging.basicConfig wirkt nur beim ERSTEN Aufruf) und jeder
+# einzelne Coin-Download/Backtest-Log von backtester.py/exchange.py wuerde
+# den Fortschrittsbalken zuspammen.
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s: %(message)s', force=True)
 logger = logging.getLogger('min_samples_sweep')
 logger.setLevel(logging.INFO)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -77,9 +84,14 @@ DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 STORAGE_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'min_samples_optuna.db')
 RESULTS_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'results', 'min_samples_sweep.json')
 
-MIN_SAMPLES_RANGE = (1, 30)
-N_TRIALS_DEFAULT = 150  # grosszuegig fuer einen Overnight-Lauf -- genug Budget, damit
-                        # Optuna die (oft schmale) produktive Zone zuverlaessig findet
+MIN_SAMPLES_RANGE = (1, 15)  # empirisch verengt (2026-08-14, VPS-Lauf 1h/22 Coins):
+                             # die produktive Zone lag durchgehend nur bei ~1-3, alles
+                             # darueber ergab so gut wie ueberall 0 Trades -- ein
+                             # breiterer Bereich verschwendet Trial-Budget in der toten
+                             # Zone, ohne die Aussage zu verbessern.
+N_TRIALS_DEFAULT = 80  # mit dem verengten Suchraum reicht weniger Budget fuer
+                       # zuverlaessige Konvergenz -- wichtig, da 5 Timeframes x
+                       # 22 Coins sonst leicht 20+ Stunden brauchen
 MAX_DRAWDOWN_PCT = 30.0  # harte Nebenbedingung -- Trials darueber werden bestraft,
                          # unabhaengig davon wie gut ihr PnL sonst waere
 
@@ -102,6 +114,17 @@ MIN_TRADES_BY_TIMEFRAME = {
     '1d':  4,
 }
 DEFAULT_MIN_TRADES = 10
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 def _date_range(history_days: int):
@@ -192,21 +215,39 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
     os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
 
-    for tf, markets in sorted(by_tf.items()):
-        logger.info(f"=== Timeframe {tf} ({len(markets)} Coins) ===")
+    print(f"\n{'=' * 60}")
+    print(f"  min_samples-Sweep: {len(by_tf)} Timeframe(s), {len(pairs)} Coin/TF-Paare gesamt")
+    print(f"{'=' * 60}")
+
+    sweep_start = time.time()
+    tf_durations = []
+    timeframes_sorted = sorted(by_tf.items())
+
+    for tf_idx, (tf, markets) in enumerate(timeframes_sorted):
+        tf_start = time.time()
+        elapsed_total = tf_start - sweep_start
+        remaining_tf = len(timeframes_sorted) - tf_idx
+        eta_str = ""
+        if tf_durations:
+            avg = sum(tf_durations) / len(tf_durations)
+            eta_str = f" | ETA restliche {remaining_tf} Timeframes: ~{_fmt_duration(avg * remaining_tf)}"
+        print(
+            f"\n--- [{tf_idx + 1}/{len(timeframes_sorted)}] Timeframe {tf} "
+            f"| bisher gelaufen: {_fmt_duration(elapsed_total)}{eta_str} ---"
+        )
+
         dfs = {}
-        for market in markets:
-            history_days = resolve_history_days(tf, None)
-            logger.info(f"  Lade {market} ({tf}) | {history_days}d History...")
+        history_days = resolve_history_days(tf, None)
+        for market in tqdm(markets, desc=f"{tf}: Marktdaten laden", unit="coin"):
             try:
                 df = exchange.fetch_historical_ohlcv(market, tf, *_date_range(history_days))
             except Exception as e:
-                logger.error(f"  Download fehlgeschlagen fuer {market} ({tf}): {e}")
+                logger.error(f"Download fehlgeschlagen fuer {market} ({tf}): {e}")
                 continue
             if df is not None and not df.empty and len(df) >= 100:
                 dfs[market] = df
             else:
-                logger.warning(f"  Zu wenig Daten fuer {market} ({tf}) -- ueberspringe.")
+                logger.warning(f"Zu wenig Daten fuer {market} ({tf}) -- ueberspringe.")
 
         if not dfs:
             logger.warning(f"Keine verwertbaren Daten fuer Timeframe {tf} -- ueberspringe.")
@@ -220,13 +261,25 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
         )
         remaining = max(0, n_trials - len(study.trials))
         if remaining > 0:
-            logger.info(f"  {remaining} neue Trials (bereits {len(study.trials)} vorhanden)...")
-            study.optimize(
-                make_objective(dfs, tf, db, base_genome_cfg, rr_ratio),
-                n_trials=remaining,
-            )
+            with tqdm(total=remaining, desc=f"{tf}: Optuna-Trials ({len(dfs)} Coins)", unit="trial") as pbar:
+                def _progress(study: optuna.Study, trial: optuna.trial.FrozenTrial):
+                    pbar.update(1)
+                    try:
+                        best = study.best_trial
+                        if best.value is not None and best.value > -1e4:
+                            pbar.set_postfix(
+                                min_samples=best.params.get('min_samples'),
+                                pnl=f"{best.user_attrs.get('total_pnl', best.value):+.1f}",
+                            )
+                    except ValueError:
+                        pass  # noch kein abgeschlossener Trial
+                study.optimize(
+                    make_objective(dfs, tf, db, base_genome_cfg, rr_ratio),
+                    n_trials=remaining,
+                    callbacks=[_progress],
+                )
         else:
-            logger.info(f"  Bereits {len(study.trials)} Trials vorhanden -- ueberspringe.")
+            print(f"{tf}: bereits {len(study.trials)} Trials vorhanden -- ueberspringe.")
 
         min_trades_required = MIN_TRADES_BY_TIMEFRAME.get(tf, DEFAULT_MIN_TRADES)
         feasible = [
@@ -249,6 +302,12 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
                 f"  -> {tf}: keine zulaessigen Trials in {len(study.trials)} Versuchen "
                 f"(zu wenig Trades oder MaxDD > {MAX_DRAWDOWN_PCT}% ueberall, {len(dfs)} Coins)"
             )
+
+        tf_durations.append(time.time() - tf_start)
+
+    print(f"\n{'=' * 60}")
+    print(f"  Sweep komplett abgeschlossen in {_fmt_duration(time.time() - sweep_start)}")
+    print(f"{'=' * 60}")
 
     print_summary()
 

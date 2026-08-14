@@ -16,6 +16,7 @@ from dnabot.utils.telegram import send_message
 from dnabot.utils.trade_manager import full_trade_cycle, get_tracker_file_path
 from dnabot.utils.guardian import guardian_decorator
 from dnabot.genome.scoring import breakeven_winrate
+from dnabot.genome.alphabet_store import resolve_alphabet
 
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
@@ -126,6 +127,12 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
             "allowed_regimes": genome_ov.get('allowed_regimes',
                                 global_genome.get('allowed_regimes',
                                                   ['TREND', 'RANGE', 'NEUTRAL'])),
+            "use_daily_trend_filter": genome_ov.get('use_daily_trend_filter',
+                                       global_genome.get('use_daily_trend_filter', False)),
+            # Muss zum Alphabet passen, mit dem die Genome-DB fuer dieses Pair
+            # befuellt wurde (analysis/alphabet_optimizer.py) -- sonst matchen
+            # die hier live gebauten Sequenzen nichts in der DB.
+            "alphabet": resolve_alphabet(symbol, timeframe, settings),
         },
         "behavior": {
             "use_longs":  risk_ov.get('use_longs', True),

@@ -31,6 +31,7 @@ from dnabot.genome.discovery import discover_genomes
 from dnabot.genome.evolver import evolve, print_genome_report
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.regime import get_atr_ratio
+from dnabot.genome.alphabet_store import resolve_alphabet, alphabet_hash as compute_alphabet_hash
 
 logging.basicConfig(
     level=logging.INFO,
@@ -305,9 +306,26 @@ def main():
             _send_telegram_warning(msg, secrets, dedup_key=f"{symbol}_{timeframe}")
             continue
 
+        alphabet = resolve_alphabet(symbol, timeframe, settings)
+        a_hash = compute_alphabet_hash(alphabet)
+
         # Inkrementeller Modus: nur neue Kerzen seit letztem Scan verarbeiten
         start_candle_index = 0
         last_scan = db.get_last_scan(symbol, timeframe)
+
+        # Alphabet seit letztem Scan geaendert (z.B. per analysis/
+        # alphabet_optimizer.py uebernommen)? Dann sind alle bisherigen
+        # Sequenz-Strings fuer dieses Pair unter dem neuen Alphabet nicht mehr
+        # erreichbar -- alte Genome loeschen und komplett neu scannen, statt
+        # inkrementell auf einer inkonsistenten Mischung weiterzuschreiben.
+        if last_scan and last_scan.get('alphabet_hash') and last_scan['alphabet_hash'] != a_hash:
+            logger.warning(
+                f"  Alphabet fuer {symbol} ({timeframe}) geaendert seit letztem Scan "
+                f"({last_scan['alphabet_hash']} → {a_hash}) — loesche alte Genome, vollstaendige Neu-Discovery."
+            )
+            db.delete_pair(symbol, timeframe)
+            last_scan = None
+
         if last_scan and last_scan.get('data_end_date'):
             try:
                 last_end_ts = pd.Timestamp(last_scan['data_end_date'])
@@ -344,6 +362,8 @@ def main():
             discovery_horizon=discovery_horizon,
             rr_ratio=rr_ratio,
             start_candle_index=start_candle_index,
+            alphabet=alphabet,
+            alphabet_hash=a_hash,
         )
         total_new += result.get('new_genomes', 0)
         total_updated += result.get('updated_genomes', 0)

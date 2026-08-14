@@ -12,7 +12,6 @@ import sys
 import json
 import logging
 import argparse
-import bisect
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -24,39 +23,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
 from dnabot.genome.regime import detect_regime, is_regime_allowed
-
-
-class Bias:
-    BULLISH = "BULLISH"
-    BEARISH = "BEARISH"
-    NEUTRAL = "NEUTRAL"
-
-
-def _compute_weekly_bias(df: pd.DataFrame, ema_period: int = 8):
-    """
-    Woechentlicher EMA-Trend-Bias als zusaetzliche Qualitaetsschicht ueber den
-    Genomen (portiert aus stbot/analysis/backtester.py, dort bereits über
-    Bull/Bear/Seitwaerts-Regime validiert). Kein Look-Ahead: der Bias einer
-    Wochenkerze gilt erst ab ihrem Close, daher werden die Zeitstempel um eine
-    Kerze verschoben, bevor per bisect auf die zuletzt abgeschlossene Woche
-    gemappt wird.
-
-    Rueckgabe: (bias_times, bias_values) -- beide leer, wenn zu wenig Historie
-    fuer eine belastbare EMA vorhanden ist (Aufrufer ueberspringt den Filter
-    dann und verhaelt sich wie ohne Filter).
-    """
-    try:
-        weekly = df[['open', 'high', 'low', 'close']].resample('1W').agg(
-            {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}
-        ).dropna()
-        if len(weekly) < ema_period + 5:
-            return [], []
-        ema = weekly['close'].ewm(span=ema_period, adjust=False).mean()
-        bias_series = np.where(weekly['close'] > ema, Bias.BULLISH,
-                       np.where(weekly['close'] < ema, Bias.BEARISH, Bias.NEUTRAL))
-        return list(weekly.index[1:]), list(bias_series[:-1])
-    except Exception:
-        return [], []
+from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
 
 
 def _compute_cvd_slope(df: pd.DataFrame, slope_period: int = 5) -> pd.Series:
@@ -412,17 +379,16 @@ def run_backtest(
     if trailing_callback_pct is not None:
         trailing_callback_pct = float(trailing_callback_pct) / 100.0
 
-    # Wochentrend-Filter (optional, standardmaessig aus): zusaetzliche Qualitaets-
-    # schicht ueber den Genomen, statt die Aktivierungsschwelle weiter zu verschaerfen
-    # -- Genome-Menge bleibt die Basis, der Filter blockt nur Signale gegen den Trend.
-    use_weekly_trend_filter = bool(params.get('genome', {}).get('use_weekly_trend_filter', False))
-    weekly_bias_times, weekly_bias_values = [], []
-    if use_weekly_trend_filter:
-        weekly_ema = int(params.get('genome', {}).get('weekly_trend_ema', 8))
-        weekly_bias_times, weekly_bias_values = _compute_weekly_bias(df, ema_period=weekly_ema)
+    # Tagestrend-Filter (optional, standardmaessig aus -- siehe daily_bias.py,
+    # dieselbe Funktion wie live in genome_logic.py, damit Backtest und Live
+    # garantiert dasselbe Signal blocken/durchlassen): laufender Bias der
+    # AKTUELLEN Tageskerze (Tages-Open vs. jeweils aktuellem Close) -- rot
+    # bisher -> nur Shorts, gruen bisher -> nur Longs.
+    use_daily_trend_filter = bool(params.get('genome', {}).get('use_daily_trend_filter', False))
+    daily_bias_series = compute_daily_bias_series(df) if use_daily_trend_filter else None
 
     # CVD-Bestaetigungsfilter (optional, standardmaessig aus): Order-Flow-Schicht
-    # orthogonal zum Wochentrend -- blockt Signale gegen den aktuellen Kauf-/
+    # orthogonal zum Tagestrend -- blockt Signale gegen den aktuellen Kauf-/
     # Verkaufsdruck statt gegen den uebergeordneten Trend.
     use_cvd_filter = bool(params.get('genome', {}).get('use_cvd_filter', False))
     cvd_slope = None
@@ -435,8 +401,12 @@ def run_backtest(
     allowed_regimes = params.get('genome', {}).get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL'])
     regime_cache_bt = {}
 
-    # Alle Gene vorberechnen
-    genes = encode_dataframe(df)
+    # Alle Gene vorberechnen (Alphabet-Override fuer dieses Pair, falls in
+    # settings.json::genome_settings.alphabet_by_pair gesetzt -- muss zum
+    # Alphabet passen, mit dem die Genome-DB fuer dieses Pair befuellt wurde,
+    # sonst matchen die hier gebauten Sequenz-Strings nie einen DB-Eintrag)
+    alphabet = params.get('genome', {}).get('alphabet')
+    genes = encode_dataframe(df, alphabet=alphabet)
 
     trades = []
     equity = start_capital
@@ -457,14 +427,9 @@ def run_backtest(
         signal = _find_best_signal(current_genes, market, timeframe, db, params,
                                     cutoff_iso=cutoff_iso, current_regime=current_regime)
 
-        if signal is not None and use_weekly_trend_filter and weekly_bias_times:
-            _wpos = bisect.bisect_right(weekly_bias_times, df.index[i]) - 1
-            if _wpos >= 0:
-                weekly_bias = weekly_bias_values[_wpos]
-                if weekly_bias == Bias.BEARISH and signal['direction'] == 'LONG':
-                    signal = None
-                elif weekly_bias == Bias.BULLISH and signal['direction'] == 'SHORT':
-                    signal = None
+        if signal is not None and daily_bias_series is not None:
+            if daily_bias_blocks(daily_bias_series.iloc[i], signal['direction']):
+                signal = None
 
         if signal is not None and use_cvd_filter and cvd_slope is not None:
             _cvd_val = cvd_slope.iloc[i]

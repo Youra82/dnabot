@@ -28,6 +28,7 @@ from typing import Optional
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.regime import detect_regime, is_regime_allowed, REGIME_HIGH_VOL
+from dnabot.genome.daily_bias import get_current_daily_bias, daily_bias_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,8 @@ def get_genome_signal(
         return None
     # ──────────────────────────────────────────────────────────────────────────
 
-    genes = encode_dataframe(df)
+    alphabet = params.get('genome', {}).get('alphabet')
+    genes = encode_dataframe(df, alphabet=alphabet)
 
     if len(genes) < max(sequence_lengths):
         logger.warning("Nicht genug codierte Gene für Matching.")
@@ -166,6 +168,21 @@ def get_genome_signal(
             if short_genome['score'] > best_score:
                 best_score = short_genome['score']
                 best_signal = _build_signal("short", df, short_genome, rr_ratio)
+
+    # ── Tagestrend-Filter ──────────────────────────────────────────────────────
+    # Identische Funktion wie im Backtester (daily_bias.py) -- garantiert
+    # dasselbe Verhalten live wie im Backtest, sonst validiert der Backtest
+    # etwas, das live gar nicht existiert.
+    use_daily_trend_filter = bool(params.get('genome', {}).get('use_daily_trend_filter', False))
+    if best_signal and use_daily_trend_filter:
+        daily_bias = get_current_daily_bias(df)
+        if daily_bias_blocks(daily_bias, best_signal['side']):
+            logger.info(
+                f"[Tagestrend] {best_signal['side'].upper()} blockiert "
+                f"(aktueller Tagestrend: {daily_bias})."
+            )
+            best_signal = None
+    # ──────────────────────────────────────────────────────────────────────────
 
     if best_signal:
         best_signal['regime'] = current_regime

@@ -75,6 +75,8 @@ def discover_genomes(
     discovery_horizon: int = 5,
     rr_ratio: float = 2.0,
     start_candle_index: int = 0,
+    alphabet: dict = None,
+    alphabet_hash: str = None,
 ) -> dict:
     """
     Scannt historische OHLCV-Daten und entdeckt profitable Genome-Muster.
@@ -92,6 +94,11 @@ def discover_genomes(
         rr_ratio: Risk:Reward-Verhältnis für die TP-Berechnung (aus
                   settings.json risk_settings.rr_ratio), identisch zur
                   Live-/Backtest-Formel in genome_logic.py/backtester.py
+        alphabet: Encoder-Schwellwerte fuer dieses Pair (siehe encoder.py::
+                  DEFAULT_ALPHABET, alphabet_store.py::resolve_alphabet()).
+                  None -> Default-Alphabet.
+        alphabet_hash: wird 1:1 in scan_log geschrieben (Basis fuer die
+                       Aenderungserkennung in scan_and_learn.py).
 
     Returns:
         dict mit Statistiken über den Discovery-Lauf
@@ -109,7 +116,7 @@ def discover_genomes(
     )
 
     # Alle Kerzen codieren
-    genes = encode_dataframe(df)
+    genes = encode_dataframe(df, alphabet=alphabet)
     closes = df['close'].values
     highs = df['high'].values
     lows = df['low'].values
@@ -216,7 +223,8 @@ def discover_genomes(
             data_end_date = df.index[-1].isoformat()
         except Exception:
             data_end_date = None
-        db.log_scan(market, timeframe, candles_processed, new_genomes, updated_genomes, data_end_date)
+        db.log_scan(market, timeframe, candles_processed, new_genomes, updated_genomes,
+                    data_end_date, alphabet_hash=alphabet_hash)
 
     logger.info(
         f"[Discovery] {market} ({timeframe}) abgeschlossen: "

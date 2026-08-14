@@ -13,6 +13,21 @@ import pandas as pd
 import numpy as np
 import ta
 
+# Die sechs Schwellwerte, die das Gen-Alphabet definieren -- bewusst als ein
+# einziges Dict statt einzelner Konstanten, damit sie pro (Markt, Timeframe)
+# ueberschrieben werden koennen (siehe alphabet_store.py::resolve_alphabet()
+# und analysis/alphabet_optimizer.py). DEFAULT_ALPHABET = die Werte, die vor
+# der Pro-Pair-Optimierung fest im Code standen -- bleibt die Referenz fuer
+# Pairs ohne eigenes optimiertes Alphabet.
+DEFAULT_ALPHABET = {
+    "body_small":     0.30,   # body_ratio < body_small        -> Koerpergroesse "1"
+    "body_large":     0.80,   # body_ratio < body_large        -> Koerpergroesse "2", sonst "3"
+    "vol_mult":       1.0,    # candle_range >= atr * vol_mult  -> Volatilitaet "H"
+    "wick_body_ratio": 0.5,   # Wick prominent wenn > body * wick_body_ratio
+    "wick_doji_ratio": 0.25,  # ... bzw. > range * wick_doji_ratio bei Doji (body=0)
+    "vol_rel_mult":   1.0,    # volume > avg_volume * vol_rel_mult -> Volumen "H"
+}
+
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Berechnet den ATR (Average True Range)."""
@@ -29,7 +44,8 @@ def compute_volume_ma(df: pd.DataFrame, period: int = 20) -> pd.Series:
 
 def encode_candle(
     open_: float, high: float, low: float, close: float,
-    volume: float, atr: float, avg_volume: float
+    volume: float, atr: float, avg_volume: float,
+    alphabet: dict = None,
 ) -> str:
     """
     Kodiert eine einzelne Kerze zu einem Gen-String.
@@ -41,7 +57,12 @@ def encode_candle(
       - Trennzeichen
       [U/D/B/N] = Wick-Struktur (oben / unten / beide / keiner)
       [L/H] = Volumen relativ zum 20-Perioden-Durchschnitt
+
+    alphabet: Schwellwert-Overrides (siehe DEFAULT_ALPHABET). None -> Default
+    (identisch zum bisherigen fest codierten Verhalten).
     """
+    a = alphabet or DEFAULT_ALPHABET
+
     # --- Richtung ---
     direction = "B" if close >= open_ else "S"
 
@@ -49,9 +70,9 @@ def encode_candle(
     body = abs(close - open_)
     if atr > 0:
         body_ratio = body / atr
-        if body_ratio < 0.30:
+        if body_ratio < a["body_small"]:
             size = "1"   # kleiner Körper / Doji
-        elif body_ratio < 0.80:
+        elif body_ratio < a["body_large"]:
             size = "2"   # mittlerer Körper
         else:
             size = "3"   # großer Körper (Momentum)
@@ -61,16 +82,16 @@ def encode_candle(
     # --- Volatilität: Kerzenlänge vs ATR ---
     candle_range = high - low
     if atr > 0:
-        vol_code = "H" if candle_range >= atr else "L"
+        vol_code = "H" if candle_range >= atr * a["vol_mult"] else "L"
     else:
         vol_code = "L"
 
     # --- Wick-Struktur ---
     upper_wick = high - max(open_, close)
     lower_wick = min(open_, close) - low
-    # Wick ist prominent, wenn er mehr als 50% des Körpers beträgt
-    # Bei Doji (body=0) nutzen wir 25% der Range als Schwellwert
-    wick_threshold = body * 0.5 if body > 0 else candle_range * 0.25
+    # Wick ist prominent, wenn er mehr als wick_body_ratio des Körpers beträgt
+    # Bei Doji (body=0) nutzen wir wick_doji_ratio der Range als Schwellwert
+    wick_threshold = body * a["wick_body_ratio"] if body > 0 else candle_range * a["wick_doji_ratio"]
     upper_prom = upper_wick > wick_threshold
     lower_prom = lower_wick > wick_threshold
 
@@ -84,16 +105,17 @@ def encode_candle(
         wick = "N"   # Kein dominanter Wick (Marubozu / Momentum)
 
     # --- Volumen relativ zu Durchschnitt ---
-    vol_rel = "H" if (avg_volume > 0 and volume > avg_volume) else "L"
+    vol_rel = "H" if (avg_volume > 0 and volume > avg_volume * a["vol_rel_mult"]) else "L"
 
     return f"{direction}{size}{vol_code}-{wick}{vol_rel}"
 
 
-def encode_dataframe(df: pd.DataFrame) -> list[str]:
+def encode_dataframe(df: pd.DataFrame, alphabet: dict = None) -> list[str]:
     """
     Kodiert alle Kerzen eines OHLCV-DataFrames zu einer Liste von Gen-Strings.
 
     Erwartet Spalten: open, high, low, close, volume
+    alphabet: siehe encode_candle(). None -> DEFAULT_ALPHABET fuer alle Kerzen.
     Rückgabe: Liste von Gene-Strings, gleiche Länge wie df.
     """
     if len(df) < 2:
@@ -115,7 +137,8 @@ def encode_dataframe(df: pd.DataFrame) -> list[str]:
             close=float(row['close']),
             volume=float(row['volume']),
             atr=atr_val,
-            avg_volume=avg_vol
+            avg_volume=avg_vol,
+            alphabet=alphabet,
         )
         genes.append(gene)
 

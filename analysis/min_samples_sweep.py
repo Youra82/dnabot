@@ -68,6 +68,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest
 from dnabot.genome.scoring import breakeven_winrate
+from dnabot.genome.alphabet_store import resolve_alphabet
 from scan_and_learn import load_settings, load_secrets, resolve_history_days
 
 # force=True: scan_and_learn.py setzt beim Import bereits sein eigenes
@@ -135,14 +136,18 @@ def _date_range(history_days: int):
 
 
 def make_objective(dfs_by_market: dict, timeframe: str, db: GenomeDB,
-                    base_genome_cfg: dict, rr_ratio: float):
+                    base_genome_cfg: dict, rr_ratio: float, settings: dict):
     def objective(trial: optuna.Trial) -> float:
         min_samples = trial.suggest_int('min_samples', *MIN_SAMPLES_RANGE)
         total_trades, total_pnl, total_wins = 0, 0.0, 0
         worst_dd = 0.0
         for market, df in dfs_by_market.items():
             params = {
-                'genome': dict(base_genome_cfg, min_samples=min_samples),
+                # Alphabet-Override pro Pair (analysis/alphabet_optimizer.py) --
+                # muss zum Alphabet passen, mit dem die Genome-DB fuer dieses
+                # Pair befuellt wurde, sonst matcht hier nichts.
+                'genome': dict(base_genome_cfg, min_samples=min_samples,
+                               alphabet=resolve_alphabet(market, timeframe, settings)),
                 'risk': {'rr_ratio': rr_ratio},
             }
             try:
@@ -275,7 +280,7 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
                     except ValueError:
                         pass  # noch kein abgeschlossener Trial
                 study.optimize(
-                    make_objective(dfs, tf, db, base_genome_cfg, rr_ratio),
+                    make_objective(dfs, tf, db, base_genome_cfg, rr_ratio, settings),
                     n_trials=remaining,
                     callbacks=[_progress],
                 )

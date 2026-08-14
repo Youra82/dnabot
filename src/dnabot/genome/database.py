@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import math
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 import os
@@ -135,8 +136,33 @@ class GenomeDB:
         self._conn.execute("PRAGMA cache_size = -8192;")      # max 8 MB Page-Cache
         self._conn.execute("PRAGMA temp_store = FILE;")       # Temp-Tabellen auf Disk statt RAM
         self._conn.execute("PRAGMA wal_autocheckpoint = 100;") # WAL klein halten
+        self._batch_mode = False
         self._init_schema()
         logger.debug(f"GenomeDB initialisiert: {db_path}")
+
+    def _commit(self):
+        """Commit, der waehrend batch_writes() unterdrueckt wird."""
+        if not self._batch_mode:
+            self._conn.commit()
+
+    @contextmanager
+    def batch_writes(self):
+        """
+        Unterdrueckt zwischenzeitliche Commits waehrend des Blocks (ein
+        einziger Commit am Ende statt einem pro upsert_genome_outcome()-
+        Aufruf) -- discover_genomes() kann pro Scan zehntausende Occurrences
+        schreiben, mit Einzel-Commits dominiert das die Laufzeit. Gedacht fuer
+        Bulk-Discovery-Läufe, die (anders als der normale inkrementelle
+        Live-Scan) ohnehin viele Kerzen auf einmal verarbeiten, z.B.
+        analysis/alphabet_optimizer.py, das pro Optuna-Trial einen vollen
+        Rescan durchfuehrt.
+        """
+        self._batch_mode = True
+        try:
+            yield
+        finally:
+            self._batch_mode = False
+            self._conn.commit()
 
     def _init_schema(self):
         for statement in self.SCHEMA.strip().split(";"):
@@ -172,6 +198,9 @@ class GenomeDB:
         if 'data_end_date' not in existing:
             self._conn.execute("ALTER TABLE scan_log ADD COLUMN data_end_date TEXT DEFAULT NULL")
             logger.info("DB Migration: scan_log Spalte 'data_end_date' hinzugefügt.")
+        if 'alphabet_hash' not in existing:
+            self._conn.execute("ALTER TABLE scan_log ADD COLUMN alphabet_hash TEXT DEFAULT NULL")
+            logger.info("DB Migration: scan_log Spalte 'alphabet_hash' hinzugefügt.")
         self._conn.commit()
 
     def close(self):
@@ -242,7 +271,7 @@ class GenomeDB:
                 1 if is_win else 0,
                 now, now, now
             ))
-            self._conn.commit()
+            self._commit()
             return True
         else:
             total = existing['total_occurrences'] + 1
@@ -261,7 +290,7 @@ class GenomeDB:
                     last_updated = ?
                 WHERE genome_id = ?
             """, (total, wins, sum_move, avg_move, 1 if is_win else 0, now, now, gid))
-            self._conn.commit()
+            self._commit()
             return False
 
     def get_genome(
@@ -470,16 +499,17 @@ class GenomeDB:
     def log_scan(
         self, market: str, timeframe: str,
         candles_processed: int, new_genomes: int, updated_genomes: int,
-        data_end_date: str = None,
+        data_end_date: str = None, alphabet_hash: str = None,
     ):
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute("""
             INSERT INTO scan_log
                 (market, timeframe, scanned_at, candles_processed, new_genomes, updated_genomes,
-                 data_end_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (market, timeframe, now, candles_processed, new_genomes, updated_genomes, data_end_date))
-        self._conn.commit()
+                 data_end_date, alphabet_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (market, timeframe, now, candles_processed, new_genomes, updated_genomes,
+              data_end_date, alphabet_hash))
+        self._commit()
 
     def get_last_scan(self, market: str, timeframe: str) -> Optional[dict]:
         row = self._conn.execute("""
@@ -488,3 +518,25 @@ class GenomeDB:
             ORDER BY scanned_at DESC LIMIT 1
         """, (market, timeframe)).fetchone()
         return dict(row) if row else None
+
+    def delete_pair(self, market: str, timeframe: str):
+        """
+        Loescht alle Genome/Occurrences/Scan-Log-Eintraege fuer ein Pair.
+        Noetig wenn sich das Encoder-Alphabet eines Pairs aendert -- alte
+        Sequenz-Strings werden unter dem neuen Alphabet nie wieder erzeugt
+        und blieben sonst als tote Eintraege liegen (siehe
+        alphabet_store.py::alphabet_hash() und scan_and_learn.py).
+        """
+        gids = [r[0] for r in self._conn.execute(
+            "SELECT genome_id FROM genomes WHERE market = ? AND timeframe = ?",
+            (market, timeframe)
+        ).fetchall()]
+        if gids:
+            placeholders = ",".join("?" * len(gids))
+            self._conn.execute(
+                f"DELETE FROM genome_occurrences WHERE genome_id IN ({placeholders})", gids
+            )
+        self._conn.execute("DELETE FROM genomes WHERE market = ? AND timeframe = ?", (market, timeframe))
+        self._conn.execute("DELETE FROM scan_log WHERE market = ? AND timeframe = ?", (market, timeframe))
+        self._conn.commit()
+        logger.info(f"Pair geloescht (Alphabet-Wechsel): {market} ({timeframe}), {len(gids)} Genome entfernt.")

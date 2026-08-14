@@ -54,7 +54,9 @@
       "RANGE",
       "NEUTRAL"
     ],
-    "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar."
+    "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
+    "use_daily_trend_filter": true,
+    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt)."
   },
   "risk_settings": {
     "risk_per_entry_pct": 5.0,

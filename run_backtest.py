@@ -22,6 +22,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
 from dnabot.genome.scoring import breakeven_winrate
+from dnabot.genome.alphabet_store import resolve_alphabet
 from scan_and_learn import (
     HISTORY_DAYS_MAP, resolve_history_days, resolve_min_samples, get_min_samples_override,
     load_settings, load_secrets,
@@ -156,8 +157,7 @@ def main():
             # z.B. per analysis/min_samples_sweep.py optimiert, sonst
             # min_samples_to_activate/MIN_SAMPLES_MAP als Fallback).
             'half_life_days':   genome_cfg.get('half_life_days', 180.0),
-            'use_weekly_trend_filter': genome_cfg.get('use_weekly_trend_filter', False),
-            'weekly_trend_ema':        genome_cfg.get('weekly_trend_ema', 8),
+            'use_daily_trend_filter':  genome_cfg.get('use_daily_trend_filter', False),
             'use_cvd_filter':          genome_cfg.get('use_cvd_filter', False),
             'cvd_slope_period':        genome_cfg.get('cvd_slope_period', 5),
             'allowed_regimes':         genome_cfg.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
@@ -203,6 +203,11 @@ def main():
         # simulate_trade auf die Coarse-Kerzen-Naeherung zurueck.
         fine_tf = FINE_TF_MAP.get(timeframe)
         fine_df = LazyFineData(symbol, fine_tf) if fine_tf else None
+
+        # Alphabet ist PRO PAIR gesetzt (siehe analysis/alphabet_optimizer.py) --
+        # muss zum Alphabet passen, mit dem die Genome-DB fuer dieses Pair
+        # befuellt wurde, sonst matchen die hier gebauten Sequenzen nichts in der DB.
+        params['genome']['alphabet'] = resolve_alphabet(symbol, timeframe, settings)
 
         results = run_backtest(
             df=df,

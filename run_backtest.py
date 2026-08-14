@@ -83,6 +83,18 @@ def main():
                         help="Enddatum für Backtest (YYYY-MM-DD)")
     args = parser.parse_args()
 
+    # Ein LEERER --symbol/--timeframe (im Unterschied zu "gar nicht angegeben")
+    # ist immer ein Aufrufer-Bug (z.B. run_pipeline.sh mit einer leeren
+    # Coin-Liste) -- NIEMALS still auf active_strategies/Env-Overrides
+    # zurueckfallen. Laut fehlgeschlagen statt lautlos falsch (siehe
+    # scan_and_learn.py, derselbe Fix).
+    if args.symbol is not None and not args.symbol.strip():
+        logger.critical("--symbol wurde leer uebergeben -- Abbruch statt stillem Fallback.")
+        sys.exit(1)
+    if args.timeframe is not None and not args.timeframe.strip():
+        logger.critical("--timeframe wurde leer uebergeben -- Abbruch statt stillem Fallback.")
+        sys.exit(1)
+
     settings = load_settings()
     secrets  = load_secrets()
 

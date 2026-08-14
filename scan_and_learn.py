@@ -198,6 +198,20 @@ def main():
     parser.add_argument('--no-evolve', action='store_true', help="Evolver überspringen")
     args = parser.parse_args()
 
+    # Ein LEERER --symbol/--timeframe (im Unterschied zu "gar nicht angegeben",
+    # args ist dann None) ist immer ein Aufrufer-Bug (z.B. run_pipeline.sh, das
+    # eine leere Coin-Liste weiterreicht) -- NIEMALS still auf den vollen
+    # scan_settings-Pool zurueckfallen (siehe CLI-Filter unten: ein leerer
+    # String ist falsy und wuerde sonst unbemerkt ALLE Paare scannen statt der
+    # eigentlich gewuenschten expliziten Auswahl). Laut fehlgeschlagen statt
+    # lautlos falsch.
+    if args.symbol is not None and not args.symbol.strip():
+        logger.critical("--symbol wurde leer uebergeben -- Abbruch statt stillem Fallback auf den vollen Scan-Pool.")
+        sys.exit(1)
+    if args.timeframe is not None and not args.timeframe.strip():
+        logger.critical("--timeframe wurde leer uebergeben -- Abbruch statt stillem Fallback auf den vollen Scan-Pool.")
+        sys.exit(1)
+
     logger.info("=" * 60)
     logger.info("  dnabot — Genome Discovery (scan_and_learn.py)")
     logger.info("=" * 60)

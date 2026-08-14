@@ -194,6 +194,13 @@ for sym in coins:
 PYEOF
     )
 
+    if [ -z "$PAIRS" ]; then
+        echo -e "${RED}FEHLER: Konnte aus der Eingabe keine Scan-Paare erzeugen ${NC}"
+        echo -e "${RED}(Coins='${DNABOT_OVERRIDE_COINS:-}' Timeframes='${DNABOT_OVERRIDE_TFS:-}'). Abbruch.${NC}"
+        deactivate
+        exit 1
+    fi
+
     echo -e "${CYAN}Scan-Paare:${NC}"
     echo "$PAIRS" | while read -r sym tf; do
         echo "  → $sym ($tf)"

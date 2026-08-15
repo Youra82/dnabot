@@ -196,6 +196,10 @@ def main():
     parser.add_argument('--history-days', type=int, default=None,
                         help="History-Tage überschreiben (sonst auto nach Timeframe)")
     parser.add_argument('--no-evolve', action='store_true', help="Evolver überspringen")
+    parser.add_argument('--quiet', action='store_true',
+                        help="Kein GENOME LIBRARY REPORT am Ende (fuer Multi-Pair-Loops, "
+                             "z.B. run_pipeline.sh -- dort ersetzt ein einfacher Fortschrittsbalken "
+                             "das sonst pro Pair komplett neu ausgegebene, wachsende DB-weite Reporting)")
     args = parser.parse_args()
 
     # Ein LEERER --symbol/--timeframe (im Unterschied zu "gar nicht angegeben",
@@ -431,8 +435,11 @@ def main():
     logger.info(f"  Neue Genome:         {total_new}")
     logger.info(f"  Aktualisierte Gene:  {total_updated}")
 
-    # Finale Zusammenfassung
-    print_genome_report(db)
+    # Finale Zusammenfassung (uebersprungen bei --quiet, z.B. im Multi-Pair-Loop
+    # von run_pipeline.sh -- dort waechst der DB-weite Report bei jedem Pair
+    # weiter und ist als wiederholte Vollausgabe nur Rauschen statt Fortschritt).
+    if not args.quiet:
+        print_genome_report(db)
 
     db.close()
     logger.info("  scan_and_learn.py abgeschlossen.")

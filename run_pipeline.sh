@@ -221,11 +221,18 @@ if [ -n "${DNABOT_OVERRIDE_COINS:-}" ] || [ -n "${DNABOT_OVERRIDE_TFS:-}" ]; the
     # zweites Mal neu, nur um den Evolver zu triggern (der laut evolve()
     # ohnehin nur das eine Pair betrifft, kein Cross-Pair-Nutzen von der
     # Trennung). Kostete Minuten Laufzeit ohne jeden Effekt.
+    TOTAL_PAIRS=$(echo "$PAIRS" | wc -l)
+    PAIR_IDX=0
     echo "$PAIRS" | while IFS=' ' read -r sym tf; do
+        PAIR_IDX=$((PAIR_IDX + 1))
         echo ""
-        echo -e "${CYAN}  Scanne: $sym ($tf)${NC}"
+        echo -e "${CYAN}  [$PAIR_IDX/$TOTAL_PAIRS] Scanne: $sym ($tf)${NC}"
+        # --quiet: kein DB-weiter GENOME LIBRARY REPORT pro Pair -- der waechst
+        # bei vielen Pairs bei jedem Durchlauf weiter und wiederholt beim naechsten
+        # Pair praktisch dieselben Zahlen (nur +1 Pair), reine Fortschritts-Info
+        # reicht hier statt der vollen Tabelle jedes Mal neu.
         $PYTHON "$SCRIPT_DIR/scan_and_learn.py" \
-            --symbol "$sym" --timeframe "$tf" $HISTORY_ARG
+            --symbol "$sym" --timeframe "$tf" $HISTORY_ARG --quiet
     done
 else
     echo -e "${YELLOW}[Schritt 1/3] Genome Discovery + Evolver...${NC}"

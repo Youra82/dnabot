@@ -803,6 +803,17 @@ def main():
         best_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
                         'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
         best_combo = []
+    else:
+        # r['filtered_stats'] wird bei JEDER getesteten Risikostufe (1.0-5.0%)
+        # in dasselbe (mutable) Dict-Objekt geschrieben -- best_combo haelt nur
+        # Referenzen auf diese Dicts, nicht Kopien. Nach der Sweep-Schleife
+        # spiegeln sie also die ZULETZT getestete Risikostufe wider, nicht
+        # zwingend best_risk. Fuer die Anzeige hier explizit neu mit best_risk
+        # berechnen, damit die Markt-Tabelle und "Portfolio gesamt" dieselbe
+        # Risikostufe zeigen (war vorher inkonsistent: Tabelle zeigte PnL/MaxDD
+        # der letzten Sweep-Stufe, "Portfolio gesamt" korrekt die von best_risk).
+        for r in best_combo:
+            r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk)
 
     print(f"\n  {G}Bestes Risiko: {best_risk}% → Calmar: {best_calmar:.2f} | Final Equity: {best_equity:.2f} USDT{NC}\n")
     print_result(best_combo, best_metrics, args.capital, best_risk, args.max_dd)

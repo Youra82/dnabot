@@ -980,6 +980,10 @@ Sichert automatisch `secret.json` vor dem `git reset --hard`.
 # Achtung: löscht alle erlernten Muster und Backtest-Ergebnisse!
 rm artifacts/db/genome.db
 rm -f artifacts/results/backtest_*.json
+# Sonst überspringt der Alphabet-Optimizer Pairs weiterhin als "kürzlich
+# geprüft" (eigene Statusdatei, unabhängig von genome.db/backtest_*.json,
+# siehe recheck_after_days-Cooldown):
+rm -f artifacts/results/alphabet_sweep.json
 ./run_pipeline.sh
 ```
 

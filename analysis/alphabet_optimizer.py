@@ -723,6 +723,14 @@ if __name__ == '__main__':
     parser.add_argument('--min-is-trades', type=int, default=MIN_IS_TRADES_DEFAULT)
     parser.add_argument('--min-oos-trades', type=int, default=MIN_OOS_TRADES_DEFAULT)
     parser.add_argument('--analyze-only', action='store_true', help="Nur bestehende Ergebnisse zeigen")
+    parser.add_argument('--reapply', action='store_true',
+                        help="Bestaetigte Pairs aus dem vorhandenen alphabet_sweep.json direkt "
+                             "in settings.json uebernehmen, OHNE neu zu optimieren (keine Exchange-"
+                             "Verbindung/Optuna/Discovery noetig, dauert Sekunden). Fuer den Fall, "
+                             "dass settings.json::genome_settings.alphabet_by_pair verloren ging "
+                             "(z.B. durch update.sh vor dem settings.json-Backup-Fix) waehrend "
+                             "artifacts/results/alphabet_sweep.json (nicht in Git) noch die schon "
+                             "berechneten Bestaetigungen enthaelt.")
     parser.add_argument('--auto-apply', action='store_true',
                         help="Bestaetigte Pairs ohne Rueckfrage in settings.json uebernehmen "
                              "(fuer nicht-interaktive Aufrufe, z.B. aus run_pipeline.sh)")
@@ -750,6 +758,18 @@ if __name__ == '__main__':
             with open(RESULTS_PATH) as f:
                 results = json.load(f)
         print_summary(results)
+        sys.exit(0)
+
+    if args.reapply:
+        results = {}
+        if os.path.exists(RESULTS_PATH):
+            with open(RESULTS_PATH) as f:
+                results = json.load(f)
+        if not results:
+            print(f"Keine gespeicherten Ergebnisse in {RESULTS_PATH} gefunden.")
+            sys.exit(0)
+        print_summary(results)
+        offer_apply(results, load_settings(), auto_apply=args.auto_apply)
         sys.exit(0)
 
     _settings = load_settings()

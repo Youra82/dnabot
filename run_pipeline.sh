@@ -168,6 +168,19 @@ if [[ "$RUN_SWEEP" == "j" || "$RUN_SWEEP" == "J" || "$RUN_SWEEP" == "y" || "$RUN
     if [[ "$TRIALS_INPUT" =~ ^[0-9]+$ ]]; then SWEEP_TRIALS=$TRIALS_INPUT; fi
 fi
 
+# ── 6. Gebühren-Impact-Analyse? ──────────────────────────────────────────────
+# Laeuft ganz am Ende, nach dem Backtest -- braucht die frischen backtest_*.json.
+# Backtest-PnL enthaelt keine Handelsgebuehren; bei kleiner Positionsgroesse
+# (z.B. 1% Risiko/Trade) kann das den Unterschied zwischen "leicht profitabel"
+# und "nach Gebuehren negativ" ausmachen (Bitget Taker ~0.06%/Seite = 0.12%
+# Round-Trip pro Trade).
+echo ""
+echo -e "${YELLOW}Gebühren-Impact-Analyse (analysis/fee_impact.py)${NC}"
+echo "  Zeigt wie die Backtest-PnL bei echten Bitget-Gebühren (0.06%/Seite)"
+echo "  aussieht, und den Break-Even-Gebührensatz, ab dem das System unrentabel wird."
+read -p "Nach dem Backtest ausführen? (j/n) [Standard: n]: " RUN_FEE_IMPACT
+RUN_FEE_IMPACT="${RUN_FEE_IMPACT//[$'\r\n ']/}"
+
 # ── Pipeline starten ─────────────────────────────────────────────────────────
 echo ""
 echo "======================================================="
@@ -290,6 +303,16 @@ echo -e "${YELLOW}[Schritt 3/3] Ergebnisse...${NC}"
 $PYTHON "$SCRIPT_DIR/src/dnabot/analysis/show_results.py" --mode 1
 
 echo ""
+
+# Zusatzschritt: Gebühren-Impact-Analyse (siehe Abfrage oben) -- zeigt die
+# Backtest-Ergebnisse ohne die geschönte Annahme "keine Handelsgebühren".
+if [[ "$RUN_FEE_IMPACT" == "j" || "$RUN_FEE_IMPACT" == "J" || "$RUN_FEE_IMPACT" == "y" || "$RUN_FEE_IMPACT" == "Y" ]]; then
+    echo "======================================================="
+    echo -e "  ${YELLOW}Zusatzschritt: Gebühren-Impact-Analyse${NC}"
+    echo "======================================================="
+    $PYTHON "$SCRIPT_DIR/analysis/fee_impact.py" --capital "$CAPITAL" --risk "$RISK"
+    echo ""
+fi
 echo "======================================================="
 echo -e "  ${GREEN}Pipeline abgeschlossen!${NC}"
 echo ""

@@ -216,20 +216,25 @@ def _select_greedy(pair_results, ref_capital, risk_pct, max_dd_limit, min_trades
     team_trades = sorted(
         [t for r in team for t in r['trades']], key=lambda t: t['entry_dt']
     )
-    _, team_dd, _, _ = _step_simulate(team_trades, ref_capital, risk_pct)
+    team_eq, team_dd, _, _ = _step_simulate(team_trades, ref_capital, risk_pct)
     if team_dd > max_dd_limit:
         return []
+    team_pnl = (team_eq - ref_capital) / ref_capital * 100.0
+    team_calmar = _calmar(team_pnl, team_dd)
 
     for cand in eligible[1:]:
         candidate_trades = sorted(
             [t for r in team + [cand] for t in r['trades']], key=lambda t: t['entry_dt']
         )
-        _, new_dd, new_wins, _ = _step_simulate(candidate_trades, ref_capital, risk_pct)
-        if new_dd <= max_dd_limit:
-            pnl_new = (sum(1 for t in candidate_trades if t.get('outcome') == 'WIN') / len(candidate_trades)
-                       if candidate_trades else 0)
+        new_eq, new_dd, _, _ = _step_simulate(candidate_trades, ref_capital, risk_pct)
+        if new_dd > max_dd_limit:
+            continue
+        new_pnl = (new_eq - ref_capital) / ref_capital * 100.0
+        new_calmar = _calmar(new_pnl, new_dd)
+        if new_calmar > team_calmar:
             team.append(cand)
             team_dd = new_dd
+            team_calmar = new_calmar
 
     return team
 

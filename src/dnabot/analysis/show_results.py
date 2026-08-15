@@ -295,7 +295,8 @@ def mode_regime_analysis(db: GenomeDB):
             else:
                 avg_wr = sum(_regime_wr(g, reg)[0] for g in with_data) / len(with_data)
                 n = sum(1 for g in gs if reg in _regime_list(g))
-                row += f"  {G if n > 0 else DIM}{n} aktiv / {avg_wr:.0%}{NC:<15}"
+                cell = f"{n} aktiv / {avg_wr:.0%}"
+                row += f"  {G if n > 0 else DIM}{cell:<15}{NC}"
         print(row)
 
     print(f"\n{SEP}\n")

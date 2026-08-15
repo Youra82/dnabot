@@ -26,12 +26,18 @@ def main():
     from datetime import timedelta
     window = timedelta(hours=args.window_hours)
 
-    # Zähle für jeden Trade wie viele andere Trades im Zeitfenster lagen
+    # Zähle für jeden Trade wie viele andere Trades im Zeitfenster lagen --
+    # nur auf ANDEREN Markt/Timeframe-Paaren (wie confluence.py), sonst zählen
+    # zwei rein sequenzielle Trades desselben Pairs faelschlich als "mehrere
+    # Coins bestaetigen sich", obwohl das Script genau diese Multi-Symbol-
+    # Bestaetigung untersuchen soll (siehe Docstring).
     concurrent_counts = []
     for i, t in enumerate(trades):
         t_dt = t['entry_dt']
         count = sum(1 for j, other in enumerate(trades)
-                    if i != j and abs((other['entry_dt'] - t_dt).total_seconds()) <= window.total_seconds())
+                    if i != j
+                    and abs((other['entry_dt'] - t_dt).total_seconds()) <= window.total_seconds()
+                    and other.get('market', '') != t.get('market', ''))
         concurrent_counts.append(count)
 
     # Win-Rate nach Confluence-Level

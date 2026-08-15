@@ -194,7 +194,11 @@ class Exchange:
                     )
                     break
                 all_ohlcv.extend(ohlcv)
-                current_ts = ohlcv[-1][0] + tf_ms
+                # +1ms statt +tf_ms: Bitgets `since` ist exklusiv (timestamp > since),
+                # ein voller Timeframe-Schritt trifft exakt die naechste Kerze und
+                # ueberspringt sie -- derselbe Off-by-one wie in fetch_recent_ohlcv()
+                # oben (dort bereits gefixt), hier bisher unangetastet.
+                current_ts = ohlcv[-1][0] + 1
                 retries = 0
                 time.sleep(self.exchange.rateLimit / 1000)
             except ccxt.RateLimitExceeded:

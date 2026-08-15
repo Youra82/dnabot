@@ -330,6 +330,17 @@ class GenomeDB:
         Gibt None zurück, wenn keine Occurrences vor cutoff_iso existieren
         (z.B. weil die DB noch keine genome_occurrences-Historie hat) oder
         kein Regime die Aktivierungs-Schwellen erreicht.
+
+        Regime-Semantik repliziert jetzt evolver.py::evolve() 1:1 (vorher
+        divergierte sie: diese Funktion waehlte nur das EINE bestbewertete
+        Regime und verlangte spaeter exakte Gleichheit mit current_regime,
+        waehrend live/evolver.py ein Genome in MEHREREN Regimen gleichzeitig
+        aktivieren kann -- active_regimes als Liste, current_regime muss nur
+        IRGENDWO darin vorkommen. Die alte Exact-Match-Variante verwarf dadurch
+        systematisch gueltige Signale, siehe backtester.py::_find_best_signal().
+        Die zurueckgegebenen Stats (total_occurrences/wins/avg_move_pct) sind
+        GLOBAL (alle Regime kombiniert, wie db.get_genome() live liefert) --
+        nur die Aktivierungs-Pruefung selbst laeuft pro Regime.
         """
         gid = _genome_id(sequence, market, timeframe, direction)
         rows = self._conn.execute(
@@ -343,36 +354,44 @@ class GenomeDB:
         vol_factor_clamped = max(0.5, min(vol_factor, 3.0))
         effective_half_life = half_life_days / vol_factor_clamped if half_life_days > 0 else 0.0
 
-        def _score_from(subset):
-            total = len(subset)
+        total = len(rows)
+        global_wins = sum(r['is_win'] for r in rows)
+        global_avg_move = sum(r['move_pct'] for r in rows) / total
+        global_winrate = global_wins / total
+
+        def _regime_score(subset):
+            occ = len(subset)
+            if occ == 0:
+                return 0, 0.0, 0.0
             wins = sum(r['is_win'] for r in subset)
-            avg_move = sum(r['move_pct'] for r in subset) / total
-            winrate = wins / total
+            winrate = wins / occ
             last_occurred = subset[-1]['occurred_at']
             decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
-            effective_occ = total * decay
-            score = _compute_score(winrate, avg_move, effective_occ)
-            return {'total': total, 'wins': wins, 'winrate': winrate, 'avg_move_pct': avg_move, 'score': score}
+            effective_occ = occ * decay
+            score = _compute_score(winrate, global_avg_move, effective_occ)
+            return occ, winrate, score
 
         regimes_to_try = [regime] if regime else ['TREND', 'RANGE', 'NEUTRAL']
-        best = None
+        active_regimes = []
+        best_score = 0.0
         for r in regimes_to_try:
             subset = [row for row in rows if row['regime'] == r]
-            if len(subset) < min_samples:
+            occ, winrate, score = _regime_score(subset)
+            if occ < min_samples:
                 continue
-            stats = _score_from(subset)
-            if stats['winrate'] >= min_winrate and stats['score'] >= score_threshold:
-                if best is None or stats['score'] > best['score']:
-                    stats['regime'] = r
-                    best = stats
+            if winrate >= min_winrate and score >= score_threshold:
+                active_regimes.append(r)
+                best_score = max(best_score, score)
 
-        if best is None and len(rows) >= min_samples:
-            stats = _score_from(rows)
-            if stats['winrate'] >= min_winrate and stats['score'] >= score_threshold:
-                stats['regime'] = 'NEUTRAL'
-                best = stats
+        if not active_regimes and total >= min_samples:
+            last_occurred = rows[-1]['occurred_at']
+            decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
+            global_score = _compute_score(global_winrate, global_avg_move, total * decay)
+            if global_winrate >= min_winrate and global_score >= score_threshold:
+                active_regimes = ['NEUTRAL']
+                best_score = global_score
 
-        if best is None:
+        if not active_regimes:
             return None
 
         return {
@@ -381,11 +400,11 @@ class GenomeDB:
             'market': market,
             'timeframe': timeframe,
             'direction': direction,
-            'total_occurrences': best['total'],
-            'wins': best['wins'],
-            'avg_move_pct': best['avg_move_pct'],
-            'score': best['score'],
-            'regime': best['regime'],
+            'total_occurrences': total,
+            'wins': global_wins,
+            'avg_move_pct': global_avg_move,
+            'score': best_score,
+            'active_regimes': active_regimes,
             'active': True,
         }
 

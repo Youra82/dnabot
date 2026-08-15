@@ -89,14 +89,16 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
     Backtest (siehe get_genome_as_of() in database.py). Ohne cutoff_iso
     (z.B. Live-Nutzung) bleibt das alte Verhalten über db.get_genome().
 
-    current_regime: aktuelles Markt-Regime (TREND/RANGE/NEUTRAL). Wird an
-    get_genome_as_of() durchgereicht, damit nur Genome zaehlen, die GENAU in
-    diesem Regime aktiviert waeren -- Aequivalent zu genome_logic.py's
-    _regime_active() live. Faellt get_genome_as_of() auf ihren globalen
-    NEUTRAL-Fallback zurueck (zu wenig Regime-spezifische Samples), wird das
-    hier verworfen, wenn current_regime nicht NEUTRAL ist -- sonst wuerde der
-    Backtest Genome zulassen, die live wegen fehlender TREND/RANGE-Samples
-    gar nicht aktiv waeren.
+    current_regime: aktuelles Markt-Regime (TREND/RANGE/NEUTRAL). get_genome_as_of()
+    wird MIT regime=None aufgerufen, damit es wie evolver.py::evolve() ALLE drei
+    Regime-Buckets prueft und eine active_regimes-Liste zurueckgibt (ein Genome
+    kann in mehreren Regimen gleichzeitig aktiv sein) -- current_regime muss nur
+    IRGENDWO in dieser Liste vorkommen, aequivalent zu genome_logic.py's
+    _regime_active() live (Listen-Mitgliedschaft, kein Exact-Match auf ein
+    einzelnes "bestes" Regime). Die fruehere Exact-Match-Variante verwarf
+    systematisch gueltige Signale, sobald ein Genome nur regime-uebergreifend
+    (globaler NEUTRAL-Fallback) genug point-in-time-Samples hatte, obwohl live
+    dieselbe Situation als "ueberall aktiv" behandelt.
     """
     genome_cfg = params.get('genome', {})
     min_score = genome_cfg.get('min_score', 0.05)
@@ -118,11 +120,11 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
             if cutoff_iso is not None:
                 g = db.get_genome_as_of(
                     seq, market, timeframe, direction, cutoff_iso,
-                    regime=current_regime,
+                    regime=None,
                     min_samples=min_samples, min_winrate=min_winrate,
                     score_threshold=min_score, half_life_days=half_life_days,
                 )
-                if g and current_regime is not None and g['regime'] != current_regime:
+                if g and current_regime is not None and current_regime not in g['active_regimes']:
                     g = None
             else:
                 g = db.get_genome(seq, market, timeframe, direction)

@@ -214,16 +214,16 @@ if [ -n "${DNABOT_OVERRIDE_COINS:-}" ] || [ -n "${DNABOT_OVERRIDE_TFS:-}" ]; the
     echo ""
 
     echo -e "${YELLOW}[Schritt 1/3] Genome Discovery + Evolver...${NC}"
+    # EIN Aufruf pro Pair (Discovery + Evolver zusammen, wie scan_and_learn.py
+    # es ohnehin pro Pair macht) -- vorher liefen hier zwei komplette
+    # scan_and_learn.py-Prozesse pro Pair (erst --no-evolve, dann nochmal
+    # ohne), der zweite lud dabei die komplette Exchange-Historie ein
+    # zweites Mal neu, nur um den Evolver zu triggern (der laut evolve()
+    # ohnehin nur das eine Pair betrifft, kein Cross-Pair-Nutzen von der
+    # Trennung). Kostete Minuten Laufzeit ohne jeden Effekt.
     echo "$PAIRS" | while IFS=' ' read -r sym tf; do
         echo ""
         echo -e "${CYAN}  Scanne: $sym ($tf)${NC}"
-        $PYTHON "$SCRIPT_DIR/scan_and_learn.py" \
-            --symbol "$sym" --timeframe "$tf" $HISTORY_ARG --no-evolve
-    done
-    # Evolver einmal separat (nutzt die vollen Daten)
-    echo ""
-    echo -e "${CYAN}  Evolver läuft...${NC}"
-    echo "$PAIRS" | while IFS=' ' read -r sym tf; do
         $PYTHON "$SCRIPT_DIR/scan_and_learn.py" \
             --symbol "$sym" --timeframe "$tf" $HISTORY_ARG
     done

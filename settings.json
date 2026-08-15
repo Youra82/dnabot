@@ -172,7 +172,7 @@
     "trailing_callback_rate_pct": 1.0
   },
   "optimization_settings": {
-    "enabled": false,
+    "enabled": true,
     "schedule": {
       "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format)",
       "day_of_week": 6,

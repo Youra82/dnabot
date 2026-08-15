@@ -68,7 +68,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest
 from dnabot.genome.scoring import breakeven_winrate
-from dnabot.genome.alphabet_store import resolve_alphabet
+from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 from scan_and_learn import load_settings, load_secrets, resolve_history_days
 
 # force=True: scan_and_learn.py setzt beim Import bereits sein eigenes
@@ -136,19 +136,30 @@ def _date_range(history_days: int):
 
 
 def make_objective(dfs_by_market: dict, timeframe: str, db: GenomeDB,
-                    base_genome_cfg: dict, rr_ratio: float, settings: dict):
+                    base_genome_cfg: dict, settings: dict):
     def objective(trial: optuna.Trial) -> float:
         min_samples = trial.suggest_int('min_samples', *MIN_SAMPLES_RANGE)
         total_trades, total_pnl, total_wins = 0, 0.0, 0
         worst_dd = 0.0
         for market, df in dfs_by_market.items():
+            # RR-Ratio ebenfalls PRO PAIR (analysis/alphabet_optimizer.py sucht
+            # sie gemeinsam mit dem Alphabet) -- min_winrate muss konsistent
+            # aus DERSELBEN rr_ratio abgeleitet werden, nicht aus dem globalen
+            # Default, sonst passt die Aktivierungsschwelle nicht zur
+            # tatsaechlich verwendeten TP-Distanz.
+            pair_rr_ratio = resolve_rr_ratio(market, timeframe, settings)
+            pair_genome_cfg = dict(
+                base_genome_cfg,
+                min_samples=min_samples,
+                alphabet=resolve_alphabet(market, timeframe, settings),
+                min_winrate=base_genome_cfg.get('min_winrate_explicit') or breakeven_winrate(pair_rr_ratio),
+            )
             params = {
                 # Alphabet-Override pro Pair (analysis/alphabet_optimizer.py) --
                 # muss zum Alphabet passen, mit dem die Genome-DB fuer dieses
                 # Pair befuellt wurde, sonst matcht hier nichts.
-                'genome': dict(base_genome_cfg, min_samples=min_samples,
-                               alphabet=resolve_alphabet(market, timeframe, settings)),
-                'risk': {'rr_ratio': rr_ratio},
+                'genome': pair_genome_cfg,
+                'risk': {'rr_ratio': pair_rr_ratio},
             }
             try:
                 result = run_backtest(df, market, timeframe, db, params,
@@ -202,13 +213,14 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
         logger.critical("Keine passenden Paare in genome.db gefunden -- erst scannen.")
         sys.exit(1)
 
-    risk_cfg = settings.get('risk_settings', {})
     genome_cfg = settings.get('genome_settings', {})
-    rr_ratio = risk_cfg.get('rr_ratio', 2.0)
-    min_winrate = genome_cfg.get('min_winrate') or breakeven_winrate(rr_ratio)
+    # min_winrate_explicit: nur gesetzt wenn User es vorgibt -- dann gilt das
+    # ueberall unveraendert. Sonst wird es PRO PAIR aus dessen eigener
+    # rr_ratio abgeleitet (siehe make_objective()), nicht einmalig hier.
+    min_winrate_explicit = genome_cfg.get('min_winrate')
     base_genome_cfg = {
         'min_score': genome_cfg.get('min_score', 0.08),
-        'min_winrate': min_winrate,
+        'min_winrate_explicit': min_winrate_explicit,
         'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
         'half_life_days': genome_cfg.get('half_life_days', 180.0),
         'allowed_regimes': genome_cfg.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
@@ -280,7 +292,7 @@ def run_sweep(timeframe_filter: str = None, n_trials: int = N_TRIALS_DEFAULT):
                     except ValueError:
                         pass  # noch kein abgeschlossener Trial
                 study.optimize(
-                    make_objective(dfs, tf, db, base_genome_cfg, rr_ratio, settings),
+                    make_objective(dfs, tf, db, base_genome_cfg, settings),
                     n_trials=remaining,
                     callbacks=[_progress],
                 )

@@ -3,7 +3,16 @@
 #
 # Sucht PRO (Coin, Timeframe) ein eigenes Encoder-Alphabet (encoder.py::
 # DEFAULT_ALPHABET-Overrides -- Body-/Wick-/Volumen-Schwellwerte, die eine
-# Kerze zu einem Gen-Buchstaben klassifizieren) per Optuna (TPE-Sampler).
+# Kerze zu einem Gen-Buchstaben klassifizieren) UND eine eigene RR-Ratio
+# (Take-Profit-Distanz relativ zum strukturellen Stop) per Optuna (TPE-
+# Sampler), gemeinsam in einem Trial. RR-Ratio ist auf 1.0-4.0 begrenzt --
+# der Sweet Spot zwischen Mean-Reversion- und Trend-Following-Extremen
+# (Breakeven-Winrate-Kurve WR=1/(1+RR), siehe scoring.py::breakeven_winrate,
+# dieselbe Begrenzung wie in analysis/param_optimizer.py). Anders als die
+# Alphabet-Schwellwerte (die nur beeinflussen WELCHE Muster gefunden
+# werden) veraendert RR direkt die TP-Distanz und damit die noetige
+# Ziel-Winrate jedes gefundenen Musters -- beides gemeinsam zu suchen
+# erschliesst Kombinationen, die bei fixem RR nie sichtbar waeren.
 #
 # Hintergrund: Ein erster Single-Pair-Test (ADA/USDT 30m, reines In-Sample-
 # Fitting ueber den vollen Zeitraum) zeigte Calmar -0.17 -> +4.71. Das war
@@ -206,9 +215,17 @@ def load_genome_cfg(settings: dict):
     risk_cfg_raw = settings.get('risk_settings', {})
     scan_cfg_raw = settings.get('scan_settings', {})
     rr_ratio = risk_cfg_raw.get('rr_ratio', 2.0)
+    # min_winrate_explicit: nur gesetzt wenn der User es in settings.json
+    # explizit vorgibt -- dann gilt das fuer JEDEN Trial unveraendert.
+    # Fehlt es, wird min_winrate PRO TRIAL aus dessen eigenem rr_ratio
+    # abgeleitet (siehe make_objective()), nicht einmalig hier aus dem
+    # globalen rr_ratio -- sonst waere die Aktivierungsschwelle inkonsistent
+    # zu der TP-Distanz, mit der ein Trial tatsaechlich simuliert.
+    min_winrate_explicit = genome_cfg_raw.get('min_winrate')
     genome_cfg = {
         'min_score': genome_cfg_raw.get('min_score', 0.08),
-        'min_winrate': genome_cfg_raw.get('min_winrate') or breakeven_winrate(rr_ratio),
+        'min_winrate': min_winrate_explicit or breakeven_winrate(rr_ratio),
+        'min_winrate_explicit': min_winrate_explicit,
         'sequence_lengths': genome_cfg_raw.get('sequence_lengths', [4, 5, 6]),
         'half_life_days': genome_cfg_raw.get('half_life_days', 180.0),
         'allowed_regimes': genome_cfg_raw.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
@@ -266,6 +283,9 @@ def run_alphabet_trial(df: pd.DataFrame, db: GenomeDB, market: str, timeframe: s
 
 def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
                     discovery_horizon, split_ts, capital, min_is_trades):
+    base_rr_ratio = risk_cfg['rr_ratio']
+    explicit_min_winrate = genome_cfg.get('min_winrate_explicit')
+
     def objective(trial: optuna.Trial) -> float:
         body_small = trial.suggest_float('body_small', 0.10, 0.45)
         body_large = trial.suggest_float('body_large', body_small + 0.15, 1.30)
@@ -273,16 +293,34 @@ def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
         wick_body_ratio = trial.suggest_float('wick_body_ratio', 0.2, 1.0)
         wick_doji_ratio = trial.suggest_float('wick_doji_ratio', 0.1, 0.5)
         vol_rel_mult = trial.suggest_float('vol_rel_mult', 0.7, 2.0)
+        # RR-Ratio wird JOINT mit dem Alphabet gesucht, begrenzt auf den
+        # "Sweet Spot" zwischen Mean-Reversion- und Trend-Following-Extremen
+        # (Breakeven-Winrate-Kurve WR=1/(1+RR), siehe scoring.py::
+        # breakeven_winrate() und param_optimizer.py, dieselbe Begrenzung).
+        # Anders als die Alphabet-Schwellwerte (die nur beeinflussen WELCHE
+        # Muster gefunden werden) veraendert RR direkt TP-Distanz und damit
+        # die noetige Ziel-Winrate jedes gefundenen Musters.
+        rr_ratio = trial.suggest_float('rr_ratio', 1.0, 4.0)
 
         alphabet = dict(
             body_small=body_small, body_large=body_large, vol_mult=vol_mult,
             wick_body_ratio=wick_body_ratio, wick_doji_ratio=wick_doji_ratio,
             vol_rel_mult=vol_rel_mult,
         )
-        is_baseline = all(abs(alphabet[k] - DEFAULT_ALPHABET[k]) < _EPS for k in DEFAULT_ALPHABET)
+        is_baseline = (
+            all(abs(alphabet[k] - DEFAULT_ALPHABET[k]) < _EPS for k in DEFAULT_ALPHABET)
+            and abs(rr_ratio - base_rr_ratio) < _EPS
+        )
+
+        # min_winrate haengt von rr_ratio ab (Breakeven + Puffer) -- muss pro
+        # Trial neu abgeleitet werden, AUSSER explizit in settings.json
+        # gesetzt (dann hat das wie ueberall sonst Vorrang).
+        trial_genome_cfg = dict(genome_cfg)
+        trial_genome_cfg['min_winrate'] = explicit_min_winrate or breakeven_winrate(rr_ratio)
+        trial_risk_cfg = dict(risk_cfg, rr_ratio=rr_ratio)
 
         is_stats, oos_stats = run_alphabet_trial(
-            df, db, market, timeframe, alphabet, genome_cfg, risk_cfg,
+            df, db, market, timeframe, alphabet, trial_genome_cfg, trial_risk_cfg,
             discovery_horizon, split_ts, capital,
         )
         trial.set_user_attr('is_stats', is_stats)
@@ -345,7 +383,7 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
         direction='maximize',
         sampler=optuna.samplers.TPESampler(seed=42),
     )
-    study.enqueue_trial(dict(DEFAULT_ALPHABET))
+    study.enqueue_trial(dict(DEFAULT_ALPHABET, rr_ratio=risk_cfg['rr_ratio']))
 
     with tqdm(total=n_trials, desc=f"{market} {timeframe}", unit="trial") as pbar:
         def _progress(study, trial):
@@ -385,13 +423,21 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
         and best_oos.get('total_pnl_pct', 0.0) > 0.0
     )
 
+    # best.params ist ein flacher Optuna-Namespace (6 Alphabet-Keys + rr_ratio
+    # gemischt) -- fuer settings.json muessen die getrennt werden: Alphabet
+    # nach alphabet_by_pair, RR-Ratio nach rr_ratio_by_pair (siehe offer_apply()).
+    best_rr_ratio = best.params.get('rr_ratio', risk_cfg['rr_ratio'])
+    best_alphabet = {k: v for k, v in best.params.items() if k != 'rr_ratio'}
+
     result = {
         'market': market, 'timeframe': timeframe,
         'n_trials': len(study.trials),
         'split_date': str(split_ts.date()),
         'baseline_params': dict(DEFAULT_ALPHABET),
+        'baseline_rr_ratio': risk_cfg['rr_ratio'],
         'baseline_is': b_is, 'baseline_oos': b_oos,
-        'best_params': best.params,
+        'best_params': best_alphabet,
+        'best_rr_ratio': best_rr_ratio,
         'best_is': best_is, 'best_oos': best_oos,
         'confirmed': confirmed,
         'checked_at': datetime.now(timezone.utc).isoformat(),
@@ -399,6 +445,7 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
 
     mark = '[BESTAETIGT]' if confirmed else '[nicht bestaetigt -- Ist-Zustand behalten]'
     print(f"\n  --- {market} ({timeframe}) --- {mark}")
+    print(f"  RR-Ratio: Baseline {risk_cfg['rr_ratio']:.2f} -> Best {best_rr_ratio:.2f}")
     print(f"  {'Metrik':<14}{'Baseline IS':>13}{'Best IS':>13}   |{'Baseline OOS':>14}{'Best OOS':>13}")
     print(f"  {'Trades':<14}{b_is['total_trades']:>13}{best_is['total_trades']:>13}   |"
           f"{b_oos['total_trades']:>14}{best_oos['total_trades']:>13}")
@@ -538,9 +585,9 @@ def offer_apply(results: dict, settings: dict, auto_apply: bool = False):
     if not confirmed:
         print("\nKeine bestaetigten Pairs -- settings.json bleibt unveraendert.")
         return
-    print(f"\n{len(confirmed)} bestaetigte(s) Pair(s) koennen als Alphabet-Override uebernommen werden:")
-    for key in confirmed:
-        print(f"  - {key}")
+    print(f"\n{len(confirmed)} bestaetigte(s) Pair(s) koennen als Alphabet+RR-Ratio-Override uebernommen werden:")
+    for key, r in confirmed.items():
+        print(f"  - {key} (RR-Ratio {r.get('baseline_rr_ratio', 2.0):.2f} -> {r.get('best_rr_ratio', 2.0):.2f})")
 
     if auto_apply:
         print("\n--auto-apply gesetzt -- uebernehme ohne Rueckfrage.")
@@ -557,13 +604,16 @@ def offer_apply(results: dict, settings: dict, auto_apply: bool = False):
     settings_path = os.path.join(PROJECT_ROOT, 'settings.json')
     with open(settings_path) as f:
         s = json.load(f)
-    by_pair = s.setdefault('genome_settings', {}).setdefault('alphabet_by_pair', {})
+    genome_settings = s.setdefault('genome_settings', {})
+    alphabet_by_pair = genome_settings.setdefault('alphabet_by_pair', {})
+    rr_ratio_by_pair = genome_settings.setdefault('rr_ratio_by_pair', {})
     for key, r in confirmed.items():
         market, timeframe = key.split('|')
-        by_pair.setdefault(market, {})[timeframe] = r['best_params']
+        alphabet_by_pair.setdefault(market, {})[timeframe] = r['best_params']
+        rr_ratio_by_pair.setdefault(market, {})[timeframe] = r.get('best_rr_ratio', 2.0)
     with open(settings_path, 'w') as f:
         json.dump(s, f, indent=2, ensure_ascii=False)
-    print(f"settings.json aktualisiert ({len(confirmed)} Pair(s)).")
+    print(f"settings.json aktualisiert ({len(confirmed)} Pair(s), Alphabet + RR-Ratio).")
     print("  WICHTIG: naechster scan_and_learn.py-Lauf erkennt die Alphabet-Aenderung automatisch")
     print("  und fuehrt fuer diese Pairs einen vollstaendigen Rescan durch (alte Genome werden geloescht).")
 

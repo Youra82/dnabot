@@ -31,7 +31,7 @@ from dnabot.genome.discovery import discover_genomes
 from dnabot.genome.evolver import evolve, print_genome_report
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.regime import get_atr_ratio
-from dnabot.genome.alphabet_store import resolve_alphabet, alphabet_hash as compute_alphabet_hash
+from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio, alphabet_hash as compute_alphabet_hash
 
 logging.basicConfig(
     level=logging.INFO,
@@ -279,11 +279,10 @@ def main():
     sequence_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
     min_score = genome_cfg.get('min_score', 0.08)
     half_life_days = genome_cfg.get('half_life_days', 180.0)
-    risk_cfg = settings.get('risk_settings', {})
-    rr_ratio = risk_cfg.get('rr_ratio', 2.0)
-    # min_winrate: explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
-    # (Breakeven-Winrate + Sicherheitspuffer statt pauschaler fester Zahl).
-    min_winrate = genome_cfg.get('min_winrate') or breakeven_winrate(rr_ratio)
+    # rr_ratio und das davon abgeleitete min_winrate werden PRO PAIR aufgeloest
+    # (siehe Schleife unten, resolve_rr_ratio()) -- ein Pair kann per
+    # analysis/alphabet_optimizer.py eine eigene, vom globalen
+    # risk_settings.rr_ratio abweichende RR-Ratio bestaetigt bekommen haben.
 
     # CLI-Filter
     if args.symbol and args.timeframe:
@@ -321,6 +320,10 @@ def main():
         history_days      = resolve_history_days(timeframe, history_days_override)
         discovery_horizon = resolve_discovery_horizon(timeframe, discovery_horizon_override)
         min_samples       = resolve_min_samples(timeframe, get_min_samples_override(scan_cfg, timeframe))
+        rr_ratio          = resolve_rr_ratio(symbol, timeframe, settings)
+        # min_winrate: explizit gesetzt hat Vorrang, sonst aus der fuer DIESES
+        # Pair geltenden rr_ratio abgeleitet (Breakeven-Winrate + Puffer).
+        min_winrate       = genome_cfg.get('min_winrate') or breakeven_winrate(rr_ratio)
 
         logger.info(f"\n{'─' * 50}")
         logger.info(

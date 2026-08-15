@@ -45,6 +45,32 @@ def resolve_alphabet(market: str, timeframe: str, settings: dict) -> dict:
     return alphabet
 
 
+def resolve_rr_ratio(market: str, timeframe: str, settings: dict) -> float:
+    """
+    Liest den RR-Ratio-Override fuer (market, timeframe) aus settings.json::
+    genome_settings.rr_ratio_by_pair (von analysis/alphabet_optimizer.py
+    gemeinsam mit dem Alphabet per Optuna gesucht und bestaetigt -- siehe
+    dortige Zielfunktion), sonst risk_settings.rr_ratio (globaler Default).
+
+    Prioritaet bei strategy/run.py (Live): ein manuell gesetztes
+    risk_overrides.rr_ratio pro Strategie in active_strategies hat weiterhin
+    Vorrang vor diesem automatisch gefundenen Wert -- explizite Config
+    schlaegt automatisch Optimiertes, wie ueberall sonst in diesem Projekt.
+
+    settings.json-Schema:
+        "genome_settings": {
+          "rr_ratio_by_pair": {
+            "ADA/USDT:USDT": { "30m": 2.7 }
+          }
+        }
+    """
+    by_pair = settings.get('genome_settings', {}).get('rr_ratio_by_pair', {})
+    override = by_pair.get(market, {}).get(timeframe)
+    if override is not None:
+        return float(override)
+    return float(settings.get('risk_settings', {}).get('rr_ratio', 2.0))
+
+
 def alphabet_hash(alphabet: dict) -> str:
     """
     Kurzer deterministischer Hash -- Basis fuer die Erkennung, ob sich das

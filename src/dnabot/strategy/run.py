@@ -16,7 +16,7 @@ from dnabot.utils.telegram import send_message
 from dnabot.utils.trade_manager import full_trade_cycle, get_tracker_file_path
 from dnabot.utils.guardian import guardian_decorator
 from dnabot.genome.scoring import breakeven_winrate
-from dnabot.genome.alphabet_store import resolve_alphabet
+from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
@@ -81,7 +81,11 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     risk_ov = overrides['risk']
     genome_ov = overrides['genome']
 
-    _rr_ratio = risk_ov.get('rr_ratio', global_risk.get('rr_ratio', 2.0))
+    # Prioritaet: manueller Strategie-Override (risk_overrides.rr_ratio in
+    # active_strategies) > vom Alphabet-Optimizer bestaetigte, pro Pair
+    # automatisch gefundene RR-Ratio > globaler Default. Explizite Config
+    # schlaegt automatisch Optimiertes, wie ueberall sonst in diesem Projekt.
+    _rr_ratio = risk_ov.get('rr_ratio', resolve_rr_ratio(symbol, timeframe, settings))
     # min_winrate: explizit gesetzt (pro Strategie oder global) hat Vorrang,
     # sonst aus der fuer DIESE Strategie geltenden rr_ratio abgeleitet
     # (Breakeven-Winrate + Sicherheitspuffer statt pauschaler fester Zahl).

@@ -22,7 +22,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
 from dnabot.genome.scoring import breakeven_winrate
-from dnabot.genome.alphabet_store import resolve_alphabet
+from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 from scan_and_learn import (
     HISTORY_DAYS_MAP, resolve_history_days, resolve_min_samples, get_min_samples_override,
     load_settings, load_secrets,
@@ -232,6 +232,14 @@ def main():
         # muss zum Alphabet passen, mit dem die Genome-DB fuer dieses Pair
         # befuellt wurde, sonst matchen die hier gebauten Sequenzen nichts in der DB.
         params['genome']['alphabet'] = resolve_alphabet(symbol, timeframe, settings)
+
+        # RR-Ratio ebenfalls PRO PAIR (vom Alphabet-Optimizer gemeinsam mit dem
+        # Alphabet gesucht/bestaetigt) -- veraendert die TP-Distanz und damit
+        # min_winrate muss dazu konsistent aus DERSELBEN rr_ratio abgeleitet
+        # werden, nicht aus dem globalen Default.
+        pair_rr_ratio = resolve_rr_ratio(symbol, timeframe, settings)
+        params['risk']['rr_ratio'] = pair_rr_ratio
+        params['genome']['min_winrate'] = genome_cfg.get('min_winrate') or breakeven_winrate(pair_rr_ratio)
 
         results = run_backtest(
             df=df,

@@ -34,6 +34,7 @@ TRIGGER_LOG      = os.path.join(LOG_DIR, 'auto_optimizer_trigger.log')
 SCAN_SCRIPT      = os.path.join(PROJECT_ROOT, 'scan_and_learn.py')
 PORTFOLIO_SCRIPT = os.path.join(PROJECT_ROOT, 'run_portfolio_optimizer.py')
 ALPHABET_SCRIPT  = os.path.join(PROJECT_ROOT, 'analysis', 'alphabet_optimizer.py')
+BACKTEST_SCRIPT  = os.path.join(PROJECT_ROOT, 'run_backtest.py')
 PYTHON_EXE       = os.path.join(PROJECT_ROOT, '.venv', 'bin', 'python3')
 
 
@@ -234,6 +235,29 @@ def _run_scan(opt_settings: dict) -> int:
     return result.returncode
 
 
+def _run_backtest_all(opt_settings: dict) -> int:
+    """
+    Backtestet alle (market, timeframe)-Paare aus der Genome-DB frisch
+    (run_backtest.py --all-from-db), BEVOR der Portfolio-Optimizer laeuft.
+
+    run_portfolio_optimizer.py generiert selbst KEINE Backtests -- es liest
+    ausschliesslich vorhandene artifacts/results/backtest_*.json (siehe
+    load_all_results()). Ohne diesen Schritt haette die vorangegangene
+    Alphabet-Optimierung + Discovery + Evolver (oft stundenlange Arbeit)
+    ueberhaupt keinen Einfluss auf die Portfolio-Auswahl -- die wuerde
+    einfach mit welchen backtest_*.json-Dateien auch immer zufaellig noch
+    von frueheren, moeglicherweise laengst veralteten Laeufen auf der Platte
+    liegen weiterarbeiten.
+    """
+    capital = str(opt_settings.get('start_capital', 1000))
+    risk    = str(opt_settings.get('risk_pct', 1.0))
+    cmd = [PYTHON_EXE, BACKTEST_SCRIPT, '--all-from-db', '--capital', capital, '--risk', risk]
+    _log(f"BACKTEST_START cmd={' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    _log(f"BACKTEST_EXIT rc={result.returncode}")
+    return result.returncode
+
+
 def _run_portfolio_optimizer(opt_settings: dict) -> int:
     """Führt run_portfolio_optimizer.py mit --auto-write aus."""
     capital = str(opt_settings.get('start_capital', 1000))
@@ -336,10 +360,12 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
     steps_desc = (
         "Schritt 1: Alphabet-Optimierung pro Pair\n"
         "Schritt 2: Genome Discovery (scan_and_learn)\n"
-        "Schritt 3: Portfolio-Optimierung"
+        "Schritt 3: Backtest aller Pairs\n"
+        "Schritt 4: Portfolio-Optimierung"
     ) if alphabet_enabled else (
         "Schritt 1: Genome Discovery (scan_and_learn)\n"
-        "Schritt 2: Portfolio-Optimierung"
+        "Schritt 2: Backtest aller Pairs\n"
+        "Schritt 3: Portfolio-Optimierung"
     )
     if send_tg:
         _send_telegram(
@@ -366,6 +392,14 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
         if rc_scan != 0:
             _log(f"SCAN_FAILED rc={rc_scan}")
         else:
+            # Backtest ALLER DB-Pairs frisch generieren -- run_portfolio_
+            # optimizer.py liest nur vorhandene backtest_*.json, generiert
+            # selbst keine (siehe _run_backtest_all()-Docstring). Ohne
+            # diesen Schritt haette Alphabet-Optimierung+Discovery keinerlei
+            # Einfluss auf die Portfolio-Auswahl.
+            rc_bt = _run_backtest_all(opt_settings)
+            if rc_bt != 0:
+                _log(f"BACKTEST_FAILED rc={rc_bt} -- Portfolio-Optimierung nutzt evtl. veraltete Daten")
             rc_opt = _run_portfolio_optimizer(opt_settings)
             success = (rc_opt == 0)
     except Exception as e:

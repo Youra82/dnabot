@@ -99,6 +99,14 @@ MIN_OOS_TRADES_DEFAULT = 10  # Bestaetigung erfordert zusaetzlich genug OOS-
                               # sehen: 5 OOS-Trades reichten fuer "bestaetigt").
 MAX_DD_PCT = 30.0            # weich bestraft (Gradient Richtung Grenze), nicht hart verworfen
 
+RECHECK_AFTER_DAYS_DEFAULT = 30  # Nicht-bestaetigte Pairs werden erst nach
+                             # dieser Sperrfrist erneut geprueft (Zeitstempel
+                             # in alphabet_sweep.json::checked_at). Ohne das
+                             # wuerde jeder Scheduler-Lauf ALLE nicht
+                             # bestaetigten Pairs (typischerweise die
+                             # Mehrheit) erneut voll optimieren -- fuer
+                             # immer, jede Woche wieder mehrere Stunden.
+
 HISTORY_MULTIPLIER = 2.0     # nur fuer diesen Optimizer -- laedt mehr Historie
                               # als scan_and_learn.py/run_backtest.py normalerweise
                               # nutzen (HISTORY_DAYS_MAP unveraendert, betrifft
@@ -386,6 +394,7 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
         'best_params': best.params,
         'best_is': best_is, 'best_oos': best_oos,
         'confirmed': confirmed,
+        'checked_at': datetime.now(timezone.utc).isoformat(),
     }
 
     mark = '[BESTAETIGT]' if confirmed else '[nicht bestaetigt -- Ist-Zustand behalten]'
@@ -404,7 +413,8 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
 
 
 def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int,
-              auto_apply: bool = False, skip_confirmed: bool = True):
+              auto_apply: bool = False, skip_confirmed: bool = True,
+              recheck_after_days: int = RECHECK_AFTER_DAYS_DEFAULT):
     settings = load_settings()
     secrets = load_secrets()
     accounts = secrets.get('dnabot', [])
@@ -417,21 +427,54 @@ def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: in
     os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
 
-    # Pairs mit bereits bestaetigtem (in settings.json uebernommenem) Alphabet
-    # standardmaessig ueberspringen -- "nicht zweites Mal drueberbuegeln".
-    # --recheck-confirmed erzwingt eine erneute Pruefung (z.B. nach neuen
-    # Kerzen/deutlich veraendertem Markt).
+    existing_results = {}
+    if os.path.exists(RESULTS_PATH):
+        try:
+            with open(RESULTS_PATH) as f:
+                existing_results = json.load(f)
+        except Exception:
+            existing_results = {}
+
+    # Pairs ueberspringen, wenn entweder (a) bereits bestaetigtes Alphabet
+    # (skip_confirmed) oder (b) erst kuerzlich geprueft wurde, egal mit
+    # welchem Ergebnis (recheck_after_days) -- (b) fehlte urspruenglich:
+    # nicht bestaetigte Pairs (typischerweise die MEHRHEIT, siehe BTC: nur
+    # 2/5 Timeframes bestaetigt) wurden sonst bei JEDEM Scheduler-Lauf erneut
+    # voll optimiert (mehrere Stunden pro Lauf), fuer immer -- "nicht
+    # zweites Mal drueberbuegeln" galt nur fuer den Erfolgsfall.
+    # --recheck-confirmed (skip_confirmed=False) ignoriert beide Sperren.
     if skip_confirmed:
         by_pair = settings.get('genome_settings', {}).get('alphabet_by_pair', {})
-        kept = [(m, t) for (m, t) in pairs if t not in by_pair.get(m, {})]
-        skipped = len(pairs) - len(kept)
-        if skipped:
-            print(f"  {skipped} Pair(s) mit bereits bestaetigtem Alphabet uebersprungen "
-                  f"(--recheck-confirmed zum Erzwingen).")
+        now = datetime.now(timezone.utc)
+        kept = []
+        skipped_confirmed = 0
+        skipped_recent = 0
+        for (market, timeframe) in pairs:
+            if timeframe in by_pair.get(market, {}):
+                skipped_confirmed += 1
+                continue
+            prev = existing_results.get(f"{market}|{timeframe}")
+            checked_at = prev.get('checked_at') if prev else None
+            if checked_at:
+                try:
+                    checked = datetime.fromisoformat(checked_at)
+                    if (now - checked).days < recheck_after_days:
+                        skipped_recent += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            kept.append((market, timeframe))
+        if skipped_confirmed:
+            print(f"  {skipped_confirmed} Pair(s) mit bereits bestaetigtem Alphabet uebersprungen.")
+        if skipped_recent:
+            print(f"  {skipped_recent} Pair(s) innerhalb der letzten {recheck_after_days} Tage bereits "
+                  f"geprueft (nicht bestaetigt) -- uebersprungen.")
+        if skipped_confirmed or skipped_recent:
+            print("  (--recheck-confirmed erzwingt eine erneute Pruefung aller Pairs.)")
         pairs = kept
 
     if not pairs:
-        print("\nAlle Pairs haben bereits ein bestaetigtes Alphabet -- nichts zu tun.")
+        print("\nAlle Pairs wurden bereits bestaetigt oder kuerzlich geprueft -- nichts zu tun.")
         return
 
     print(f"\n{'=' * 70}")
@@ -621,8 +664,11 @@ if __name__ == '__main__':
                         help="Bestaetigte Pairs ohne Rueckfrage in settings.json uebernehmen "
                              "(fuer nicht-interaktive Aufrufe, z.B. aus run_pipeline.sh)")
     parser.add_argument('--recheck-confirmed', action='store_true',
-                        help="Auch Pairs mit bereits bestaetigtem Alphabet neu pruefen "
-                             "(Standard: ueberspringen -- nicht zweimal drueberbuegeln)")
+                        help="Auch Pairs mit bereits bestaetigtem ODER kuerzlich (siehe "
+                             "--recheck-after-days) geprueftem Alphabet neu pruefen")
+    parser.add_argument('--recheck-after-days', type=int, default=RECHECK_AFTER_DAYS_DEFAULT,
+                        help=f"Nicht bestaetigte Pairs erst nach so vielen Tagen erneut pruefen "
+                             f"(Standard: {RECHECK_AFTER_DAYS_DEFAULT})")
     args = parser.parse_args()
 
     # Ein leerer (aber uebergebener) --symbol/--timeframe ist immer ein
@@ -646,4 +692,5 @@ if __name__ == '__main__':
     _settings = load_settings()
     _pairs = resolve_pairs(args, _settings)
     run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades,
-              auto_apply=args.auto_apply, skip_confirmed=not args.recheck_confirmed)
+              auto_apply=args.auto_apply, skip_confirmed=not args.recheck_confirmed,
+              recheck_after_days=args.recheck_after_days)

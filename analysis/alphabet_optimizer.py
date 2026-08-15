@@ -81,7 +81,10 @@ from dnabot.genome.encoder import DEFAULT_ALPHABET
 from dnabot.genome.alphabet_store import alphabet_hash
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.analysis.backtester import run_backtest
-from scan_and_learn import load_settings, load_secrets, resolve_history_days, resolve_discovery_horizon
+from scan_and_learn import (
+    load_settings, load_secrets, resolve_history_days, resolve_discovery_horizon,
+    resolve_min_samples, get_min_samples_override,
+)
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s: %(message)s', force=True)
 logger = logging.getLogger('alphabet_optimizer')
@@ -199,7 +202,7 @@ def _simulate_subset(trades: list, capital: float, risk_pct: float, leverage: in
     }
 
 
-def load_genome_cfg(settings: dict):
+def load_genome_cfg(settings: dict, timeframe: str):
     genome_cfg_raw = settings.get('genome_settings', {})
     risk_cfg_raw = settings.get('risk_settings', {})
     scan_cfg_raw = settings.get('scan_settings', {})
@@ -218,7 +221,18 @@ def load_genome_cfg(settings: dict):
         'sequence_lengths': genome_cfg_raw.get('sequence_lengths', [4, 5, 6]),
         'half_life_days': genome_cfg_raw.get('half_life_days', 180.0),
         'allowed_regimes': genome_cfg_raw.get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL']),
-        'min_samples': scan_cfg_raw.get('min_samples_to_activate', 2),
+        # Dieselbe Aufloesung wie scan_and_learn.py/run_backtest.py (Prioritaet:
+        # scan_settings.min_samples_by_timeframe[timeframe] -- z.B. per
+        # analysis/min_samples_sweep.py optimiert -- > min_samples_to_activate
+        # pauschal > MIN_SAMPLES_MAP-Default pro Timeframe). Vorher las diese
+        # Funktion nur den pauschalen min_samples_to_activate-Wert und ignorierte
+        # eine per-Timeframe-Optimierung komplett -- der Optimizer validierte
+        # damit mit einer anderen Aktivierungsschwelle als die Produktions-
+        # Pipeline tatsaechlich verwendet, was Confirmed-Pairs mit voneinander
+        # abweichenden Trade-Zahlen/PnL zwischen Optimizer und echtem Backtest
+        # erklaeren kann (siehe ETH: 113 Trades im Optimizer vs. 53 im Backtest).
+        'min_samples': resolve_min_samples(
+            timeframe, get_min_samples_override(scan_cfg_raw, timeframe)),
     }
     risk_cfg = {
         'rr_ratio': rr_ratio,
@@ -338,7 +352,7 @@ def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
 
 def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
              n_trials: int, min_is_trades: int, min_oos_trades: int):
-    genome_cfg, risk_cfg = load_genome_cfg(settings)
+    genome_cfg, risk_cfg = load_genome_cfg(settings, timeframe)
     # Dieselbe history_days wie scan_and_learn.py/run_backtest.py -- vorher
     # nutzte dieser Optimizer per HISTORY_MULTIPLIER=2.0 die doppelte Historie,
     # was Alphabet+RR-Kombinationen bestaetigte, die auf der tatsaechlich von
@@ -348,8 +362,9 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     # ueberhaupt zweimal (min_samples) aufzutreten. Eine Bestaetigung ist nur
     # aussagekraeftig, wenn sie auf denselben Daten beruht, die live/backtest
     # tatsaechlich sehen.
-    history_days = resolve_history_days(timeframe, None)
-    discovery_horizon = resolve_discovery_horizon(timeframe, None)
+    scan_cfg = settings.get('scan_settings', {})
+    history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
+    discovery_horizon = resolve_discovery_horizon(timeframe, scan_cfg.get('discovery_horizon'))
     capital = settings.get('optimization_settings', {}).get('start_capital', 1000.0)
 
     df = exchange.fetch_historical_ohlcv(market, timeframe, *_date_range(history_days))

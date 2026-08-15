@@ -116,17 +116,6 @@ RECHECK_AFTER_DAYS_DEFAULT = 30  # Nicht-bestaetigte Pairs werden erst nach
                              # Mehrheit) erneut voll optimieren -- fuer
                              # immer, jede Woche wieder mehrere Stunden.
 
-HISTORY_MULTIPLIER = 2.0     # nur fuer diesen Optimizer -- laedt mehr Historie
-                              # als scan_and_learn.py/run_backtest.py normalerweise
-                              # nutzen (HISTORY_DAYS_MAP unveraendert, betrifft
-                              # NICHT die normale Pipeline-Laufzeit). Grund: das
-                              # OOS-Fenster (30% der Historie) hatte bei hohen
-                              # Timeframes (z.B. BTC/4h: 730d -> nur 219d OOS)
-                              # oft zu wenig Trades fuer eine belastbare
-                              # Bestaetigung (min. MIN_OOS_TRADES_DEFAULT) --
-                              # das ist ein Datenmangel-Fehlalarm, kein Hinweis
-                              # dass das gefundene Alphabet schlecht waere.
-
 _EPS = 1e-9
 
 
@@ -149,7 +138,7 @@ def _date_range(history_days: int):
 
 def _study_name(market: str, timeframe: str, history_days: int) -> str:
     """history_days ist Teil des Study-Namens: aendert sich das Lookback-Fenster
-    (z.B. HISTORY_MULTIPLIER angepasst), landen neue Trials automatisch in
+    (z.B. HISTORY_DAYS_MAP angepasst), landen neue Trials automatisch in
     einer frischen Studie statt sich mit alten, auf einem anderen Datenfenster
     berechneten Trials (andere Kerzenzahl, anderer Split-Zeitpunkt) zu vermischen."""
     safe = market.replace('/', '').replace(':', '')
@@ -350,7 +339,16 @@ def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
 def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
              n_trials: int, min_is_trades: int, min_oos_trades: int):
     genome_cfg, risk_cfg = load_genome_cfg(settings)
-    history_days = int(resolve_history_days(timeframe, None) * HISTORY_MULTIPLIER)
+    # Dieselbe history_days wie scan_and_learn.py/run_backtest.py -- vorher
+    # nutzte dieser Optimizer per HISTORY_MULTIPLIER=2.0 die doppelte Historie,
+    # was Alphabet+RR-Kombinationen bestaetigte, die auf der tatsaechlich von
+    # der Produktions-Pipeline genutzten (kuerzeren) Historie oft 0 Trades
+    # ergaben -- die vielen extrem seltenen Gen-Sequenzen (siehe "Sparsity" in
+    # den Projekt-Notizen) brauchten die zusaetzlichen Jahre, um point-in-time
+    # ueberhaupt zweimal (min_samples) aufzutreten. Eine Bestaetigung ist nur
+    # aussagekraeftig, wenn sie auf denselben Daten beruht, die live/backtest
+    # tatsaechlich sehen.
+    history_days = resolve_history_days(timeframe, None)
     discovery_horizon = resolve_discovery_horizon(timeframe, None)
     capital = settings.get('optimization_settings', {}).get('start_capital', 1000.0)
 

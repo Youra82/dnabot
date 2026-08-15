@@ -33,6 +33,7 @@ sys.path.append(PROJECT_ROOT)
 from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, FINE_TF_MAP, LazyFineData
 from dnabot.genome.scoring import breakeven_winrate
+from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,6 @@ def create_chart(
     stats: dict,
     start_capital: float,
     risk_pct: float = 1.0,
-    rr_ratio: float = 2.0,
 ) -> object | None:
     try:
         import plotly.graph_objects as go
@@ -353,11 +353,15 @@ def create_chart(
         outcome     = t.get('outcome', 'LOSS')
 
         if outcome == 'WIN':
-            equity += risk_amount * rr_ratio
             wins_vis += 1
-        elif outcome == 'LOSS':
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung
+        # (pnl_pct/sl_pct) statt einer pauschalen RR-Konstante -- entspricht
+        # strukturell dem tatsaechlichen rr_ratio, mit dem der Trade generiert
+        # wurde (kann pro Pair unterschiedlich sein), siehe analysis/utils.py::
+        # simulate() fuer denselben Fix an anderer Stelle.
+        if outcome == 'LOSS':
             equity -= risk_amount
-        else:  # TIMEOUT
+        else:
             sl_pct_t = max(t.get('sl_pct', 1.0), 0.01)
             equity  += risk_amount * (t.get('pnl_pct', 0.0) / sl_pct_t)
 
@@ -560,7 +564,7 @@ def create_chart(
 
 def run_interactive_chart(settings: dict, secrets: dict):
     from dnabot.utils.exchange import Exchange
-    from scan_and_learn import resolve_history_days
+    from scan_and_learn import resolve_history_days, resolve_min_samples, get_min_samples_override
 
     print("\n" + "=" * 60)
     print("  INTERAKTIVE CHARTS")
@@ -598,18 +602,6 @@ def run_interactive_chart(settings: dict, secrets: dict):
     scan_cfg   = settings.get('scan_settings', {})
     genome_cfg = settings.get('genome_settings', {})
     risk_cfg   = settings.get('risk_settings', {})
-    _rr_ratio  = risk_cfg.get('rr_ratio', 2.0)
-    params = {
-        'genome': {
-            'min_score':        genome_cfg.get('min_score', 0.08),
-            # explizit gesetzt hat Vorrang, sonst aus rr_ratio abgeleitet
-            'min_winrate':      genome_cfg.get('min_winrate') or breakeven_winrate(_rr_ratio),
-            'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
-            'min_samples':      scan_cfg.get('min_samples_to_activate', 20),
-            'half_life_days':   genome_cfg.get('half_life_days', 180.0),
-        },
-        'risk': {'rr_ratio': _rr_ratio},
-    }
 
     generated = []
 
@@ -632,6 +624,24 @@ def run_interactive_chart(settings: dict, secrets: dict):
 
         fine_tf = FINE_TF_MAP.get(timeframe)
         fine_df = LazyFineData(symbol, fine_tf) if fine_tf else None
+
+        # Alphabet/RR-Ratio/min_samples PRO PAIR aufloesen (wie run_backtest.py) --
+        # ohne das faellt der Chart-Backtest still auf DEFAULT_ALPHABET/rr=2.0
+        # zurueck, selbst wenn fuer dieses Pair ein vom Alphabet-Optimizer
+        # bestaetigtes Alphabet/RR in settings.json steht.
+        pair_rr_ratio = resolve_rr_ratio(symbol, timeframe, settings)
+        params = {
+            'genome': {
+                'min_score':        genome_cfg.get('min_score', 0.08),
+                'min_winrate':      genome_cfg.get('min_winrate') or breakeven_winrate(pair_rr_ratio),
+                'sequence_lengths': genome_cfg.get('sequence_lengths', [4, 5, 6]),
+                'min_samples':      resolve_min_samples(
+                                        timeframe, get_min_samples_override(scan_cfg, timeframe)),
+                'half_life_days':   genome_cfg.get('half_life_days', 180.0),
+                'alphabet':         resolve_alphabet(symbol, timeframe, settings),
+            },
+            'risk': {'rr_ratio': pair_rr_ratio},
+        }
 
         # Backtest auf vollem DataFrame
         db = GenomeDB(DB_PATH)
@@ -675,7 +685,6 @@ def run_interactive_chart(settings: dict, secrets: dict):
         fig = create_chart(
             symbol, timeframe, df_chart, trades_chart, stats, start_capital,
             risk_pct=effective_risk,
-            rr_ratio=risk_cfg.get('rr_ratio', 2.0),
         )
         if fig is None:
             continue

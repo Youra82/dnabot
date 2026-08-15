@@ -21,7 +21,6 @@ C   = '\033[0;36m'
 B   = '\033[1;37m'
 NC  = '\033[0m'
 
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 
@@ -102,9 +101,10 @@ def simulate_portfolio(pair_results, capital, risk_pct):
         outcome     = t['outcome']
 
         if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
             wins += 1
-        elif outcome == 'LOSS':
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
+        if outcome == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
@@ -336,9 +336,8 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         sl_pct      = max(t['sl_pct'], 0.01)
         risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         if t['outcome'] == 'WIN':
-            equity += risk_amount * RR_RATIO
-            wins   += 1
-        elif t['outcome'] == 'LOSS':
+            wins += 1
+        if t['outcome'] == 'LOSS':
             equity -= risk_amount
         else:
             equity += risk_amount * (t['pnl_pct'] / sl_pct)
@@ -367,9 +366,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
             slp = max(t.get('sl_pct', 1.0), 0.01)
             ra  = min(peq * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (slp / 100.0))
             out = t.get('outcome', 'LOSS')
-            if out == 'WIN':
-                peq += ra * RR_RATIO
-            elif out == 'LOSS':
+            if out == 'LOSS':
                 peq -= ra
             else:
                 peq += ra * (t.get('pnl_pct', 0.0) / slp)
@@ -518,9 +515,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
         equity_before = equity
         sl_pct        = max(t['sl_pct'], 0.01)
         risk_amount   = min(equity_before * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
-        if t['outcome'] == 'WIN':
-            pnl = risk_amount * RR_RATIO
-        elif t['outcome'] == 'LOSS':
+        if t['outcome'] == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)

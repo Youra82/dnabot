@@ -23,6 +23,7 @@ from dnabot.genome.database import GenomeDB
 from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
+from dnabot.utils.strategy_overrides import find_strategy_overrides
 from scan_and_learn import (
     HISTORY_DAYS_MAP, resolve_history_days, resolve_min_samples, get_min_samples_override,
     load_settings, load_secrets,
@@ -240,6 +241,20 @@ def main():
         pair_rr_ratio = resolve_rr_ratio(symbol, timeframe, settings)
         params['risk']['rr_ratio'] = pair_rr_ratio
         params['genome']['min_winrate'] = genome_cfg.get('min_winrate') or breakeven_winrate(pair_rr_ratio)
+
+        # Kelly-Sizing-Config PRO PAIR (dieselbe Aufloesung wie live in
+        # strategy/run.py::load_config() -- sonst validiert der Backtest eine
+        # Positionsgroesse, die live gar nicht zustande kommt, sobald
+        # use_kelly_sizing fuer ein Pair per risk_overrides aktiviert ist).
+        pair_risk_ov = find_strategy_overrides(symbol, timeframe, settings)['risk']
+        params['risk']['use_kelly_sizing'] = pair_risk_ov.get(
+            'use_kelly_sizing', risk_cfg.get('use_kelly_sizing', False))
+        params['risk']['kelly_min_mult'] = pair_risk_ov.get(
+            'kelly_min_mult', risk_cfg.get('kelly_min_mult', 0.5))
+        params['risk']['kelly_max_mult'] = pair_risk_ov.get(
+            'kelly_max_mult', risk_cfg.get('kelly_max_mult', 3.0))
+        params['risk']['kelly_dampening'] = pair_risk_ov.get(
+            'kelly_dampening', risk_cfg.get('kelly_dampening', 0.3))
 
         results = run_backtest(
             df=df,

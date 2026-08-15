@@ -24,7 +24,6 @@ import argparse
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR  = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 G  = '\033[0;32m'
@@ -61,9 +60,9 @@ def simulate_path(trade_outcomes, capital, risk_pct):
         sl_pct      = max(sl_pct, 0.01)
         risk_amount = min(equity * (risk_pct / 100.0),
                           MAX_NOTIONAL_USDT * (sl_pct / 100.0))
-        if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
-        elif outcome == 'LOSS':
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
+        if outcome == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (pnl_pct / sl_pct)

@@ -17,6 +17,7 @@ from dnabot.utils.trade_manager import full_trade_cycle, get_tracker_file_path
 from dnabot.utils.guardian import guardian_decorator
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
+from dnabot.utils.strategy_overrides import find_strategy_overrides
 
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
@@ -48,25 +49,6 @@ def setup_logging(symbol: str, timeframe: str) -> logging.Logger:
     return logger
 
 
-def _find_strategy_overrides(symbol: str, timeframe: str, settings: dict) -> dict:
-    """
-    Sucht per-Strategy-Overrides in active_strategies.
-    Felder 'risk_overrides' und 'genome_overrides' überschreiben globale Werte.
-
-    Beispiel in settings.json:
-        { "symbol": "ETH/USDT:USDT", "timeframe": "1h",
-          "risk_overrides":   { "leverage": 3, "risk_per_entry_pct": 0.5 },
-          "genome_overrides": { "min_score": 0.12 } }
-    """
-    for strategy in settings.get('live_trading_settings', {}).get('active_strategies', []):
-        if strategy.get('symbol') == symbol and strategy.get('timeframe') == timeframe:
-            return {
-                'risk':   strategy.get('risk_overrides', {}),
-                'genome': strategy.get('genome_overrides', {}),
-            }
-    return {'risk': {}, 'genome': {}}
-
-
 def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     """
     Baut die Runtime-Config aus settings.json und Symbol/Timeframe.
@@ -77,7 +59,7 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     """
     global_risk = settings.get('risk_settings', {})
     global_genome = settings.get('genome_settings', {})
-    overrides = _find_strategy_overrides(symbol, timeframe, settings)
+    overrides = find_strategy_overrides(symbol, timeframe, settings)
     risk_ov = overrides['risk']
     genome_ov = overrides['genome']
 

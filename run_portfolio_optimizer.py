@@ -34,7 +34,6 @@ C   = '\033[0;36m'
 B   = '\033[1;37m'
 NC  = '\033[0m'
 
-RR_RATIO          = 2.0
 N_WORKERS         = min(os.cpu_count() or 4, 8)
 MAX_NOTIONAL_USDT = 200_000.0
 
@@ -147,6 +146,10 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
                 'outcome':   t.get('outcome', 'LOSS'),
                 'pnl_pct':   t.get('pnl_pct', 0.0),
                 'sl_pct':    t.get('sl_pct', 1.0),
+                # Von backtester.py pro Trade vorberechnet (1.0 wenn
+                # use_kelly_sizing fuer dieses Pair aus ist) -- siehe
+                # backtester.py::run_backtest() fuer die Herleitung.
+                'kelly_multiplier': t.get('kelly_multiplier', 1.0),
                 'entry_time': str(t.get('entry_time', '')),
             })
 
@@ -159,16 +162,23 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
 
     for t in all_trades:
         sl_pct      = max(t['sl_pct'], 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount = min(equity * (risk_pct / 100.0) * t['kelly_multiplier'],
+                           MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t['outcome']
 
-        if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
-            wins += 1
-        elif outcome == 'LOSS':
+        # WIN und TIMEOUT nutzen dieselbe Formel: die tatsaechlich im Backtest
+        # simulierte Bewegung (pnl_pct/sl_pct), NICHT eine pauschale RR-Annahme.
+        # Fuer WIN-Trades entspricht das strukturell exakt dem Pair-eigenen
+        # rr_ratio (TP liegt bei entry + rr_ratio x SL-Distanz), das je nach
+        # Pair unterschiedlich ist (analysis/alphabet_optimizer.py) -- eine
+        # fixe Konstante wuerde das fuer jedes Pair mit abweichendem RR falsch
+        # bewerten.
+        if outcome == 'LOSS':
             pnl = -risk_amount
-        else:  # TIMEOUT
+        else:  # WIN oder TIMEOUT
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
+        if outcome == 'WIN':
+            wins += 1
 
         equity += pnl
         if equity > peak:
@@ -364,6 +374,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
                 'outcome':    t.get('outcome', 'LOSS'),
                 'pnl_pct':    t.get('pnl_pct', 0.0),
                 'sl_pct':     t.get('sl_pct', 1.0),
+                'kelly_multiplier': t.get('kelly_multiplier', 1.0),
                 'entry_time': str(t.get('entry_time', '')),
             })
     all_trades.sort(key=lambda t: t['entry_time'])
@@ -381,15 +392,17 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
 
     for t in all_trades:
         sl_pct      = max(t['sl_pct'], 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount = min(equity * (risk_pct / 100.0) * t['kelly_multiplier'],
+                           MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t['outcome']
-        if outcome == 'WIN':
-            equity += risk_amount * RR_RATIO
-            wins   += 1
-        elif outcome == 'LOSS':
+        # Siehe simulate_portfolio(): WIN/TIMEOUT identisch behandelt (echte
+        # pnl_pct/sl_pct-Bewegung), keine pauschale RR-Konstante mehr.
+        if outcome == 'LOSS':
             equity -= risk_amount
         else:
             equity += risk_amount * (t['pnl_pct'] / sl_pct)
+        if outcome == 'WIN':
+            wins += 1
         if equity > peak:
             peak = equity
         eq_times.append(t['entry_time'])
@@ -417,11 +430,10 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         pvals  = [peq]
         for t in pair_trades:
             slp = max(t.get('sl_pct', 1.0), 0.01)
-            ra  = min(peq * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (slp / 100.0))
+            kmult = t.get('kelly_multiplier', 1.0)
+            ra  = min(peq * (risk_pct / 100.0) * kmult, MAX_NOTIONAL_USDT * (slp / 100.0))
             out = t.get('outcome', 'LOSS')
-            if out == 'WIN':
-                peq += ra * RR_RATIO
-            elif out == 'LOSS':
+            if out == 'LOSS':
                 peq -= ra
             else:
                 peq += ra * (t.get('pnl_pct', 0.0) / slp)
@@ -580,6 +592,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
                 'outcome':    t.get('outcome', 'LOSS'),
                 'pnl_pct':    t.get('pnl_pct', 0.0),
                 'sl_pct':     t.get('sl_pct', 1.0),
+                'kelly_multiplier': t.get('kelly_multiplier', 1.0),
                 'entry_time': str(t.get('entry_time', '')),
                 'exit_time':  str(t.get('exit_time', '')),
             })
@@ -591,11 +604,11 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     for i, t in enumerate(all_trades):
         equity_before = equity
         sl_pct        = max(t['sl_pct'], 0.01)
-        risk_amount   = min(equity_before * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount   = min(equity_before * (risk_pct / 100.0) * t['kelly_multiplier'],
+                             MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome       = t['outcome']
-        if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
-        elif outcome == 'LOSS':
+        # Siehe simulate_portfolio(): WIN/TIMEOUT identisch (echte pnl_pct/sl_pct-Bewegung).
+        if outcome == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
@@ -703,10 +716,27 @@ def write_to_settings(selected: list, risk_pct: float = None):
         print(f"{R}Fehler beim Lesen von settings.json: {e}{NC}")
         return False
 
-    new_strategies = [
-        {"symbol": pr['market'], "timeframe": pr['timeframe'], "active": True}
-        for pr in selected
-    ]
+    # Bestehende manuelle Overrides (z.B. use_kelly_sizing, individuelles
+    # leverage) pro (symbol, timeframe) erhalten -- vorher wurde
+    # active_strategies hier komplett durch eine frische Liste ohne
+    # risk_overrides/genome_overrides ersetzt, wodurch jede manuelle
+    # Anpassung bei jedem automatischen Optimizer-Lauf (--auto-write, laeuft
+    # im Scheduler) stillschweigend verloren ging.
+    existing_strategies = settings.get('live_trading_settings', {}).get('active_strategies', [])
+    existing_by_pair = {
+        (s.get('symbol'), s.get('timeframe')): s
+        for s in existing_strategies if isinstance(s, dict)
+    }
+
+    new_strategies = []
+    for pr in selected:
+        old = existing_by_pair.get((pr['market'], pr['timeframe']), {})
+        entry = {"symbol": pr['market'], "timeframe": pr['timeframe'], "active": True}
+        if old.get('risk_overrides'):
+            entry['risk_overrides'] = old['risk_overrides']
+        if old.get('genome_overrides'):
+            entry['genome_overrides'] = old['genome_overrides']
+        new_strategies.append(entry)
     settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
 
     if risk_pct is not None:

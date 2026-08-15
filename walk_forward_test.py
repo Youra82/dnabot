@@ -34,7 +34,6 @@ OUTPUT_PATH      = '/tmp/dnabot_walkforward.png'
 OUTPUT_PATH_DOCS = os.path.join(PROJECT_ROOT, 'docs', 'walkforward_latest.png')
 
 LOOKBACK_WINDOWS  = [1, 2, 4, 8, 12, 26]   # Wochen
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 G  = '\033[0;32m'
@@ -158,9 +157,10 @@ def simulate_trades(trades, equity, risk_pct, leverage=1):
         risk_amount  = min(equity * (risk_pct / 100.0), leverage_cap, MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
             wins += 1
-        elif outcome == 'LOSS':
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
+        if outcome == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)

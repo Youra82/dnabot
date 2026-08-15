@@ -35,7 +35,6 @@ RESULTS_DIR   = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
 DOCS_DIR      = os.path.join(PROJECT_ROOT, 'docs')
 
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 G  = '\033[0;32m'
@@ -158,9 +157,10 @@ def _step_simulate(trades_sorted, equity_start, risk_pct):
         risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
-            equity += risk_amount * RR_RATIO
-            wins   += 1
-        elif outcome == 'LOSS':
+            wins += 1
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
+        if outcome == 'LOSS':
             equity -= risk_amount
         else:
             equity += risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)

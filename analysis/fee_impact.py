@@ -25,7 +25,6 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 # Getestete Gebühren pro Seite (0.06% = Bitget Taker)
@@ -82,8 +81,10 @@ def simulate_with_fees(trades, capital, risk_pct, fee_per_side_pct, slippage_pct
         # Gebühren: Einstieg + Ausstieg (beide Seiten)
         fee_cost = position_size * (fee_per_side_pct / 100.0) * 2.0
 
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
         if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO - fee_cost
+            pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct) - fee_cost
             wins += 1
         elif outcome == 'LOSS':
             # Slippage verschlechtert den SL-Exit zusätzlich

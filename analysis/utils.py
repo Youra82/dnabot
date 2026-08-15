@@ -9,7 +9,6 @@ DB_PATH       = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
 DOCS_DIR      = os.path.join(PROJECT_ROOT, 'docs')
 
-RR_RATIO          = 2.0
 MAX_NOTIONAL_USDT = 200_000.0
 
 G  = '\033[0;32m'
@@ -142,9 +141,21 @@ def save_send(fig, name, caption='', no_telegram=False):
 
 
 def simulate(trades, capital, risk_pct, rr=None, leverage=1):
-    """Vollständige Portfolio-Simulation."""
-    if rr is None:
-        rr = RR_RATIO
+    """
+    Vollständige Portfolio-Simulation.
+
+    rr=None (Standard): WIN-Trades nutzen wie TIMEOUT die tatsächlich im
+    Backtest simulierte Bewegung (pnl_pct/sl_pct) -- entspricht strukturell
+    exakt dem rr_ratio, mit dem der jeweilige Trade generiert wurde (kann pro
+    Pair unterschiedlich sein, siehe genome_settings.rr_ratio_by_pair). Eine
+    pauschale Konstante würde das für jedes Pair mit abweichendem RR falsch
+    bewerten (siehe run_portfolio_optimizer.py-Fix vom selben Tag).
+
+    rr=<Wert>: bewusster What-if-Override für Sensitivitäts-/Vergleichs-
+    analysen (z.B. sensitivity.py, kelly_sizing.py) -- simuliert eine
+    hypothetische, pauschal andere RR-Auszahlung statt der echten. Das ist
+    kein Bug, sondern der Zweck dieser Skripte.
+    """
     equity = capital
     peak   = equity
     max_dd = 0.0
@@ -155,9 +166,11 @@ def simulate(trades, capital, risk_pct, rr=None, leverage=1):
         risk_amount  = min(equity * (risk_pct / 100.0), leverage_cap, MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
         if outcome == 'WIN':
-            pnl = risk_amount * rr; wins += 1
-        elif outcome == 'LOSS':
+            wins += 1
+        if outcome == 'LOSS':
             pnl = -risk_amount
+        elif rr is not None:
+            pnl = risk_amount * rr
         else:
             pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
         equity += pnl

@@ -24,46 +24,11 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 from dnabot.utils.telegram import send_message, send_photo
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
+from dnabot.genome.scoring import kelly_risk_pct as _kelly_risk_pct
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
 
 MIN_NOTIONAL_USDT = 5.0
 MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
-
-
-def _kelly_risk_pct(winrate: float, rr_ratio: float, threshold_winrate: float,
-                     min_mult: float, max_mult: float, fallback_risk_pct: float,
-                     dampening: float = 0.3) -> float:
-    """
-    Kelly-Positionsgroesse als MULTIPLIKATOR auf fallback_risk_pct (Edge-
-    Realization: "Extraction" -- Kapitaleinsatz proportional zur gemessenen
-    Kantenstaerke, statt pauschal gleich fuer jedes Signal).
-
-    Normiert auf die Kelly-Fraction GENAU an der Aktivierungsschwelle
-    (threshold_winrate): ein Genome das gerade so aktiviert bekommt
-    Multiplikator 1.0 (= unveraendert fallback_risk_pct).
-
-    Rohes Kelly waechst bei typischen rr_ratio-Werten (z.B. 2.0) so steil mit
-    der Winrate, dass der reine Verhaeltnis-Multiplikator (kelly/kelly_at_
-    threshold) schon knapp oberhalb der Schwelle jeden vernuenftigen Deckel
-    saettigt (z.B. WR=50% bei Schwelle=38.3% ergibt bereits ~3.4x) -- das gilt
-    unabhaengig davon, ob man das Ergebnis als absolute Risk% oder als
-    Multiplikator ausdrueckt, es liegt an der Steilheit der Kelly-Formel
-    selbst. `dampening` (0-1) daempft deshalb, wie stark der Multiplikator
-    oberhalb von 1.0 mitwaechst: multiplier = 1 + (roh_multiplier - 1) *
-    dampening. Bei dampening=0.3 verteilt sich der typische 40-85%-Winrate-
-    Bereich sanft zwischen 1x und max_mult, statt fast ueberall am Deckel zu
-    haengen.
-    """
-    if rr_ratio <= 0:
-        return fallback_risk_pct
-    kelly = winrate - (1.0 - winrate) / rr_ratio
-    kelly_at_threshold = threshold_winrate - (1.0 - threshold_winrate) / rr_ratio
-    if kelly_at_threshold <= 0:
-        return fallback_risk_pct
-    raw_multiplier = kelly / kelly_at_threshold
-    multiplier = 1.0 + (raw_multiplier - 1.0) * dampening
-    multiplier = max(min_mult, min(multiplier, max_mult))
-    return fallback_risk_pct * multiplier
 
 
 FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
@@ -870,6 +835,12 @@ def place_entry_orders(
         "entry_price": actual_entry,
         "sl_price": sl_price,
         "tp_price": tp_price,
+        # Regime zum Signal-Zeitpunkt (von genome_logic.py gesetzt) -- wird beim
+        # Trade-Abschluss ans Self-Learning zurueckgegeben, siehe
+        # self_learn_from_closed_trade(). Ohne das landet JEDER Live-Trade in der
+        # NEUTRAL-Statistikspalte, egal in welchem Regime er tatsaechlich lief,
+        # waehrend discovery.py offline korrekt das tatsaechliche Regime trackt.
+        "regime": genome_signal.get('regime', 'NEUTRAL'),
     }
     _write_tracker(tracker_path, tracker)
 
@@ -947,6 +918,10 @@ def self_learn_from_closed_trade(
         seq_length=active_genome['seq_length'],
         outcome=outcome,
         actual_move_pct=actual_move_pct,
+        # Regime vom Signal-Zeitpunkt (in place_entry_orders() gespeichert) --
+        # ohne das faellt update_genome_with_trade_result() auf 'NEUTRAL'
+        # zurueck, unabhaengig vom tatsaechlichen Regime des Trades.
+        regime=active_genome.get('regime', 'NEUTRAL'),
     )
 
     # Genome aus Tracker löschen (Trade abgeschlossen)

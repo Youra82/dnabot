@@ -41,3 +41,50 @@ def compute_score(winrate: float, avg_move_pct: float, effective_occ: float) -> 
     if effective_occ < 0.5:
         return 0.0
     return winrate * avg_move_pct * math.log(1.0 + effective_occ)
+
+
+def kelly_multiplier(winrate: float, rr_ratio: float, threshold_winrate: float,
+                      min_mult: float, max_mult: float, dampening: float = 0.3) -> float:
+    """
+    Kelly-Positionsgroesse als MULTIPLIKATOR (Edge-Realization: Kapitaleinsatz
+    proportional zur gemessenen Kantenstaerke, statt pauschal gleich fuer
+    jedes Signal). Normiert auf die Kelly-Fraction GENAU an der Aktivierungs-
+    schwelle (threshold_winrate): ein Genome das gerade so aktiviert bekommt
+    Multiplikator 1.0.
+
+    Rohes Kelly waechst bei typischen rr_ratio-Werten (z.B. 2.0) so steil mit
+    der Winrate, dass der reine Verhaeltnis-Multiplikator (kelly/kelly_at_
+    threshold) schon knapp oberhalb der Schwelle jeden vernuenftigen Deckel
+    saettigt (z.B. WR=50% bei Schwelle=38.3% ergibt bereits ~3.4x) -- das gilt
+    unabhaengig davon, ob man das Ergebnis als absolute Risk% oder als
+    Multiplikator ausdrueckt, es liegt an der Steilheit der Kelly-Formel
+    selbst. `dampening` (0-1) daempft deshalb, wie stark der Multiplikator
+    oberhalb von 1.0 mitwaechst: multiplier = 1 + (roh_multiplier - 1) *
+    dampening. Bei dampening=0.3 verteilt sich der typische 40-85%-Winrate-
+    Bereich sanft zwischen 1x und max_mult, statt fast ueberall am Deckel zu
+    haengen.
+
+    Zentralisiert hier (statt getrennt in trade_manager.py/backtester.py
+    implementiert), damit Live-Sizing und Backtest-Simulation exakt dieselbe
+    Formel verwenden -- sonst validiert der Backtest eine Positionsgroesse,
+    die live gar nicht zustande kommt.
+    """
+    if rr_ratio <= 0:
+        return 1.0
+    kelly = winrate - (1.0 - winrate) / rr_ratio
+    kelly_at_threshold = threshold_winrate - (1.0 - threshold_winrate) / rr_ratio
+    if kelly_at_threshold <= 0:
+        return 1.0
+    raw_multiplier = kelly / kelly_at_threshold
+    multiplier = 1.0 + (raw_multiplier - 1.0) * dampening
+    return max(min_mult, min(multiplier, max_mult))
+
+
+def kelly_risk_pct(winrate: float, rr_ratio: float, threshold_winrate: float,
+                    min_mult: float, max_mult: float, fallback_risk_pct: float,
+                    dampening: float = 0.3) -> float:
+    """kelly_multiplier() als absolutes Risk% ausgedrueckt (fallback_risk_pct x Multiplikator)."""
+    if rr_ratio <= 0:
+        return fallback_risk_pct
+    mult = kelly_multiplier(winrate, rr_ratio, threshold_winrate, min_mult, max_mult, dampening)
+    return fallback_risk_pct * mult

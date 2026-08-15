@@ -24,6 +24,7 @@ from dnabot.genome.database import GenomeDB
 from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
 from dnabot.genome.regime import detect_regime, is_regime_allowed
 from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
+from dnabot.genome.scoring import kelly_multiplier
 
 
 def _compute_cvd_slope(df: pd.DataFrame, slope_period: int = 5) -> pd.Series:
@@ -379,6 +380,18 @@ def run_backtest(
     if trailing_callback_pct is not None:
         trailing_callback_pct = float(trailing_callback_pct) / 100.0
 
+    # Kelly-Sizing (optional, standardmaessig aus): dieselbe Formel wie live
+    # in trade_manager.py::place_entry_orders() (genome/scoring.py::
+    # kelly_multiplier(), geteilt statt getrennt implementiert) -- sonst
+    # validiert dieser Backtest eine Positionsgroesse, die live gar nicht
+    # zustande kommt, sobald use_kelly_sizing fuer dieses Pair aktiv ist.
+    risk_cfg_bt = params.get('risk', {})
+    use_kelly_sizing = bool(risk_cfg_bt.get('use_kelly_sizing', False))
+    kelly_min_mult = risk_cfg_bt.get('kelly_min_mult', 0.5)
+    kelly_max_mult = risk_cfg_bt.get('kelly_max_mult', 3.0)
+    kelly_dampening = risk_cfg_bt.get('kelly_dampening', 0.3)
+    kelly_threshold_winrate = params.get('genome', {}).get('min_winrate', 0.45)
+
     # Tagestrend-Filter (optional, standardmaessig aus -- siehe daily_bias.py,
     # dieselbe Funktion wie live in genome_logic.py, damit Backtest und Live
     # garantiert dasselbe Signal blocken/durchlassen): laufender Bias der
@@ -448,8 +461,26 @@ def run_backtest(
         trade = simulate_trade(signal, df, i, max_hold_candles,
                                trailing_callback_pct=trailing_callback_pct, fine_df=fine_df)
 
+        # Kelly-Multiplikator fuer DIESEN Trade, aus der point-in-time
+        # Winrate des Signals (trade['genome_winrate'], via get_genome_as_of()
+        # -- kein Hindsight-Bias) und dem fuer dieses Pair verwendeten
+        # rr_ratio. 1.0 wenn use_kelly_sizing aus ist -- unveraendertes altes
+        # Verhalten.
+        if use_kelly_sizing:
+            trade_kelly_mult = kelly_multiplier(
+                winrate=trade['genome_winrate'],
+                rr_ratio=signal['rr_ratio'],
+                threshold_winrate=kelly_threshold_winrate,
+                min_mult=kelly_min_mult,
+                max_mult=kelly_max_mult,
+                dampening=kelly_dampening,
+            )
+        else:
+            trade_kelly_mult = 1.0
+        trade['kelly_multiplier'] = trade_kelly_mult
+
         # Equity berechnen (Positionsgröße auf equity × leverage deckeln)
-        risk_amount = equity * (risk_per_trade_pct / 100.0)
+        risk_amount = equity * (risk_per_trade_pct / 100.0) * trade_kelly_mult
         sl_pct = trade['sl_pct']
         if sl_pct > 0:
             position_size = risk_amount / (sl_pct / 100.0)

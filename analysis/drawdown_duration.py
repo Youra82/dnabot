@@ -38,9 +38,9 @@ def find_drawdown_periods(trades, capital, risk_pct):
         sl_pct      = max(t.get('sl_pct', 1.0), 0.01)
         risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t.get('outcome', 'LOSS')
-        if outcome == 'WIN':
-            pnl = risk_amount * RR_RATIO
-        elif outcome == 'LOSS':
+        # WIN nutzt wie TIMEOUT die tatsaechlich simulierte Bewegung statt
+        # einer pauschalen RR-Konstante (siehe analysis/utils.py::simulate()).
+        if outcome == 'LOSS':
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)

@@ -36,6 +36,18 @@ NC  = '\033[0m'
 
 N_WORKERS         = min(os.cpu_count() or 4, 8)
 MAX_NOTIONAL_USDT = 200_000.0
+MIN_TRADES        = 10  # unter dieser Trade-Zahl im Lookback-Fenster (siehe
+                         # backtest_lookback_weeks) ist Calmar nicht belastbar --
+                         # bei 0% Drawdown faellt _calmar() auf die rohe PnL%
+                         # zurueck, ein Kandidat mit z.B. nur 1-2 Gewinn-Trades
+                         # sieht dadurch "unendlich gut" aus, ohne irgendeinen
+                         # echten Beweis fuer einen Edge zu liefern. Derselbe
+                         # Schwellwert wie analysis/alphabet_optimizer.py::
+                         # MIN_OOS_TRADES_DEFAULT (dort aus demselben Grund
+                         # eingefuehrt, nachdem 5 OOS-Trades BTC/USDT 4h faelschlich
+                         # "bestaetigt" hatten) -- beide Stellen entscheiden
+                         # letztlich ueber echtes Kapital, sollen denselben
+                         # Beweis-Standard anlegen.
 
 
 def _get_telegram_credentials():
@@ -226,11 +238,12 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     for r in candidates:
         r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
 
-    # Besten Kandidaten pro Coin vorauswählen (höchster Calmar, MaxDD-konform)
+    # Besten Kandidaten pro Coin vorauswählen (höchster Calmar, MaxDD-konform,
+    # genug Trades fuer eine belastbare Aussage)
     coin_best: dict = {}
     for r in candidates:
         st = r['filtered_stats']
-        if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit:
+        if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit or st['n_trades'] < MIN_TRADES:
             continue
         coin  = r['coin']
         score = _calmar(st)

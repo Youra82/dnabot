@@ -36,6 +36,7 @@ NC  = '\033[0m'
 
 N_WORKERS         = min(os.cpu_count() or 4, 8)
 MAX_NOTIONAL_USDT = 200_000.0
+FEE_PCT_PER_SIDE  = 0.06   # Bitget-Taker, wie walk_forward_test.py/analysis/fee_impact.py
 
 # Mindest-Trade-Zahl im Lookback-Fenster, damit ein Kandidat ueberhaupt als
 # Portfolio-Kandidat zaehlt -- unter dieser Zahl ist Calmar nicht belastbar
@@ -160,13 +161,20 @@ def load_all_results(start_date=None, end_date=None):
     return results
 
 
-def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> dict:
+def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
+                        fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
     """
     Simuliert ein Portfolio mit GEMEINSAMEM Kapital-Pool.
 
     Alle Trades aller Pairs werden chronologisch zusammengeführt.
     Jeder Trade riskiert risk_pct% des aktuellen Equity (Kompoundierung).
     Das ermöglicht höhere PnL als Einzel-Pairs durch mehr Trades.
+
+    fee_pct: Bitget-Taker-Gebuehr PRO SEITE in % (faellt fuer jeden Trade
+    Ein+Ausstieg an) -- OHNE das hier war die Live-Auswahl fee-blind, waehrend
+    walk_forward_test.py (das die Persistenz-Regel validiert hat) Gebuehren
+    schon einrechnet. Dieselbe Inkonsistenz, die frueher zwischen Live und
+    Backtest bestand (siehe Projekt-Notizen), jetzt fuer Gebuehren nachgezogen.
     """
     if not pair_results:
         return {
@@ -215,6 +223,9 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
             pnl = -risk_amount
         else:  # WIN oder TIMEOUT
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
+        if fee_pct:
+            position_size = risk_amount / (sl_pct / 100.0)
+            pnl -= position_size * (fee_pct / 100.0) * 2.0  # Einstieg + Ausstieg
         if outcome == 'WIN':
             wins += 1
 
@@ -238,11 +249,12 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float) -> d
     }
 
 
-def compute_filtered_stats(trades: list, capital: float, risk_pct: float) -> dict:
+def compute_filtered_stats(trades: list, capital: float, risk_pct: float,
+                            fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
     """Berechnet Einzel-Statistiken aus gefilterten Trades (shared-capital Modell)."""
     return simulate_portfolio(
         [{'market': '', 'timeframe': '', 'trades': trades}],
-        capital, risk_pct
+        capital, risk_pct, fee_pct=fee_pct
     )
 
 
@@ -256,7 +268,8 @@ def _calmar(metrics: dict) -> float:
 def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
                         max_dd_limit: float, lookback_weeks=None,
                         require_persistence: bool = False,
-                        prev_results_by_pair: dict = None) -> tuple:
+                        prev_results_by_pair: dict = None,
+                        fee_pct: float = FEE_PCT_PER_SIDE) -> tuple:
     """
     Greedy-Algorithmus mit Calmar-Ratio-Score (wie jaegerbot).
     Kandidaten pro Iteration werden parallel via ThreadPoolExecutor bewertet.
@@ -283,7 +296,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
 
     # Einzel-Stats für alle Kandidaten berechnen
     for r in candidates:
-        r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
+        r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct, fee_pct=fee_pct)
 
     # Besten Kandidaten pro Coin vorauswählen (höchster Calmar, MaxDD-konform,
     # genug Trades fuer eine belastbare Aussage)
@@ -296,7 +309,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
             prev = prev_results_by_pair.get((r['market'], r['timeframe']))
             if not prev or len(prev['trades']) < min_trades:
                 continue
-            prev_stats = compute_filtered_stats(prev['trades'], capital, risk_pct)
+            prev_stats = compute_filtered_stats(prev['trades'], capital, risk_pct, fee_pct=fee_pct)
             if prev_stats['total_pnl_pct'] <= 0:
                 continue
         coin  = r['coin']
@@ -312,7 +325,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
 
     # Star-Spieler: Einzelstrategie mit höchstem Calmar
     best_team    = [eligible[0]]
-    best_metrics = simulate_portfolio(best_team, capital, risk_pct)
+    best_metrics = simulate_portfolio(best_team, capital, risk_pct, fee_pct=fee_pct)
     best_score   = _calmar(best_metrics)
     candidate_pool = eligible[1:]
 
@@ -330,7 +343,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
         current_team = list(best_team)
 
         def _eval(cand, _team=current_team):
-            m = simulate_portfolio(_team + [cand], capital, risk_pct)
+            m = simulate_portfolio(_team + [cand], capital, risk_pct, fee_pct=fee_pct)
             if m['max_dd'] <= max_dd_limit:
                 return cand, m, _calmar(m)
             return cand, None, -1.0
@@ -403,7 +416,8 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
 
 def generate_portfolio_equity_chart(selected: list, pm: dict,
                                      start_date: str, end_date: str,
-                                     capital: float, risk_pct: float):
+                                     capital: float, risk_pct: float,
+                                     fee_pct: float = FEE_PCT_PER_SIDE):
     """
     Erstellt einen kombinierten Portfolio-Equity-Chart im gleichen Stil wie Option 5.
     make_subplots(secondary_y=True):
@@ -468,6 +482,9 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
             equity -= risk_amount
         else:
             equity += risk_amount * (t['pnl_pct'] / sl_pct)
+        if fee_pct:
+            position_size = risk_amount / (sl_pct / 100.0)
+            equity -= position_size * (fee_pct / 100.0) * 2.0
         if outcome == 'WIN':
             wins += 1
         if equity > peak:
@@ -504,6 +521,8 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
                 peq -= ra
             else:
                 peq += ra * (t.get('pnl_pct', 0.0) / slp)
+            if fee_pct:
+                peq -= (ra / (slp / 100.0)) * (fee_pct / 100.0) * 2.0
             ptimes.append(str(t.get('entry_time', '')))
             pvals.append(round(peq, 2))
         label = f"{pr['market'].split('/')[0]}/{pr['timeframe']}"
@@ -637,7 +656,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
 
 
 def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: float,
-                          leverage: int = 1):
+                          leverage: int = 1, fee_pct: float = FEE_PCT_PER_SIDE):
     """Erstellt eine Excel-Tabelle mit allen Einzeltrades des optimalen Portfolios."""
     try:
         import openpyxl
@@ -679,6 +698,10 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t['pnl_pct'] / sl_pct)
+        fee_cost = 0.0
+        if fee_pct:
+            fee_cost = (risk_amount / (sl_pct / 100.0)) * (fee_pct / 100.0) * 2.0
+            pnl -= fee_cost
         equity += pnl
 
         # Marge = Positionsgröße / Leverage, gedeckelt auf verfügbares Kapital und Notional-Cap
@@ -697,6 +720,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
             'Riskiert (USDT)':       round(risk_amount, 4),
             'Marge (USDT)':          round(margin, 4),
+            'Gebühr (USDT)':         round(fee_cost, 4),
             'PnL (USDT)':            round(pnl, 4),
             'Gesamtkapital':         round(equity, 4),
         })
@@ -722,7 +746,8 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     col_widths = {
         'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
         'Richtung': 10, 'Ergebnis': 14, 'Reale Bewegung (%)': 20,
-        'Riskiert (USDT)': 16, 'Marge (USDT)': 14, 'PnL (USDT)': 14, 'Gesamtkapital': 16,
+        'Riskiert (USDT)': 16, 'Marge (USDT)': 14, 'Gebühr (USDT)': 14,
+        'PnL (USDT)': 14, 'Gesamtkapital': 16,
     }
 
     # Header
@@ -750,7 +775,8 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             cell.fill      = fill
             cell.border    = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('Reale Bewegung (%)', 'Riskiert (USDT)', 'Marge (USDT)', 'PnL (USDT)', 'Gesamtkapital'):
+            if key in ('Reale Bewegung (%)', 'Riskiert (USDT)', 'Marge (USDT)', 'Gebühr (USDT)',
+                       'PnL (USDT)', 'Gesamtkapital'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 
@@ -837,6 +863,10 @@ def main():
                               "VORHERIGEN Fenster derselben Laenge profitabel war (zwei "
                               "aufeinanderfolgende gute Perioden statt nur der aktuellen) -- "
                               "im walk_forward_test.py ueber die volle Historie bestaetigt.")
+    parser.add_argument('--fee-pct', type=float, default=FEE_PCT_PER_SIDE,
+                         help=f"Bitget-Taker-Gebuehr pro Seite in %% (Standard: {FEE_PCT_PER_SIDE}, "
+                              "faellt fuer jeden Trade Ein+Ausstieg an, wie walk_forward_test.py). "
+                              "--fee-pct 0 fuer den alten gebuehrenfreien Vergleich.")
     args = parser.parse_args()
 
     # Startdatum-Fallback aus settings.json (wenn nicht per CLI angegeben)
@@ -892,6 +922,7 @@ def main():
     print(f"  Min. Trades/Kandidat: {scaled_min_trades(lookback_weeks)}"
           + (f" (bei {lookback_weeks:.1f} Wochen Lookback)" if lookback_weeks is not None else " (volle Historie)"))
     print(f"  Persistenz:   {'ja -- 2 aufeinanderfolgende gute Perioden verlangt' if args.persistence else 'nein'}")
+    print(f"  Gebühr/Seite: {args.fee_pct}% (Ein+Ausstieg pro Trade, wie walk_forward_test.py)")
     print(f"{'─' * 72}\n")
 
     print("  Lade Backtest-Ergebnisse ...", end='', flush=True)
@@ -931,7 +962,8 @@ def main():
         m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd,
                                        lookback_weeks=lookback_weeks,
                                        require_persistence=args.persistence,
-                                       prev_results_by_pair=prev_results_by_pair)
+                                       prev_results_by_pair=prev_results_by_pair,
+                                       fee_pct=args.fee_pct)
         if combo and m and m['max_dd'] <= args.max_dd:
             score = _calmar(m)
             if score > best_calmar:
@@ -955,7 +987,8 @@ def main():
         # Risikostufe zeigen (war vorher inkonsistent: Tabelle zeigte PnL/MaxDD
         # der letzten Sweep-Stufe, "Portfolio gesamt" korrekt die von best_risk).
         for r in best_combo:
-            r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk)
+            r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk,
+                                                           fee_pct=args.fee_pct)
 
     print(f"\n  {G}Bestes Risiko: {best_risk}% → Calmar: {best_calmar:.2f} | Final Equity: {best_equity:.2f} USDT{NC}\n")
     print_result(best_combo, best_metrics, args.capital, best_risk, args.max_dd)
@@ -983,8 +1016,9 @@ def main():
                     current_pairs.append(match)
             if current_pairs:
                 for r in current_pairs:
-                    r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk)
-                sim = simulate_portfolio(current_pairs, args.capital, best_risk)
+                    r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk,
+                                                                   fee_pct=args.fee_pct)
+                sim = simulate_portfolio(current_pairs, args.capital, best_risk, fee_pct=args.fee_pct)
                 current_equity = sim['final_equity']
     except Exception:
         pass
@@ -1048,9 +1082,11 @@ def main():
     # Charts + Excel: bei --auto-write immer, sonst interaktiv fragen
     if args.auto_write:
         generate_portfolio_equity_chart(
-            best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
+            best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk,
+            fee_pct=args.fee_pct
         )
-        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage)
+        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage,
+                                            fee_pct=args.fee_pct)
         if excel_file:
             bot_token, chat_id = _get_telegram_credentials()
             if bot_token and chat_id:
@@ -1070,9 +1106,11 @@ def main():
             chart_ans = 'n'
         if chart_ans in ('j', 'ja', 'y', 'yes'):
             generate_portfolio_equity_chart(
-                best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk
+                best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk,
+                fee_pct=args.fee_pct
             )
-            excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage)
+            excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage,
+                                                fee_pct=args.fee_pct)
             if excel_file:
                 bot_token, chat_id = _get_telegram_credentials()
                 if bot_token and chat_id:

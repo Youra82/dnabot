@@ -109,9 +109,9 @@ run_mode() {
         read -p "Startkapital in USDT [Standard: 100]: " CAP
         CAP="${CAP//[$'\r\n ']/}"
         if ! [[ "$CAP" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAP=100; fi
-        read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 2]: " MIN_T
+        read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 10]: " MIN_T
         MIN_T="${MIN_T//[$'\r\n ']/}"
-        if ! [[ "$MIN_T" =~ ^[0-9]+$ ]]; then MIN_T=2; fi
+        if ! [[ "$MIN_T" =~ ^[0-9]+$ ]]; then MIN_T=10; fi
 
         ARGS="--capital $CAP --min-trades $MIN_T $NO_TELEGRAM"
         [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]] && ARGS="$ARGS --risk $RISK"

@@ -39,9 +39,9 @@ read -p "Startkapital in USDT [Standard: 100]: " CAPITAL_INPUT
 CAPITAL_INPUT="${CAPITAL_INPUT//[$'\r\n ']/}"
 if ! [[ "$CAPITAL_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL_INPUT=100; fi
 
-read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 2]: " MIN_TRADES_INPUT
+read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 10]: " MIN_TRADES_INPUT
 MIN_TRADES_INPUT="${MIN_TRADES_INPUT//[$'\r\n ']/}"
-if ! [[ "$MIN_TRADES_INPUT" =~ ^[0-9]+$ ]]; then MIN_TRADES_INPUT=2; fi
+if ! [[ "$MIN_TRADES_INPUT" =~ ^[0-9]+$ ]]; then MIN_TRADES_INPUT=10; fi
 
 ARGS="--capital $CAPITAL_INPUT --min-trades $MIN_TRADES_INPUT"
 if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then

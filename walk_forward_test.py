@@ -384,8 +384,16 @@ def main():
     parser.add_argument('--risk',        type=float, default=None,
                         help='Risiko pro Trade in %% (Standard: aus settings.json)')
     parser.add_argument('--capital',     type=float, default=100.0)
-    parser.add_argument('--min-trades',  type=int,   default=2,
-                        help='Min. Trades pro Pair im Lookback-Fenster')
+    parser.add_argument('--min-trades',  type=int,   default=10,
+                        help='Min. Trades pro Pair im Lookback-Fenster -- Default 10, '
+                             'gleicher Schwellwert wie run_portfolio_optimizer.py::MIN_TRADES '
+                             'und alphabet_optimizer.py::MIN_OOS_TRADES_DEFAULT. Bei 2 (alter '
+                             'Default) reichten 2-3 Gluecks-Trades pro Woche fuer "unendlichen" '
+                             'Calmar (0% Drawdown) -- select_portfolio() jagte dadurch jede Woche '
+                             'neuen Zufallstreffern hinterher statt echtem Edge, was das Konto '
+                             'OOS fast vollstaendig aufzehrte (PnL%/MaxDD% konvergieren beim '
+                             'Totalverlust beide gegen 100%, daher Calmar exakt -1.0 bei JEDEM '
+                             'Lookback gleichzeitig).')
     parser.add_argument('--no-telegram', action='store_true')
     args = parser.parse_args()
 

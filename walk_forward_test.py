@@ -42,8 +42,9 @@ SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
 OUTPUT_PATH      = '/tmp/dnabot_walkforward.png'
 OUTPUT_PATH_DOCS = os.path.join(PROJECT_ROOT, 'docs', 'walkforward_latest.png')
 
-LOOKBACK_WINDOWS  = [1, 2, 4, 8, 12, 26]   # Wochen
-MAX_NOTIONAL_USDT = 200_000.0
+LOOKBACK_WINDOWS   = [1, 2, 4, 8, 12, 26]   # Wochen
+MAX_NOTIONAL_USDT  = 200_000.0
+FEE_PCT_PER_SIDE   = 0.06   # Bitget-Taker, wie analysis/fee_impact.py
 
 G  = '\033[0;32m'
 Y  = '\033[1;33m'
@@ -152,10 +153,17 @@ def load_all_trades():
 
 # ─── Simulation ───────────────────────────────────────────────────────────────
 
-def simulate_trades(trades, equity, risk_pct, leverage=1):
+def simulate_trades(trades, equity, risk_pct, leverage=1, fee_pct=FEE_PCT_PER_SIDE):
     """
     Simuliert eine Liste von Trades auf einem gemeinsamen Kapital-Pool.
     Gibt (final_equity, max_dd, n_wins) zurück.
+
+    fee_pct: Bitget-Taker-Gebuehr PRO SEITE in % (Standard 0.06%, siehe
+    analysis/fee_impact.py) -- faellt fuer JEDEN Trade an (Einstieg +
+    Ausstieg), unabhaengig von WIN/LOSS/TIMEOUT. Ohne Gebuehren sah der
+    Walk-Forward-Test bei duennen Margen (z.B. 26W+Persistenz: -1.4% brutto)
+    kuenstlich naeher an Breakeven aus, als es nach echten Handelskosten waere
+    -- fee_pct=0 fuer den alten, gebuehrenfreien Vergleich.
     """
     peak   = equity
     max_dd = 0.0
@@ -173,6 +181,9 @@ def simulate_trades(trades, equity, risk_pct, leverage=1):
             pnl = -risk_amount
         else:
             pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
+        if fee_pct:
+            position_size = risk_amount / (sl_pct / 100.0)
+            pnl -= position_size * (fee_pct / 100.0) * 2.0  # Einstieg + Ausstieg
         equity += pnl
         if equity > peak:
             peak = equity
@@ -185,19 +196,19 @@ def simulate_trades(trades, equity, risk_pct, leverage=1):
 
 # ─── Portfolio-Auswahl ────────────────────────────────────────────────────────
 
-def _combined_pnl_dd(pairs, risk_pct, leverage=1):
+def _combined_pnl_dd(pairs, risk_pct, leverage=1, fee_pct=FEE_PCT_PER_SIDE):
     """Gemeinsamer Kapital-Pool ueber mehrere Pairs (In-Sample-Trades),
     chronologisch zusammengefuehrt -- fuer die Team-Bewertung waehrend der
     Greedy-Auswahl. Gibt (pnl_pct, max_dd) zurueck, Start bei 100."""
     all_trades = [t for p in pairs for t in p['_is_trades']]
     if not all_trades:
         return 0.0, 0.0
-    final_eq, max_dd, _ = simulate_trades(all_trades, 100.0, risk_pct, leverage=leverage)
+    final_eq, max_dd, _ = simulate_trades(all_trades, 100.0, risk_pct, leverage=leverage, fee_pct=fee_pct)
     return (final_eq - 100.0) / 100.0 * 100.0, max_dd
 
 
 def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, leverage=1,
-                      max_dd_limit=30.0, require_persistence=False):
+                      max_dd_limit=30.0, require_persistence=False, fee_pct=FEE_PCT_PER_SIDE):
     """
     Wählt das Portfolio für das In-Sample Fenster [is_start, is_end) --
     mit demselben Greedy-Algorithmus wie run_portfolio_optimizer.py::
@@ -226,7 +237,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
         is_trades = [t for t in r['trades'] if is_start <= t['entry_dt'] < is_end]
         if len(is_trades) < min_trades:
             continue
-        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, leverage=leverage)
+        final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, leverage=leverage, fee_pct=fee_pct)
         pnl_pct = (final_eq - 100.0) / 100.0 * 100.0
         if pnl_pct <= 0:
             continue
@@ -235,7 +246,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
             prev_trades = [t for t in r['trades'] if prev_start <= t['entry_dt'] < prev_end]
             if len(prev_trades) < min_trades:
                 continue
-            prev_eq, _, _ = simulate_trades(prev_trades, 100.0, risk_pct, leverage=leverage)
+            prev_eq, _, _ = simulate_trades(prev_trades, 100.0, risk_pct, leverage=leverage, fee_pct=fee_pct)
             prev_pnl = (prev_eq - 100.0) / 100.0 * 100.0
             if prev_pnl <= 0:
                 continue
@@ -258,7 +269,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
 
     # Star-Spieler: Einzelstrategie mit höchstem In-Sample-Calmar
     best_team = [eligible[0]]
-    best_pnl, best_dd = _combined_pnl_dd(best_team, risk_pct, leverage=leverage)
+    best_pnl, best_dd = _combined_pnl_dd(best_team, risk_pct, leverage=leverage, fee_pct=fee_pct)
     best_score = best_pnl / best_dd if best_dd > 0 else best_pnl
     candidate_pool = eligible[1:]
 
@@ -266,7 +277,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
         best_addition   = None
         best_score_with = best_score
         for cand in candidate_pool:
-            pnl, dd = _combined_pnl_dd(best_team + [cand], risk_pct, leverage=leverage)
+            pnl, dd = _combined_pnl_dd(best_team + [cand], risk_pct, leverage=leverage, fee_pct=fee_pct)
             if dd > max_dd_limit:
                 continue
             score = pnl / dd if dd > 0 else pnl
@@ -286,7 +297,8 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
 # ─── Walk-Forward ─────────────────────────────────────────────────────────────
 
 def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital,
-                      leverage=1, max_dd_limit=30.0, require_persistence=False):
+                      leverage=1, max_dd_limit=30.0, require_persistence=False,
+                      fee_pct=FEE_PCT_PER_SIDE):
     """
     Walk-Forward für einen Lookback-Zeitraum.
     Gibt (equity_curve, total_trades, total_wins, empty_weeks) zurück.
@@ -312,7 +324,7 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
 
         portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct,
                                       leverage=leverage, max_dd_limit=max_dd_limit,
-                                      require_persistence=require_persistence)
+                                      require_persistence=require_persistence, fee_pct=fee_pct)
 
         oos_trades = []
         for p in portfolio:
@@ -325,7 +337,7 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
             curve.append((oos_end, equity, len(portfolio), 0))
             continue
 
-        equity, _, wins = simulate_trades(oos_trades, equity, risk_pct, leverage=leverage)
+        equity, _, wins = simulate_trades(oos_trades, equity, risk_pct, leverage=leverage, fee_pct=fee_pct)
         total_n    += len(oos_trades)
         total_wins += wins
         curve.append((oos_end, equity, len(portfolio), len(oos_trades)))
@@ -491,6 +503,10 @@ def main():
                              'VORHERIGEN Fenster derselben Laenge profitabel war (zwei '
                              'aufeinanderfolgende gute Perioden statt nur der aktuellen) '
                              '-- experimentell, Test gegen reines Calmar-Chasing.')
+    parser.add_argument('--fee-pct', type=float, default=FEE_PCT_PER_SIDE,
+                        help=f'Bitget-Taker-Gebuehr pro Seite in %% (Standard: {FEE_PCT_PER_SIDE}, '
+                             'faellt fuer jeden Trade Ein+Ausstieg an). --fee-pct 0 fuer den '
+                             'alten gebuehrenfreien Vergleich.')
     parser.add_argument('--no-telegram', action='store_true')
     args = parser.parse_args()
 
@@ -509,6 +525,7 @@ def main():
           f"(skaliert mit Lookback, siehe run_portfolio_optimizer.py::scaled_min_trades)")
     print(f"  Max Drawdown: {args.max_dd}% (Team-Auswahl)")
     print(f"  Persistenz:   {'ja -- 2 aufeinanderfolgende gute Perioden verlangt' if args.persistence else 'nein (Standard)'}")
+    print(f"  Gebühr/Seite: {args.fee_pct}% (Ein+Ausstieg pro Trade, wie analysis/fee_impact.py)")
     print(f"  Lookbacks:    {LOOKBACK_WINDOWS} Wochen")
     print()
 
@@ -576,7 +593,8 @@ def main():
               end='', flush=True)
         curve, n_total, n_wins, empty_w = run_walk_forward(
             all_results, weeks, risk_pct, week_starts, capital,
-            leverage=leverage, max_dd_limit=args.max_dd, require_persistence=args.persistence
+            leverage=leverage, max_dd_limit=args.max_dd, require_persistence=args.persistence,
+            fee_pct=args.fee_pct
         )
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)
         wr = n_wins / n_total * 100 if n_total > 0 else 0.0

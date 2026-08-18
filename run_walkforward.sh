@@ -41,9 +41,15 @@ if ! [[ "$CAPITAL_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL_INPUT=100; fi
 
 # Mindest-Trade-Zahl wird automatisch pro Lookback skaliert
 # (scaled_min_trades() in run_portfolio_optimizer.py) statt fix abgefragt.
+read -p "OOS-Testzeitraum auf die letzten N Wochen eingrenzen [leer=voller Zeitraum]: " OOS_W_INPUT
+OOS_W_INPUT="${OOS_W_INPUT//[$'\r\n ']/}"
+
 ARGS="--capital $CAPITAL_INPUT"
 if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     ARGS="$ARGS --risk $RISK_INPUT"
+fi
+if [[ "$OOS_W_INPUT" =~ ^[0-9]+$ ]]; then
+    ARGS="$ARGS --oos-weeks $OOS_W_INPUT"
 fi
 
 echo ""

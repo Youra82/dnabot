@@ -455,6 +455,15 @@ def main():
     parser.add_argument('--max-dd', type=float, default=30.0,
                         help='Max. Drawdown-Limit fuer die Team-Auswahl (Standard: 30, '
                              'wie run_portfolio_optimizer.py --max-dd)')
+    parser.add_argument('--oos-weeks', type=int, default=None,
+                        help='Nur die letzten N Wochen als Out-of-Sample-Testzeitraum '
+                             'verwenden (Standard: kompletter verfuegbarer Zeitraum ab dem '
+                             'groessten Lookback). Der volle Zeitraum beginnt kurz nach dem '
+                             'Start der Backtest-Historie, als die Genome-DB noch kaum '
+                             'Vorlauf-Daten hatte (Cold-Start) -- damit testet der volle Lauf '
+                             'zwangslaeufig auch die unreife Anfangsphase des Systems mit. '
+                             '--oos-weeks 26 z.B. testet nur, wie die AUSGEREIFTE Version '
+                             '(voller 3-Jahres-Vorlauf) OOS abschneidet.')
     parser.add_argument('--no-telegram', action='store_true')
     args = parser.parse_args()
 
@@ -503,6 +512,18 @@ def main():
     oos_start     = next_monday(min_date + timedelta(weeks=max_lookback))
     oos_end       = next_monday(max_date)
 
+    # --oos-weeks: OOS-Fenster auf die letzten N Wochen eingrenzen (Cold-Start-
+    # Check) -- der volle Zeitraum beginnt sonst kurz nach Start der Backtest-
+    # Historie, als die Genome-DB point-in-time noch kaum Vorlauf-Daten hatte;
+    # das zieht den Durchschnitt unabhaengig von der heutigen, ausgereiften
+    # Konfiguration nach unten. Der IS-Lookback selbst greift trotzdem weiter
+    # in die Vergangenheit zurueck (bis oos_start - lookback_weeks), nur der
+    # OOS-*Test*zeitraum wird verkuerzt.
+    if args.oos_weeks:
+        clipped_start = oos_end - timedelta(weeks=args.oos_weeks)
+        if clipped_start > oos_start:
+            oos_start = next_monday(clipped_start)
+
     week_starts = []
     w = oos_start
     while w < oos_end:
@@ -511,11 +532,13 @@ def main():
 
     if len(week_starts) < 2:
         print(f"  {R}Zu wenig OOS-Wochen ({len(week_starts)}). "
-              f"Tipp: Backtest-Daten mit früherem Startdatum generieren.{NC}\n")
+              f"Tipp: Backtest-Daten mit früherem Startdatum generieren oder --oos-weeks "
+              f"groesser waehlen.{NC}\n")
         sys.exit(1)
 
     print(f"  OOS-Zeitraum: {oos_start.strftime('%Y-%m-%d')} → "
-          f"{oos_end.strftime('%Y-%m-%d')} ({len(week_starts)} Test-Wochen)")
+          f"{oos_end.strftime('%Y-%m-%d')} ({len(week_starts)} Test-Wochen)"
+          + (f" [--oos-weeks {args.oos_weeks}]" if args.oos_weeks else ""))
     print()
 
     # ── Walk-Forward für jeden Lookback

@@ -113,8 +113,11 @@ run_mode() {
         # (scaled_min_trades() in run_portfolio_optimizer.py) statt fix
         # abgefragt -- ein fester Wert schloss kurze Lookback-Fenster
         # strukturell von niedrigfrequenten Pairs aus.
+        read -p "OOS-Testzeitraum auf die letzten N Wochen eingrenzen [leer=voller Zeitraum]: " OOS_W
+        OOS_W="${OOS_W//[$'\r\n ']/}"
         ARGS="--capital $CAP $NO_TELEGRAM"
         [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]] && ARGS="$ARGS --risk $RISK"
+        [[ "$OOS_W" =~ ^[0-9]+$ ]] && ARGS="$ARGS --oos-weeks $OOS_W"
         $PYTHON "$SCRIPT_DIR/walk_forward_test.py" $ARGS
         ;;
 

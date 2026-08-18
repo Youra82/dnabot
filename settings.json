@@ -3,97 +3,37 @@
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
       {
-        "symbol": "DOGE/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "ETH/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      },
-      {
-        "symbol": "DOT/USDT:USDT",
-        "timeframe": "30m",
+        "symbol": "VET/USDT:USDT",
+        "timeframe": "1h",
         "active": true
       },
       {
         "symbol": "BCH/USDT:USDT",
-        "timeframe": "1h",
-        "active": true
-      },
-      {
-        "symbol": "ARB/USDT:USDT",
-        "timeframe": "1h",
-        "active": true
-      },
-      {
-        "symbol": "ADA/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "FIL/USDT:USDT",
-        "timeframe": "30m",
-        "active": true
-      },
-      {
-        "symbol": "LINK/USDT:USDT",
-        "timeframe": "30m",
-        "active": true
-      },
-      {
-        "symbol": "XLM/USDT:USDT",
-        "timeframe": "30m",
-        "active": true
-      },
-      {
-        "symbol": "LTC/USDT:USDT",
-        "timeframe": "1h",
-        "active": true
-      },
-      {
-        "symbol": "SOL/USDT:USDT",
-        "timeframe": "1h",
-        "active": true
-      },
-      {
-        "symbol": "HBAR/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "UNI/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "XRP/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "ALGO/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "AVAX/USDT:USDT",
         "timeframe": "2h",
         "active": true
       },
       {
         "symbol": "BNB/USDT:USDT",
-        "timeframe": "1h",
+        "timeframe": "4h",
         "active": true
       },
       {
-        "symbol": "BTC/USDT:USDT",
+        "symbol": "ALGO/USDT:USDT",
+        "timeframe": "15m",
+        "active": true
+      },
+      {
+        "symbol": "FIL/USDT:USDT",
         "timeframe": "4h",
+        "active": true
+      },
+      {
+        "symbol": "NEAR/USDT:USDT",
+        "timeframe": "6h",
         "active": true
       }
     ],
-    "_active_strategies_source": "Portfolio-Optimierung 2026-07-09: 18 Coins, Trades=2072, WR=42.0%, PnL=+830887.9%, MaxDD=16.9%"
+    "_active_strategies_source": "auto_optimizer_scheduler.py --force 2026-08-18: 6 Coins, Trades=152, WR=37.5%, PnL=+121.5%, MaxDD=20.9%, Risiko/Trade=3.0%"
   },
   "scan_settings": {
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
@@ -165,7 +105,7 @@
     }
   },
   "risk_settings": {
-    "risk_per_entry_pct": 5.0,
+    "risk_per_entry_pct": 3.0,
     "leverage": 5,
     "margin_mode": "isolated",
     "rr_ratio": 2.0,

@@ -17,7 +17,7 @@
 import hashlib
 import json
 
-from dnabot.genome.encoder import DEFAULT_ALPHABET
+from dnabot.genome.encoder import DEFAULT_ALPHABET, DISCOVERY_SCHEMA_VERSION
 
 ALPHABET_KEYS = tuple(DEFAULT_ALPHABET.keys())
 
@@ -79,6 +79,16 @@ def alphabet_hash(alphabet: dict) -> str:
     eines inkrementellen, weil sich sonst Sequenz-Strings aus altem und neuem
     Alphabet in derselben Genome-DB vermischen wuerden -- ein Genome-Eintrag
     ist nur unter EINEM Alphabet ueberhaupt wieder erreichbar).
+
+    Enthaelt zusaetzlich DISCOVERY_SCHEMA_VERSION (encoder.py) -- ein Bump
+    dort loest denselben sicheren delete_pair()+Neu-Scan fuer JEDES Pair aus,
+    ohne dass sich das Alphabet selbst aendert. Genutzt, um die Wildcard-
+    Pattern-Genome (encoder.py::build_pattern_sequence()) einmalig in
+    bestehende Datenbanken nachzutragen -- ein manueller Rescan ohne Loeschen
+    wuerde bestehende exakte Genome doppelt zaehlen.
     """
-    canon = json.dumps({k: alphabet.get(k) for k in ALPHABET_KEYS}, sort_keys=True)
+    canon = json.dumps(
+        {**{k: alphabet.get(k) for k in ALPHABET_KEYS}, "_discovery_version": DISCOVERY_SCHEMA_VERSION},
+        sort_keys=True,
+    )
     return hashlib.md5(canon.encode()).hexdigest()[:12]

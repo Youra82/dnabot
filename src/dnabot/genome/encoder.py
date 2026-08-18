@@ -28,6 +28,15 @@ DEFAULT_ALPHABET = {
     "vol_rel_mult":   1.0,    # volume > avg_volume * vol_rel_mult -> Volumen "H"
 }
 
+# Wird in alphabet_store.py::alphabet_hash() mitgehasht, um beim Deploy dieser
+# Wildcard-Pattern-Funktionen (siehe wildcard_gene()/build_pattern_sequence()
+# unten) einmalig den bestehenden sicheren Full-Rescan-Mechanismus fuer JEDES
+# Pair auszuloesen (scan_and_learn.py: Alphabet-Hash-Mismatch -> delete_pair()
+# + vollstaendige Neu-Discovery) -- ohne das wuerden alte DBs nie die neuen
+# Pattern-Genome nachtragen, und ein manueller start_candle_index=0-Rescan
+# wuerde bestehende exakte Genome doppelt zaehlen.
+DISCOVERY_SCHEMA_VERSION = 1
+
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Berechnet den ATR (Average True Range)."""
@@ -153,14 +162,15 @@ def decode_gene(gene: str) -> dict:
     if len(gene) < 6:
         return {}
 
-    direction_map = {"B": "Bullish", "S": "Bearish"}
+    direction_map = {"B": "Bullish", "S": "Bearish", "X": "beliebig (Wildcard)"}
     size_map = {"1": "klein (<30% ATR)", "2": "mittel (30-80% ATR)", "3": "groß (>80% ATR)"}
-    vol_map = {"L": "niedrig", "H": "hoch"}
+    vol_map = {"L": "niedrig", "H": "hoch", "X": "beliebig (Wildcard)"}
     wick_map = {
         "U": "oberer Wick dominant",
         "D": "unterer Wick dominant",
         "B": "beide Wicks prominent",
-        "N": "kein dominanter Wick"
+        "N": "kein dominanter Wick",
+        "X": "beliebig (Wildcard)",
     }
 
     parts = gene.split("-")
@@ -187,3 +197,44 @@ def genes_to_sequence_string(genes: list[str]) -> str:
 def sequence_string_to_genes(sequence: str) -> list[str]:
     """Trennt einen Sequenz-String wieder in einzelne Gene."""
     return sequence.split("|")
+
+
+WILDCARD = "X"   # kommt in echten Gen-Strings nie vor -> keine Kollisionsgefahr
+                 # mit exakten Sequenzen (siehe database.py::_genome_id())
+
+
+def wildcard_gene(gene: str) -> str:
+    """
+    Reduziert ein Gen auf Koerpergroesse+Volatilitaet; Richtung/Wick/Volumen
+    werden zu Wildcards (X).
+
+    Fuer Kompressions-Positionen einer Pattern-Sequenz (siehe
+    build_pattern_sequence()): waehrend einer echten Kompressionsphase ist die
+    Kerzenfarbe der Einzelkerzen praktisch zufaellig (Preis pendelt, waehrend
+    die Range schrumpft) -- dieselbe visuell erkennbare Formation erzeugt bei
+    jedem Auftreten eine andere exakte Gen-Sequenz und keine Variante erreicht
+    je min_samples. Koerpergroesse ("klein") + Volatilitaet ("niedrig") sind
+    die Merkmale, die "Kompression" tatsaechlich definieren.
+    """
+    parts = gene.split("-")
+    if len(parts) != 2 or len(parts[0]) != 3 or len(parts[1]) != 2:
+        return gene   # unbekanntes Format -> unveraendert zurueckgeben
+    main = parts[0]
+    return f"{WILDCARD}{main[1]}{main[2]}-{WILDCARD}{WILDCARD}"
+
+
+def build_pattern_sequence(genes: list[str]) -> str:
+    """
+    Baut die Wildcard-Pattern-Sequenz aus einer Gen-Liste: alle Positionen bis
+    auf die letzte (Trigger-Kerze) werden auf Koerpergroesse+Volatilitaet
+    reduziert (wildcard_gene()), die letzte bleibt exakt -- Richtung und Wick
+    der Trigger-Kerze signalisieren die Umkehr und bleiben deshalb Teil des
+    exakten Matches. Macht Kompressionsphasen erkennbar, deren interne
+    Zick-Zack-Farbfolge von Vorkommen zu Vorkommen variiert, ohne das
+    bestehende exakte Sequenz-Matching zu ersetzen (siehe
+    genome/discovery.py, strategy/genome_logic.py, analysis/backtester.py --
+    alle drei versuchen sowohl die exakte als auch die Pattern-Sequenz).
+    """
+    if len(genes) <= 1:
+        return genes_to_sequence_string(genes)
+    return genes_to_sequence_string([wildcard_gene(g) for g in genes[:-1]] + [genes[-1]])

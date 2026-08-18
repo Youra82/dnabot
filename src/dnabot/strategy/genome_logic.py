@@ -25,7 +25,7 @@ import logging
 import pandas as pd
 from typing import Optional
 
-from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
+from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string, build_pattern_sequence
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.regime import detect_regime, is_regime_allowed, REGIME_HIGH_VOL
 from dnabot.genome.daily_bias import get_current_daily_bias, daily_bias_blocks
@@ -72,9 +72,12 @@ def _build_signal(
         tp_price = last_close - (rr_ratio * sl_distance)
 
     sl_pct = (sl_distance / last_close) * 100.0
+    # Wildcard-Pattern-Genome enthalten "X" (siehe encoder.py::WILDCARD) --
+    # rein zur Sichtbarkeit/Debugging, ob das neue Muster tatsaechlich feuert.
+    is_pattern_match = "X" in genome['sequence']
 
     logger.info(
-        f"[Genome Signal] {side.upper()} | "
+        f"[Genome Signal] {side.upper()}{' [Kompressions-Muster]' if is_pattern_match else ''} | "
         f"Entry: {last_close:.4f} | SL: {sl_price:.4f} ({sl_pct:.2f}%) | "
         f"TP: {tp_price:.4f} | "
         f"Score: {genome['score']:.3f} | WR: {winrate:.1%} | "
@@ -94,6 +97,7 @@ def _build_signal(
         "total_occurrences": genome['total_occurrences'],
         "seq_length": seq_len,
         "avg_move_pct": genome['avg_move_pct'],
+        "is_pattern_match": is_pattern_match,
     }
 
 
@@ -151,23 +155,29 @@ def get_genome_signal(
         if len(genes) < seq_len:
             continue
 
-        sequence = genes_to_sequence_string(genes[-seq_len:])
+        window = genes[-seq_len:]
+        # Exakte Sequenz UND Wildcard-Pattern-Sequenz versuchen (siehe
+        # encoder.py::build_pattern_sequence()) -- Kompressionsphasen mit
+        # variierender interner Zick-Zack-Farbfolge werden sonst nie als
+        # dasselbe Muster erkannt. Gleiche Best-Score-Logik wie bisher.
+        candidates = [genes_to_sequence_string(window), build_pattern_sequence(window)]
 
-        # LONG prüfen — nur wenn das Genome im aktuellen Regime aktiv ist
-        long_genome = db.get_genome(sequence, market, timeframe, "LONG")
-        if (long_genome and long_genome['active'] and long_genome['score'] >= min_score
-                and _regime_active(long_genome, current_regime)):
-            if long_genome['score'] > best_score:
-                best_score = long_genome['score']
-                best_signal = _build_signal("long", df, long_genome, rr_ratio)
+        for sequence in candidates:
+            # LONG prüfen — nur wenn das Genome im aktuellen Regime aktiv ist
+            long_genome = db.get_genome(sequence, market, timeframe, "LONG")
+            if (long_genome and long_genome['active'] and long_genome['score'] >= min_score
+                    and _regime_active(long_genome, current_regime)):
+                if long_genome['score'] > best_score:
+                    best_score = long_genome['score']
+                    best_signal = _build_signal("long", df, long_genome, rr_ratio)
 
-        # SHORT prüfen
-        short_genome = db.get_genome(sequence, market, timeframe, "SHORT")
-        if (short_genome and short_genome['active'] and short_genome['score'] >= min_score
-                and _regime_active(short_genome, current_regime)):
-            if short_genome['score'] > best_score:
-                best_score = short_genome['score']
-                best_signal = _build_signal("short", df, short_genome, rr_ratio)
+            # SHORT prüfen
+            short_genome = db.get_genome(sequence, market, timeframe, "SHORT")
+            if (short_genome and short_genome['active'] and short_genome['score'] >= min_score
+                    and _regime_active(short_genome, current_regime)):
+                if short_genome['score'] > best_score:
+                    best_score = short_genome['score']
+                    best_signal = _build_signal("short", df, short_genome, rr_ratio)
 
     # ── Tagestrend-Filter ──────────────────────────────────────────────────────
     # Identische Funktion wie im Backtester (daily_bias.py) -- garantiert

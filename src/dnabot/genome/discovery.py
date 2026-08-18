@@ -26,7 +26,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
+from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string, build_pattern_sequence
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.regime import detect_regime
 
@@ -152,6 +152,12 @@ def discover_genomes(
         for i in range(effective_start, max_start):
             seq_genes = genes[i:i + seq_len]
             sequence = genes_to_sequence_string(seq_genes)
+            # Wildcard-Pattern-Sequenz zusaetzlich aufzeichnen (siehe
+            # encoder.py::build_pattern_sequence()) -- macht Kompressions-
+            # phasen erkennbar, deren interne Zick-Zack-Farbfolge von
+            # Vorkommen zu Vorkommen variiert und die exakte Sequenz dadurch
+            # nie genug Samples ansammeln laesst.
+            pattern_sequence = build_pattern_sequence(seq_genes)
 
             entry_idx = i + seq_len
             entry_price = closes[entry_idx - 1]
@@ -213,6 +219,26 @@ def discover_genomes(
                     occurred_at=occurred_at,
                 )
                 if is_new:
+                    new_genomes += 1
+                else:
+                    updated_genomes += 1
+
+                # Wildcard-Pattern-Vorkommen genauso aufzeichnen -- eigene
+                # genome_id (siehe database.py::_genome_id()), lebt als
+                # normale Zeile neben dem exakten Genome, keine Kollision
+                # (WILDCARD="X" kommt in echten Gen-Strings nie vor).
+                is_new_pattern = db.upsert_genome_outcome(
+                    sequence=pattern_sequence,
+                    market=market,
+                    timeframe=timeframe,
+                    direction=direction,
+                    seq_length=seq_len,
+                    is_win=is_win,
+                    move_pct=move_pct,
+                    regime=regime,
+                    occurred_at=occurred_at,
+                )
+                if is_new_pattern:
                     new_genomes += 1
                 else:
                     updated_genomes += 1

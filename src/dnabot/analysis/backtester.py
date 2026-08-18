@@ -21,7 +21,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.genome.database import GenomeDB
-from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string
+from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string, build_pattern_sequence
 from dnabot.genome.regime import detect_regime, is_regime_allowed
 from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
 from dnabot.genome.scoring import kelly_multiplier
@@ -114,28 +114,32 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
     for seq_len in sorted(seq_lengths, reverse=True):
         if len(genes) < seq_len:
             continue
-        seq = genes_to_sequence_string(genes[-seq_len:])
-
-        for direction in ['LONG', 'SHORT']:
-            if cutoff_iso is not None:
-                g = db.get_genome_as_of(
-                    seq, market, timeframe, direction, cutoff_iso,
-                    regime=None,
-                    min_samples=min_samples, min_winrate=min_winrate,
-                    score_threshold=min_score, half_life_days=half_life_days,
-                )
-                if g and current_regime is not None and current_regime not in g['active_regimes']:
-                    g = None
-            else:
-                g = db.get_genome(seq, market, timeframe, direction)
-            if g and g['active'] and g['score'] >= min_score and g['score'] > best_score:
-                best_score = g['score']
-                best = {
-                    'direction': direction,
-                    'genome': g,
-                    'seq_len': seq_len,
-                    'rr_ratio': rr_ratio,
-                }
+        window = genes[-seq_len:]
+        # Exakte Sequenz UND Wildcard-Pattern-Sequenz versuchen (siehe
+        # encoder.py::build_pattern_sequence() -- muss mit genome_logic.py::
+        # get_genome_signal() in lockstep bleiben, sonst validiert der
+        # Backtest ein anderes Matching als live tatsaechlich laeuft).
+        for seq in (genes_to_sequence_string(window), build_pattern_sequence(window)):
+            for direction in ['LONG', 'SHORT']:
+                if cutoff_iso is not None:
+                    g = db.get_genome_as_of(
+                        seq, market, timeframe, direction, cutoff_iso,
+                        regime=None,
+                        min_samples=min_samples, min_winrate=min_winrate,
+                        score_threshold=min_score, half_life_days=half_life_days,
+                    )
+                    if g and current_regime is not None and current_regime not in g['active_regimes']:
+                        g = None
+                else:
+                    g = db.get_genome(seq, market, timeframe, direction)
+                if g and g['active'] and g['score'] >= min_score and g['score'] > best_score:
+                    best_score = g['score']
+                    best = {
+                        'direction': direction,
+                        'genome': g,
+                        'seq_len': seq_len,
+                        'rr_ratio': rr_ratio,
+                    }
 
     return best
 

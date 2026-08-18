@@ -129,6 +129,8 @@
     "max_drawdown_pct": 30,
     "backtest_lookback_weeks": 26,
     "_backtest_lookback_note": "Wie viele Wochen zurück der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln. 26W gewählt statt Top-Calmar-1W: 1W hatte 19/129 Leerwochen (kein Trade) und niedrigste WR, Calmar dadurch künstlich hoch. 26W/8W hatten 0 Leerwochen bei ähnlichem Calmar (2026-07-09).",
+    "require_persistence": true,
+    "_require_persistence_note": "Kandidat muss auch im VORHERIGEN 26W-Fenster profitabel gewesen sein (2 aufeinanderfolgende gute Perioden statt reinem Calmar-Chasing). Per walk_forward_test.py über die volle 126-Wochen-Historie bestätigt: ohne Persistenz ist JEDER Lookback nach Bitget-Gebühren klar unprofitabel (-27% bis -57%, große Samples), mit Persistenz kommt 26W auf ~Breakeven (-1.6%) bei viel niedrigerem Drawdown (17.8% vs. 44-65%). Kein bestätigter Edge, aber die risikoärmste der getesteten Optionen (2026-08-18).",
     "send_telegram_on_completion": true,
     "scan_interval_hours": 168,
     "_scan_interval_note": "Wie oft der Genome-Scan läuft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",

@@ -271,7 +271,10 @@ def _run_portfolio_optimizer(opt_settings: dict) -> int:
         '--max-dd',  max_dd,
         '--auto-write',
     ]
-    _log(f"PORTFOLIO_START capital={capital} risk={risk} max_dd={max_dd}")
+    if opt_settings.get('require_persistence', False):
+        cmd.append('--persistence')
+    _log(f"PORTFOLIO_START capital={capital} risk={risk} max_dd={max_dd} "
+         f"persistence={opt_settings.get('require_persistence', False)}")
     result = subprocess.run(cmd)
     _log(f"PORTFOLIO_EXIT rc={result.returncode}")
     return result.returncode

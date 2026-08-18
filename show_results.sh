@@ -143,8 +143,14 @@ except Exception:
     RISK="${RISK//[$'\r\n ']/}"
     if ! [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then RISK=1.0; fi
 
+    read -p "Persistenz verlangen (2 aufeinanderfolgende gute Perioden statt nur 1)? (j/n) [Standard: aus settings.json]: " PERSIST_INPUT
+    PERSIST_INPUT="${PERSIST_INPUT//[$'\r\n ']/}"
+
     DATE_ARGS="--start-date $START_DATE"
     [ -n "$END_DATE" ] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+    if [[ "$PERSIST_INPUT" == "j" || "$PERSIST_INPUT" == "J" || "$PERSIST_INPUT" == "y" || "$PERSIST_INPUT" == "Y" ]]; then
+        DATE_ARGS="$DATE_ARGS --persistence"
+    fi
 
     echo ""
     python3 run_portfolio_optimizer.py \

@@ -254,7 +254,9 @@ def _calmar(metrics: dict) -> float:
 
 
 def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
-                        max_dd_limit: float, lookback_weeks=None) -> tuple:
+                        max_dd_limit: float, lookback_weeks=None,
+                        require_persistence: bool = False,
+                        prev_results_by_pair: dict = None) -> tuple:
     """
     Greedy-Algorithmus mit Calmar-Ratio-Score (wie jaegerbot).
     Kandidaten pro Iteration werden parallel via ThreadPoolExecutor bewertet.
@@ -263,8 +265,21 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     lookback_weeks: Laenge des Datumsfensters, aus dem `candidates` stammen
     (siehe main()) -- bestimmt ueber scaled_min_trades() die Mindest-Trade-
     Zahl pro Kandidat. None = keine Datumseinschraenkung (volle Historie).
+
+    require_persistence/prev_results_by_pair: verlangt zusaetzlich, dass ein
+    Kandidat auch schon im VORHERIGEN Fenster derselben Laenge profitabel war
+    (mit derselben min_trades-Schwelle) -- portiert aus walk_forward_test.py::
+    select_portfolio(), das im vollen 126-Wochen-Walk-Forward bestaetigt hat:
+    ohne Persistenz sind ALLE Lookbacks nach Gebuehren klar unprofitabel
+    (-27% bis -57%, grosse Samples), mit Persistenz kommt 26W auf ~Breakeven
+    bei deutlich niedrigerem Drawdown. "War zuletzt gut" (reines Calmar-
+    Chasing) ist kaum von Zufall zu unterscheiden; zwei aufeinanderfolgende
+    gute Perioden filtern reine Gluecksserien eher raus.
+    prev_results_by_pair: {(market, timeframe): result-dict mit 'trades'}
+    fuer das Fenster [start_date - lookback, start_date) -- von main() geladen.
     """
     min_trades = scaled_min_trades(lookback_weeks)
+    prev_results_by_pair = prev_results_by_pair or {}
 
     # Einzel-Stats für alle Kandidaten berechnen
     for r in candidates:
@@ -277,6 +292,13 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
         st = r['filtered_stats']
         if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit or st['n_trades'] < min_trades:
             continue
+        if require_persistence:
+            prev = prev_results_by_pair.get((r['market'], r['timeframe']))
+            if not prev or len(prev['trades']) < min_trades:
+                continue
+            prev_stats = compute_filtered_stats(prev['trades'], capital, risk_pct)
+            if prev_stats['total_pnl_pct'] <= 0:
+                continue
         coin  = r['coin']
         score = _calmar(st)
         if coin not in coin_best or score > _calmar(coin_best[coin]['filtered_stats']):
@@ -810,6 +832,11 @@ def main():
                          help="Ueberschreibt settings.json auch wenn das neue Ergebnis "
                               "nicht besser als das aktuelle Portfolio ist (z.B. nach einem "
                               "Backtester-Fix, der die alte Vergleichsbasis unrealistisch macht).")
+    parser.add_argument('--persistence', action='store_true',
+                         help="Verlangt zusaetzlich, dass ein Kandidat auch schon im "
+                              "VORHERIGEN Fenster derselben Laenge profitabel war (zwei "
+                              "aufeinanderfolgende gute Perioden statt nur der aktuellen) -- "
+                              "im walk_forward_test.py ueber die volle Historie bestaetigt.")
     args = parser.parse_args()
 
     # Startdatum-Fallback aus settings.json (wenn nicht per CLI angegeben)
@@ -828,6 +855,15 @@ def main():
                 ).strftime('%Y-%m-%d')
             else:
                 args.start_date = opt.get('backtest_start_date')
+        except Exception:
+            pass
+
+    # Persistenz-Fallback aus settings.json (wenn nicht per CLI gesetzt)
+    if not args.persistence:
+        try:
+            with open(SETTINGS_PATH) as f:
+                _s = json.load(f)
+            args.persistence = bool(_s.get('optimization_settings', {}).get('require_persistence', False))
         except Exception:
             pass
 
@@ -855,6 +891,7 @@ def main():
     print(f"  Constraint: max. 1 Timeframe pro Coin (Bitget-Regel)")
     print(f"  Min. Trades/Kandidat: {scaled_min_trades(lookback_weeks)}"
           + (f" (bei {lookback_weeks:.1f} Wochen Lookback)" if lookback_weeks is not None else " (volle Historie)"))
+    print(f"  Persistenz:   {'ja -- 2 aufeinanderfolgende gute Perioden verlangt' if args.persistence else 'nein'}")
     print(f"{'─' * 72}\n")
 
     print("  Lade Backtest-Ergebnisse ...", end='', flush=True)
@@ -868,6 +905,18 @@ def main():
     coins = sorted(set(r['coin'] for r in with_trades))
     print(f" {len(all_results)} Dateien, {len(with_trades)} mit Trades, {len(coins)} Coins.")
 
+    # Vorheriges Fenster derselben Laenge fuer den Persistenz-Check laden
+    # (siehe optimize_portfolio()-Docstring) -- nur wenn --persistence UND
+    # ein konkretes Startdatum vorliegt (bei voller Historie gibt es kein
+    # "davor" zu vergleichen).
+    prev_results_by_pair = {}
+    if args.persistence and args.start_date and lookback_weeks:
+        from datetime import timedelta
+        sd = datetime.fromisoformat(args.start_date).replace(tzinfo=timezone.utc)
+        prev_start = (sd - timedelta(weeks=lookback_weeks)).strftime('%Y-%m-%d')
+        prev_all = load_all_results(prev_start, args.start_date)
+        prev_results_by_pair = {(r['market'], r['timeframe']): r for r in prev_all}
+
     # Risiko 1%–5% (Schritte 0.5%) ausprobieren, bestes Final Equity unter MaxDD-Limit wählen
     risk_levels = [r / 10 for r in range(10, 55, 5)]  # 1.0, 1.5, 2.0, ... 5.0
     print(f"\n  Suche optimales Risiko ({risk_levels[0]}%–{risk_levels[-1]}%, MaxDD ≤ {args.max_dd:.0f}%)...\n")
@@ -880,7 +929,9 @@ def main():
 
     for risk_pct in risk_levels:
         m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd,
-                                       lookback_weeks=lookback_weeks)
+                                       lookback_weeks=lookback_weeks,
+                                       require_persistence=args.persistence,
+                                       prev_results_by_pair=prev_results_by_pair)
         if combo and m and m['max_dd'] <= args.max_dd:
             score = _calmar(m)
             if score > best_calmar:

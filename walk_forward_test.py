@@ -176,10 +176,29 @@ def simulate_trades(trades, equity, risk_pct, leverage=1):
 
 # ─── Portfolio-Auswahl ────────────────────────────────────────────────────────
 
-def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, leverage=1):
+def _combined_pnl_dd(pairs, risk_pct, leverage=1):
+    """Gemeinsamer Kapital-Pool ueber mehrere Pairs (In-Sample-Trades),
+    chronologisch zusammengefuehrt -- fuer die Team-Bewertung waehrend der
+    Greedy-Auswahl. Gibt (pnl_pct, max_dd) zurueck, Start bei 100."""
+    all_trades = [t for p in pairs for t in p['_is_trades']]
+    if not all_trades:
+        return 0.0, 0.0
+    final_eq, max_dd, _ = simulate_trades(all_trades, 100.0, risk_pct, leverage=leverage)
+    return (final_eq - 100.0) / 100.0 * 100.0, max_dd
+
+
+def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, leverage=1,
+                      max_dd_limit=30.0):
     """
-    Wählt das Portfolio für das In-Sample Fenster [is_start, is_end).
-    Kriterium: Alle Pairs mit >= min_trades und positivem Calmar.
+    Wählt das Portfolio für das In-Sample Fenster [is_start, is_end) --
+    mit demselben Greedy-Algorithmus wie run_portfolio_optimizer.py::
+    optimize_portfolio() (Star-Spieler + beste Team-Kollegen, stoppt sobald
+    kein weiterer Coin das GEMEINSAME Ergebnis mehr verbessert). Vorher wurden
+    hier pauschal ALLE einzeln profitablen Coins übernommen (keine Obergrenze,
+    kein "verwässert das Team?"-Check) -- das simulierte eine viel
+    unselektivere Strategie als die, die run_portfolio_optimizer.py
+    tatsächlich waehlt (dort typischerweise 4-6 Coins, nicht 15-20), und
+    verzerrte den Walk-Forward-Vergleich entsprechend nach unten.
     Constraint: Max 1 Timeframe pro Coin (Bitget-Regel).
     """
     candidates = []
@@ -187,26 +206,57 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
         is_trades = [t for t in r['trades'] if is_start <= t['entry_dt'] < is_end]
         if len(is_trades) < min_trades:
             continue
-        # Calmar auf In-Sample berechnen (mit Startkapital = 100 für Vergleichbarkeit)
         final_eq, max_dd, wins = simulate_trades(is_trades, 100.0, risk_pct, leverage=leverage)
         pnl_pct = (final_eq - 100.0) / 100.0 * 100.0
         if pnl_pct <= 0:
             continue
         calmar = pnl_pct / max_dd if max_dd > 0 else pnl_pct
-        candidates.append({**r, '_calmar': calmar, '_pnl': pnl_pct, '_n': len(is_trades)})
+        candidates.append({**r, '_is_trades': is_trades, '_calmar': calmar,
+                            '_pnl': pnl_pct, '_n': len(is_trades)})
 
-    # Max 1 TF pro Coin: bester Calmar gewinnt
+    # Max 1 TF pro Coin: bester Einzel-Calmar geht in den Kandidatenpool
     coin_best = {}
     for c in candidates:
         if c['coin'] not in coin_best or c['_calmar'] > coin_best[c['coin']]['_calmar']:
             coin_best[c['coin']] = c
 
-    return list(coin_best.values())
+    eligible = list(coin_best.values())
+    if not eligible:
+        return []
+
+    eligible.sort(key=lambda c: c['_calmar'], reverse=True)
+
+    # Star-Spieler: Einzelstrategie mit höchstem In-Sample-Calmar
+    best_team = [eligible[0]]
+    best_pnl, best_dd = _combined_pnl_dd(best_team, risk_pct, leverage=leverage)
+    best_score = best_pnl / best_dd if best_dd > 0 else best_pnl
+    candidate_pool = eligible[1:]
+
+    while candidate_pool:
+        best_addition   = None
+        best_score_with = best_score
+        for cand in candidate_pool:
+            pnl, dd = _combined_pnl_dd(best_team + [cand], risk_pct, leverage=leverage)
+            if dd > max_dd_limit:
+                continue
+            score = pnl / dd if dd > 0 else pnl
+            if score > best_score_with:
+                best_score_with = score
+                best_addition   = cand
+        if best_addition:
+            best_team.append(best_addition)
+            best_score = best_score_with
+            candidate_pool.remove(best_addition)
+        else:
+            break
+
+    return best_team
 
 
 # ─── Walk-Forward ─────────────────────────────────────────────────────────────
 
-def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_starts, capital, leverage=1):
+def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_starts, capital,
+                      leverage=1, max_dd_limit=30.0):
     """
     Walk-Forward für einen Lookback-Zeitraum.
     Gibt (equity_curve, total_trades, total_wins, empty_weeks) zurück.
@@ -222,7 +272,8 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_sta
         is_start  = week_start - timedelta(weeks=lookback_weeks)
         oos_end   = week_start + timedelta(weeks=1)
 
-        portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct, leverage=leverage)
+        portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct,
+                                      leverage=leverage, max_dd_limit=max_dd_limit)
 
         oos_trades = []
         for p in portfolio:
@@ -394,6 +445,9 @@ def main():
                              'OOS fast vollstaendig aufzehrte (PnL%/MaxDD% konvergieren beim '
                              'Totalverlust beide gegen 100%, daher Calmar exakt -1.0 bei JEDEM '
                              'Lookback gleichzeitig).')
+    parser.add_argument('--max-dd', type=float, default=30.0,
+                        help='Max. Drawdown-Limit fuer die Team-Auswahl (Standard: 30, '
+                             'wie run_portfolio_optimizer.py --max-dd)')
     parser.add_argument('--no-telegram', action='store_true')
     args = parser.parse_args()
 
@@ -409,6 +463,7 @@ def main():
     print(f"  Startkapital: {capital} USDT")
     print(f"  Leverage:     {leverage}x (aus settings.json)")
     print(f"  Min. Trades:  {args.min_trades} (pro Pair im Lookback-Fenster)")
+    print(f"  Max Drawdown: {args.max_dd}% (Team-Auswahl)")
     print(f"  Lookbacks:    {LOOKBACK_WINDOWS} Wochen")
     print()
 
@@ -460,7 +515,8 @@ def main():
     for weeks in active_lookbacks:
         print(f"  {C}Lookback {weeks:2d}W ...{NC}", end='', flush=True)
         curve, n_total, n_wins, empty_w = run_walk_forward(
-            all_results, weeks, risk_pct, args.min_trades, week_starts, capital, leverage=leverage
+            all_results, weeks, risk_pct, args.min_trades, week_starts, capital,
+            leverage=leverage, max_dd_limit=args.max_dd
         )
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)
         wr = n_wins / n_total * 100 if n_total > 0 else 0.0

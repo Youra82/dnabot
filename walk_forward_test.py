@@ -317,6 +317,7 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
     total_n     = 0
     total_wins  = 0
     empty_weeks = 0
+    trade_log   = []
 
     for week_start in week_starts:
         is_start  = week_start - timedelta(weeks=lookback_weeks)
@@ -329,7 +330,8 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
         oos_trades = []
         for p in portfolio:
             oos_trades.extend(
-                t for t in p['trades'] if week_start <= t['entry_dt'] < oos_end
+                (p['market'], p['timeframe'], t) for t in p['trades']
+                if week_start <= t['entry_dt'] < oos_end
             )
 
         if not oos_trades:
@@ -337,12 +339,19 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
             curve.append((oos_end, equity, len(portfolio), 0))
             continue
 
-        equity, _, wins = simulate_trades(oos_trades, equity, risk_pct, leverage=leverage, fee_pct=fee_pct)
+        raw_trades = [t for _, _, t in oos_trades]
+        equity, _, wins = simulate_trades(raw_trades, equity, risk_pct, leverage=leverage, fee_pct=fee_pct)
         total_n    += len(oos_trades)
         total_wins += wins
         curve.append((oos_end, equity, len(portfolio), len(oos_trades)))
+        for market, timeframe, t in oos_trades:
+            trade_log.append({
+                'week': week_start, 'market': market, 'timeframe': timeframe,
+                'entry_dt': t['entry_dt'], 'outcome': t.get('outcome', 'LOSS'),
+                'pnl_pct': t.get('pnl_pct', 0.0), 'sl_pct': t.get('sl_pct', 1.0),
+            })
 
-    return curve, total_n, total_wins, empty_weeks
+    return curve, total_n, total_wins, empty_weeks, trade_log
 
 
 # ─── Statistiken ──────────────────────────────────────────────────────────────
@@ -587,11 +596,12 @@ def main():
     print()
 
     # ── Walk-Forward für jeden Lookback
-    results = {}
+    results   = {}
+    trade_logs = {}
     for weeks in active_lookbacks:
         print(f"  {C}Lookback {weeks:2d}W (min. {scaled_min_trades(weeks)} Trades) ...{NC}",
               end='', flush=True)
-        curve, n_total, n_wins, empty_w = run_walk_forward(
+        curve, n_total, n_wins, empty_w, trade_log = run_walk_forward(
             all_results, weeks, risk_pct, week_starts, capital,
             leverage=leverage, max_dd_limit=args.max_dd, require_persistence=args.persistence,
             fee_pct=args.fee_pct
@@ -599,6 +609,7 @@ def main():
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)
         wr = n_wins / n_total * 100 if n_total > 0 else 0.0
         results[weeks] = (curve, n_total, n_wins, empty_w)
+        trade_logs[weeks] = trade_log
 
         col = G if pnl_pct > 0 else R
         print(f"  {col}PnL={pnl_pct:+.1f}% | DD={max_dd:.1f}% | "
@@ -614,6 +625,23 @@ def main():
     print(f"  {G}★ Bester Lookback: {best_weeks} Wochen{NC}")
     print(f"  Calmar: {bc:.1f} | PnL: {bp:+.1f}% | MaxDD: {bd:.1f}%")
     print(f"  {'─' * 50}")
+
+    # ── Trade-Detail des Gewinner-Lookbacks -- bei duennen Samples (siehe
+    # scaled_min_trades()-Floor) muss man nachsehen koennen, WELCHE Trades
+    # das Ergebnis tragen, statt der Calmar-Zahl blind zu vertrauen (gleiche
+    # Lehre wie beim VET/15m-Fall, der die urspruengliche Portfolio-Audit
+    # ausgeloest hat).
+    best_log = sorted(trade_logs[best_weeks], key=lambda x: x['entry_dt'])
+    print()
+    print(f"  {Y}Trades im Gewinner-Lookback ({best_weeks}W, {len(best_log)} Trades):{NC}")
+    for t in best_log:
+        col = G if t['outcome'] == 'WIN' else (R if t['outcome'] == 'LOSS' else C)
+        print(f"    {t['entry_dt'].strftime('%Y-%m-%d %H:%M')}  {t['market']:<10} {t['timeframe']:<4} "
+              f"{col}{t['outcome']:<7}{NC} pnl_pct={t['pnl_pct']:+.2f}% sl_pct={t['sl_pct']:.2f}%")
+    coins_involved = sorted(set(t['market'] for t in best_log))
+    if len(coins_involved) <= 2:
+        print(f"    {R}⚠ Nur {len(coins_involved)} Coin(s) beteiligt: {coins_involved} "
+              f"-- Ergebnis haengt an sehr wenigen Symbolen.{NC}")
 
     # ── Empfehlung für settings.json
     rec_date = (datetime.now(timezone.utc) - timedelta(weeks=best_weeks)).strftime('%Y-%m-%d')

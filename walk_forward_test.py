@@ -197,7 +197,7 @@ def _combined_pnl_dd(pairs, risk_pct, leverage=1):
 
 
 def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, leverage=1,
-                      max_dd_limit=30.0):
+                      max_dd_limit=30.0, require_persistence=False):
     """
     Wählt das Portfolio für das In-Sample Fenster [is_start, is_end) --
     mit demselben Greedy-Algorithmus wie run_portfolio_optimizer.py::
@@ -209,7 +209,18 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
     tatsächlich waehlt (dort typischerweise 4-6 Coins, nicht 15-20), und
     verzerrte den Walk-Forward-Vergleich entsprechend nach unten.
     Constraint: Max 1 Timeframe pro Coin (Bitget-Regel).
+
+    require_persistence: verlangt zusaetzlich, dass ein Kandidat auch schon
+    im VORHERIGEN Fenster derselben Laenge [is_start - Lookback, is_start)
+    profitabel war (mit derselben min_trades-Schwelle) -- ein reines
+    "war zuletzt gut" (Calmar-Chasing) laesst sich von echtem Zufall kaum
+    unterscheiden; zwei aufeinanderfolgende gute Perioden filtern reine
+    Gluecksserien eher raus. Experimentell -- noch nicht in
+    run_portfolio_optimizer.py uebernommen, erst hier validieren.
     """
+    lookback = is_end - is_start
+    prev_start, prev_end = is_start - lookback, is_start
+
     candidates = []
     for r in all_results:
         is_trades = [t for t in r['trades'] if is_start <= t['entry_dt'] < is_end]
@@ -219,6 +230,16 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
         pnl_pct = (final_eq - 100.0) / 100.0 * 100.0
         if pnl_pct <= 0:
             continue
+
+        if require_persistence:
+            prev_trades = [t for t in r['trades'] if prev_start <= t['entry_dt'] < prev_end]
+            if len(prev_trades) < min_trades:
+                continue
+            prev_eq, _, _ = simulate_trades(prev_trades, 100.0, risk_pct, leverage=leverage)
+            prev_pnl = (prev_eq - 100.0) / 100.0 * 100.0
+            if prev_pnl <= 0:
+                continue
+
         calmar = pnl_pct / max_dd if max_dd > 0 else pnl_pct
         candidates.append({**r, '_is_trades': is_trades, '_calmar': calmar,
                             '_pnl': pnl_pct, '_n': len(is_trades)})
@@ -265,7 +286,7 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
 # ─── Walk-Forward ─────────────────────────────────────────────────────────────
 
 def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital,
-                      leverage=1, max_dd_limit=30.0):
+                      leverage=1, max_dd_limit=30.0, require_persistence=False):
     """
     Walk-Forward für einen Lookback-Zeitraum.
     Gibt (equity_curve, total_trades, total_wins, empty_weeks) zurück.
@@ -290,7 +311,8 @@ def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital
         oos_end   = week_start + timedelta(weeks=1)
 
         portfolio = select_portfolio(all_results, is_start, week_start, min_trades, risk_pct,
-                                      leverage=leverage, max_dd_limit=max_dd_limit)
+                                      leverage=leverage, max_dd_limit=max_dd_limit,
+                                      require_persistence=require_persistence)
 
         oos_trades = []
         for p in portfolio:
@@ -464,6 +486,11 @@ def main():
                              'zwangslaeufig auch die unreife Anfangsphase des Systems mit. '
                              '--oos-weeks 26 z.B. testet nur, wie die AUSGEREIFTE Version '
                              '(voller 3-Jahres-Vorlauf) OOS abschneidet.')
+    parser.add_argument('--persistence', action='store_true',
+                        help='Verlangt zusaetzlich, dass ein Kandidat auch schon im '
+                             'VORHERIGEN Fenster derselben Laenge profitabel war (zwei '
+                             'aufeinanderfolgende gute Perioden statt nur der aktuellen) '
+                             '-- experimentell, Test gegen reines Calmar-Chasing.')
     parser.add_argument('--no-telegram', action='store_true')
     args = parser.parse_args()
 
@@ -481,6 +508,7 @@ def main():
     print(f"  Min. Trades:  {scaled_min_trades(LOOKBACK_WINDOWS[0])}-{scaled_min_trades(LOOKBACK_WINDOWS[-1])} "
           f"(skaliert mit Lookback, siehe run_portfolio_optimizer.py::scaled_min_trades)")
     print(f"  Max Drawdown: {args.max_dd}% (Team-Auswahl)")
+    print(f"  Persistenz:   {'ja -- 2 aufeinanderfolgende gute Perioden verlangt' if args.persistence else 'nein (Standard)'}")
     print(f"  Lookbacks:    {LOOKBACK_WINDOWS} Wochen")
     print()
 
@@ -548,7 +576,7 @@ def main():
               end='', flush=True)
         curve, n_total, n_wins, empty_w = run_walk_forward(
             all_results, weeks, risk_pct, week_starts, capital,
-            leverage=leverage, max_dd_limit=args.max_dd
+            leverage=leverage, max_dd_limit=args.max_dd, require_persistence=args.persistence
         )
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)
         wr = n_wins / n_total * 100 if n_total > 0 else 0.0

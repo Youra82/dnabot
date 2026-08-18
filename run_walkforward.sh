@@ -44,12 +44,18 @@ if ! [[ "$CAPITAL_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL_INPUT=100; fi
 read -p "OOS-Testzeitraum auf die letzten N Wochen eingrenzen [leer=voller Zeitraum]: " OOS_W_INPUT
 OOS_W_INPUT="${OOS_W_INPUT//[$'\r\n ']/}"
 
+read -p "Persistenz verlangen (2 aufeinanderfolgende gute Perioden statt nur 1)? (j/n) [Standard: n]: " PERSIST_INPUT
+PERSIST_INPUT="${PERSIST_INPUT//[$'\r\n ']/}"
+
 ARGS="--capital $CAPITAL_INPUT"
 if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     ARGS="$ARGS --risk $RISK_INPUT"
 fi
 if [[ "$OOS_W_INPUT" =~ ^[0-9]+$ ]]; then
     ARGS="$ARGS --oos-weeks $OOS_W_INPUT"
+fi
+if [[ "$PERSIST_INPUT" == "j" || "$PERSIST_INPUT" == "J" || "$PERSIST_INPUT" == "y" || "$PERSIST_INPUT" == "Y" ]]; then
+    ARGS="$ARGS --persistence"
 fi
 
 echo ""

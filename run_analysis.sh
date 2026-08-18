@@ -115,9 +115,12 @@ run_mode() {
         # strukturell von niedrigfrequenten Pairs aus.
         read -p "OOS-Testzeitraum auf die letzten N Wochen eingrenzen [leer=voller Zeitraum]: " OOS_W
         OOS_W="${OOS_W//[$'\r\n ']/}"
+        read -p "Persistenz verlangen (2 aufeinanderfolgende gute Perioden statt nur 1)? (j/n) [Standard: n]: " PERSIST
+        PERSIST="${PERSIST//[$'\r\n ']/}"
         ARGS="--capital $CAP $NO_TELEGRAM"
         [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]] && ARGS="$ARGS --risk $RISK"
         [[ "$OOS_W" =~ ^[0-9]+$ ]] && ARGS="$ARGS --oos-weeks $OOS_W"
+        [[ "$PERSIST" == "j" || "$PERSIST" == "J" || "$PERSIST" == "y" || "$PERSIST" == "Y" ]] && ARGS="$ARGS --persistence"
         $PYTHON "$SCRIPT_DIR/walk_forward_test.py" $ARGS
         ;;
 

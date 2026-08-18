@@ -16,7 +16,7 @@ Methode: Rolling Walk-Forward (kein Lookahead)
 Ausführung:
     ./run_walkforward.sh
     python3 walk_forward_test.py
-    python3 walk_forward_test.py --risk 1.5 --min-trades 2 --no-telegram
+    python3 walk_forward_test.py --risk 1.5 --no-telegram
 """
 
 import os
@@ -27,6 +27,15 @@ from datetime import datetime, timedelta, timezone
 
 PROJECT_ROOT  = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
+
+# Geteilte Mindest-Trade-Skalierung mit run_portfolio_optimizer.py -- der
+# Walk-Forward-Test muss dieselbe Regel testen, die der echte Optimizer bei
+# demselben Lookback tatsaechlich anwenden wuerde, sonst bewertet er eine
+# andere Strategie als die, die live laeuft (siehe scaled_min_trades()-
+# Docstring dort: fest bei 10 schloss kurze Lookback-Fenster strukturell von
+# niedrigfrequenten, aber ueber die volle Historie starken Pairs aus).
+sys.path.insert(0, PROJECT_ROOT)
+from run_portfolio_optimizer import scaled_min_trades
 
 RESULTS_DIR   = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
@@ -255,13 +264,21 @@ def select_portfolio(all_results, is_start, is_end, min_trades, risk_pct, levera
 
 # ─── Walk-Forward ─────────────────────────────────────────────────────────────
 
-def run_walk_forward(all_results, lookback_weeks, risk_pct, min_trades, week_starts, capital,
+def run_walk_forward(all_results, lookback_weeks, risk_pct, week_starts, capital,
                       leverage=1, max_dd_limit=30.0):
     """
     Walk-Forward für einen Lookback-Zeitraum.
     Gibt (equity_curve, total_trades, total_wins, empty_weeks) zurück.
     equity_curve: Liste von (week_end_date, equity, n_portfolio_pairs, n_oos_trades)
+
+    Mindest-Trade-Zahl pro Kandidat wird ueber scaled_min_trades(lookback_weeks)
+    bestimmt (geteilt mit run_portfolio_optimizer.py) -- ein 1-Wochen-Lookback
+    testet damit dieselbe (lockere) Regel, die der echte Optimizer bei einem
+    tatsaechlich konfigurierten 1-Wochen-Fenster anwenden wuerde, statt einer
+    fixen Schwelle, die kurze Fenster strukturell auf hochfrequente Pairs
+    einschraenkt.
     """
+    min_trades  = scaled_min_trades(lookback_weeks)
     equity      = capital
     curve       = []
     total_n     = 0
@@ -435,16 +452,6 @@ def main():
     parser.add_argument('--risk',        type=float, default=None,
                         help='Risiko pro Trade in %% (Standard: aus settings.json)')
     parser.add_argument('--capital',     type=float, default=100.0)
-    parser.add_argument('--min-trades',  type=int,   default=10,
-                        help='Min. Trades pro Pair im Lookback-Fenster -- Default 10, '
-                             'gleicher Schwellwert wie run_portfolio_optimizer.py::MIN_TRADES '
-                             'und alphabet_optimizer.py::MIN_OOS_TRADES_DEFAULT. Bei 2 (alter '
-                             'Default) reichten 2-3 Gluecks-Trades pro Woche fuer "unendlichen" '
-                             'Calmar (0% Drawdown) -- select_portfolio() jagte dadurch jede Woche '
-                             'neuen Zufallstreffern hinterher statt echtem Edge, was das Konto '
-                             'OOS fast vollstaendig aufzehrte (PnL%/MaxDD% konvergieren beim '
-                             'Totalverlust beide gegen 100%, daher Calmar exakt -1.0 bei JEDEM '
-                             'Lookback gleichzeitig).')
     parser.add_argument('--max-dd', type=float, default=30.0,
                         help='Max. Drawdown-Limit fuer die Team-Auswahl (Standard: 30, '
                              'wie run_portfolio_optimizer.py --max-dd)')
@@ -462,7 +469,8 @@ def main():
     print(f"  Risk/Trade:   {risk_pct}%")
     print(f"  Startkapital: {capital} USDT")
     print(f"  Leverage:     {leverage}x (aus settings.json)")
-    print(f"  Min. Trades:  {args.min_trades} (pro Pair im Lookback-Fenster)")
+    print(f"  Min. Trades:  {scaled_min_trades(LOOKBACK_WINDOWS[0])}-{scaled_min_trades(LOOKBACK_WINDOWS[-1])} "
+          f"(skaliert mit Lookback, siehe run_portfolio_optimizer.py::scaled_min_trades)")
     print(f"  Max Drawdown: {args.max_dd}% (Team-Auswahl)")
     print(f"  Lookbacks:    {LOOKBACK_WINDOWS} Wochen")
     print()
@@ -513,9 +521,10 @@ def main():
     # ── Walk-Forward für jeden Lookback
     results = {}
     for weeks in active_lookbacks:
-        print(f"  {C}Lookback {weeks:2d}W ...{NC}", end='', flush=True)
+        print(f"  {C}Lookback {weeks:2d}W (min. {scaled_min_trades(weeks)} Trades) ...{NC}",
+              end='', flush=True)
         curve, n_total, n_wins, empty_w = run_walk_forward(
-            all_results, weeks, risk_pct, args.min_trades, week_starts, capital,
+            all_results, weeks, risk_pct, week_starts, capital,
             leverage=leverage, max_dd_limit=args.max_dd
         )
         calmar, pnl_pct, max_dd = compute_stats(curve, capital)

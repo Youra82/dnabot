@@ -39,11 +39,9 @@ read -p "Startkapital in USDT [Standard: 100]: " CAPITAL_INPUT
 CAPITAL_INPUT="${CAPITAL_INPUT//[$'\r\n ']/}"
 if ! [[ "$CAPITAL_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL_INPUT=100; fi
 
-read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 10]: " MIN_TRADES_INPUT
-MIN_TRADES_INPUT="${MIN_TRADES_INPUT//[$'\r\n ']/}"
-if ! [[ "$MIN_TRADES_INPUT" =~ ^[0-9]+$ ]]; then MIN_TRADES_INPUT=10; fi
-
-ARGS="--capital $CAPITAL_INPUT --min-trades $MIN_TRADES_INPUT"
+# Mindest-Trade-Zahl wird automatisch pro Lookback skaliert
+# (scaled_min_trades() in run_portfolio_optimizer.py) statt fix abgefragt.
+ARGS="--capital $CAPITAL_INPUT"
 if [[ "$RISK_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     ARGS="$ARGS --risk $RISK_INPUT"
 fi

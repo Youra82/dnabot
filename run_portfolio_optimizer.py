@@ -36,18 +36,44 @@ NC  = '\033[0m'
 
 N_WORKERS         = min(os.cpu_count() or 4, 8)
 MAX_NOTIONAL_USDT = 200_000.0
-MIN_TRADES        = 10  # unter dieser Trade-Zahl im Lookback-Fenster (siehe
-                         # backtest_lookback_weeks) ist Calmar nicht belastbar --
-                         # bei 0% Drawdown faellt _calmar() auf die rohe PnL%
-                         # zurueck, ein Kandidat mit z.B. nur 1-2 Gewinn-Trades
-                         # sieht dadurch "unendlich gut" aus, ohne irgendeinen
-                         # echten Beweis fuer einen Edge zu liefern. Derselbe
-                         # Schwellwert wie analysis/alphabet_optimizer.py::
-                         # MIN_OOS_TRADES_DEFAULT (dort aus demselben Grund
-                         # eingefuehrt, nachdem 5 OOS-Trades BTC/USDT 4h faelschlich
-                         # "bestaetigt" hatten) -- beide Stellen entscheiden
-                         # letztlich ueber echtes Kapital, sollen denselben
-                         # Beweis-Standard anlegen.
+
+# Mindest-Trade-Zahl im Lookback-Fenster, damit ein Kandidat ueberhaupt als
+# Portfolio-Kandidat zaehlt -- unter dieser Zahl ist Calmar nicht belastbar
+# (bei 0% Drawdown faellt _calmar() auf die rohe PnL% zurueck, ein Kandidat
+# mit z.B. nur 1-2 Gewinn-Trades sieht dadurch "unendlich gut" aus, ohne
+# irgendeinen echten Beweis fuer einen Edge zu liefern).
+#
+# Frueher fix bei 10 (wie alphabet_optimizer.py::MIN_OOS_TRADES_DEFAULT) --
+# das schloss bei kurzen backtest_lookback_weeks (z.B. 2 Wochen) JEDE
+# niedrigfrequente Strategie (2h/4h/6h) strukturell aus: XRP/2h, NEAR/6h,
+# UNI/6h, BCH/6h zeigten ueber die volle 3-Jahres-Historie starke Ergebnisse,
+# hatten aber in einem 2-Wochen-Fenster schlicht nicht genug Trades, um die
+# feste 10er-Huerde zu reissen -- nicht weil sie schlecht sind, sondern weil
+# sie zu selten handeln. Jetzt linear zwischen MIN_TRADES_FLOOR (bei kurzen
+# Fenstern <= MIN_TRADES_FLOOR_WEEKS, praktisch keine Untergrenze) und
+# MIN_TRADES_CEIL (ab MIN_TRADES_CEIL_WEEKS, die alte feste Schwelle)
+# interpoliert -- ein 8-Wochen-Fenster verlangt weniger Beweis als 26 Wochen,
+# aber immer noch mehr als 1-2 Zufallstreffer.
+MIN_TRADES_FLOOR       = 1
+MIN_TRADES_FLOOR_WEEKS = 4.0
+MIN_TRADES_CEIL        = 10
+MIN_TRADES_CEIL_WEEKS  = 26.0
+
+
+def scaled_min_trades(lookback_weeks) -> int:
+    """Mindest-Trade-Zahl fuer ein Lookback-Fenster von `lookback_weeks` Wochen
+    -- linear interpoliert zwischen MIN_TRADES_FLOOR/_FLOOR_WEEKS und
+    MIN_TRADES_CEIL/_CEIL_WEEKS. `lookback_weeks=None` (kein Datumsfilter,
+    z.B. volle Historie) faellt auf die volle Schwelle MIN_TRADES_CEIL zurueck
+    -- bei unbegrenzter Historie gibt es keinen Grund, die Beweislast zu senken."""
+    if lookback_weeks is None:
+        return MIN_TRADES_CEIL
+    if lookback_weeks <= MIN_TRADES_FLOOR_WEEKS:
+        return MIN_TRADES_FLOOR
+    if lookback_weeks >= MIN_TRADES_CEIL_WEEKS:
+        return MIN_TRADES_CEIL
+    frac = (lookback_weeks - MIN_TRADES_FLOOR_WEEKS) / (MIN_TRADES_CEIL_WEEKS - MIN_TRADES_FLOOR_WEEKS)
+    return round(MIN_TRADES_FLOOR + frac * (MIN_TRADES_CEIL - MIN_TRADES_FLOOR))
 
 
 def _get_telegram_credentials():
@@ -228,12 +254,18 @@ def _calmar(metrics: dict) -> float:
 
 
 def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
-                        max_dd_limit: float) -> tuple:
+                        max_dd_limit: float, lookback_weeks=None) -> tuple:
     """
     Greedy-Algorithmus mit Calmar-Ratio-Score (wie jaegerbot).
     Kandidaten pro Iteration werden parallel via ThreadPoolExecutor bewertet.
     Constraint: max. 1 TF pro Coin (Bitget: 1 Position pro Symbol).
+
+    lookback_weeks: Laenge des Datumsfensters, aus dem `candidates` stammen
+    (siehe main()) -- bestimmt ueber scaled_min_trades() die Mindest-Trade-
+    Zahl pro Kandidat. None = keine Datumseinschraenkung (volle Historie).
     """
+    min_trades = scaled_min_trades(lookback_weeks)
+
     # Einzel-Stats für alle Kandidaten berechnen
     for r in candidates:
         r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct)
@@ -243,7 +275,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     coin_best: dict = {}
     for r in candidates:
         st = r['filtered_stats']
-        if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit or st['n_trades'] < MIN_TRADES:
+        if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit or st['n_trades'] < min_trades:
             continue
         coin  = r['coin']
         score = _calmar(st)
@@ -788,14 +820,27 @@ def main():
             with open(SETTINGS_PATH) as f:
                 _s = json.load(f)
             opt = _s.get('optimization_settings', {})
-            lookback_weeks = opt.get('backtest_lookback_weeks')
-            if lookback_weeks:
+            lookback_weeks_cfg = opt.get('backtest_lookback_weeks')
+            if lookback_weeks_cfg:
                 from datetime import timedelta
                 args.start_date = (
-                    datetime.now(timezone.utc) - timedelta(weeks=int(lookback_weeks))
+                    datetime.now(timezone.utc) - timedelta(weeks=int(lookback_weeks_cfg))
                 ).strftime('%Y-%m-%d')
             else:
                 args.start_date = opt.get('backtest_start_date')
+        except Exception:
+            pass
+
+    # Effektive Lookback-Laenge in Wochen fuer scaled_min_trades() -- egal ob
+    # start_date aus backtest_lookback_weeks abgeleitet oder per --start-date/
+    # backtest_start_date explizit gesetzt wurde, damit ein kurzes Fenster
+    # (egal wie es zustande kam) niedrigfrequente Pairs nicht mehr pauschal
+    # ausschliesst (siehe scaled_min_trades()-Docstring).
+    lookback_weeks = None
+    if args.start_date:
+        try:
+            sd = datetime.fromisoformat(args.start_date).replace(tzinfo=timezone.utc)
+            lookback_weeks = max((datetime.now(timezone.utc) - sd).days / 7.0, 0.0)
         except Exception:
             pass
 
@@ -808,6 +853,8 @@ def main():
     print(f"  Ziel: Maximaler Profit bei maximal {args.max_dd:.1f}% Drawdown.{date_range}")
     print(f"  Modell: Gemeinsamer Kapital-Pool — alle Trades kompoundieren zusammen")
     print(f"  Constraint: max. 1 Timeframe pro Coin (Bitget-Regel)")
+    print(f"  Min. Trades/Kandidat: {scaled_min_trades(lookback_weeks)}"
+          + (f" (bei {lookback_weeks:.1f} Wochen Lookback)" if lookback_weeks is not None else " (volle Historie)"))
     print(f"{'─' * 72}\n")
 
     print("  Lade Backtest-Ergebnisse ...", end='', flush=True)
@@ -832,7 +879,8 @@ def main():
     best_calmar    = -999.0
 
     for risk_pct in risk_levels:
-        m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd)
+        m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd,
+                                       lookback_weeks=lookback_weeks)
         if combo and m and m['max_dd'] <= args.max_dd:
             score = _calmar(m)
             if score > best_calmar:

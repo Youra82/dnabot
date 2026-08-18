@@ -109,11 +109,11 @@ run_mode() {
         read -p "Startkapital in USDT [Standard: 100]: " CAP
         CAP="${CAP//[$'\r\n ']/}"
         if ! [[ "$CAP" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAP=100; fi
-        read -p "Min. Trades pro Pair im Lookback-Fenster [Standard: 10]: " MIN_T
-        MIN_T="${MIN_T//[$'\r\n ']/}"
-        if ! [[ "$MIN_T" =~ ^[0-9]+$ ]]; then MIN_T=10; fi
-
-        ARGS="--capital $CAP --min-trades $MIN_T $NO_TELEGRAM"
+        # Mindest-Trade-Zahl wird jetzt automatisch pro Lookback skaliert
+        # (scaled_min_trades() in run_portfolio_optimizer.py) statt fix
+        # abgefragt -- ein fester Wert schloss kurze Lookback-Fenster
+        # strukturell von niedrigfrequenten Pairs aus.
+        ARGS="--capital $CAP $NO_TELEGRAM"
         [[ "$RISK" =~ ^[0-9]+(\.[0-9]+)?$ ]] && ARGS="$ARGS --risk $RISK"
         $PYTHON "$SCRIPT_DIR/walk_forward_test.py" $ARGS
         ;;
@@ -374,7 +374,7 @@ if [ "$MODE" == "0" ]; then
         # Batch-Modus: Standard-Kapital/Risk ohne Abfrage
         case "$i" in
             1)  $PYTHON "$SCRIPT_DIR/walk_forward_test.py" \
-                    --capital 100 --min-trades 2 $NO_TELEGRAM 2>/dev/null || true ;;
+                    --capital 100 $NO_TELEGRAM 2>/dev/null || true ;;
             2)  $PYTHON "$SCRIPT_DIR/analysis/fee_impact.py" \
                     --capital 100 --risk 2.5 $NO_TELEGRAM 2>/dev/null || true ;;
             3)  $PYTHON "$SCRIPT_DIR/analysis/monte_carlo.py" \

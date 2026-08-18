@@ -21,7 +21,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.genome.database import GenomeDB
-from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string, build_pattern_sequence
+from dnabot.genome.encoder import (
+    encode_dataframe, genes_to_sequence_string, build_pattern_sequence,
+    build_momentum_pattern_sequence,
+)
 from dnabot.genome.regime import detect_regime, is_regime_allowed
 from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
 from dnabot.genome.scoring import kelly_multiplier
@@ -115,11 +118,17 @@ def _find_best_signal(genes: list[str], market: str, timeframe: str,
         if len(genes) < seq_len:
             continue
         window = genes[-seq_len:]
-        # Exakte Sequenz UND Wildcard-Pattern-Sequenz versuchen (siehe
-        # encoder.py::build_pattern_sequence() -- muss mit genome_logic.py::
-        # get_genome_signal() in lockstep bleiben, sonst validiert der
-        # Backtest ein anderes Matching als live tatsaechlich laeuft).
-        for seq in (genes_to_sequence_string(window), build_pattern_sequence(window)):
+        # Exakte Sequenz UND beide Wildcard-Pattern-Sequenzen versuchen (siehe
+        # encoder.py::build_pattern_sequence()/build_momentum_pattern_
+        # sequence() -- muss mit genome_logic.py::get_genome_signal() in
+        # lockstep bleiben, sonst validiert der Backtest ein anderes Matching
+        # als live tatsaechlich laeuft).
+        candidates = (
+            genes_to_sequence_string(window),
+            build_pattern_sequence(window),
+            build_momentum_pattern_sequence(window),
+        )
+        for seq in candidates:
             for direction in ['LONG', 'SHORT']:
                 if cutoff_iso is not None:
                     g = db.get_genome_as_of(

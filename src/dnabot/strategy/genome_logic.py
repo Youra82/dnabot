@@ -25,7 +25,10 @@ import logging
 import pandas as pd
 from typing import Optional
 
-from dnabot.genome.encoder import encode_dataframe, genes_to_sequence_string, build_pattern_sequence
+from dnabot.genome.encoder import (
+    encode_dataframe, genes_to_sequence_string, build_pattern_sequence,
+    build_momentum_pattern_sequence, classify_pattern_type,
+)
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.regime import detect_regime, is_regime_allowed, REGIME_HIGH_VOL
 from dnabot.genome.daily_bias import get_current_daily_bias, daily_bias_blocks
@@ -73,11 +76,17 @@ def _build_signal(
 
     sl_pct = (sl_distance / last_close) * 100.0
     # Wildcard-Pattern-Genome enthalten "X" (siehe encoder.py::WILDCARD) --
-    # rein zur Sichtbarkeit/Debugging, ob das neue Muster tatsaechlich feuert.
-    is_pattern_match = "X" in genome['sequence']
+    # rein zur Sichtbarkeit/Debugging, ob und welches Muster tatsaechlich feuert.
+    pattern_type = classify_pattern_type(genome['sequence'])
+    is_pattern_match = pattern_type != "exact"
+    pattern_tag = {
+        "compression": " [Kompressions-Muster]",
+        "momentum": " [Momentum-Muster]",
+        "exact": "",
+    }[pattern_type]
 
     logger.info(
-        f"[Genome Signal] {side.upper()}{' [Kompressions-Muster]' if is_pattern_match else ''} | "
+        f"[Genome Signal] {side.upper()}{pattern_tag} | "
         f"Entry: {last_close:.4f} | SL: {sl_price:.4f} ({sl_pct:.2f}%) | "
         f"TP: {tp_price:.4f} | "
         f"Score: {genome['score']:.3f} | WR: {winrate:.1%} | "
@@ -98,6 +107,7 @@ def _build_signal(
         "seq_length": seq_len,
         "avg_move_pct": genome['avg_move_pct'],
         "is_pattern_match": is_pattern_match,
+        "pattern_type": pattern_type,
     }
 
 
@@ -156,11 +166,17 @@ def get_genome_signal(
             continue
 
         window = genes[-seq_len:]
-        # Exakte Sequenz UND Wildcard-Pattern-Sequenz versuchen (siehe
-        # encoder.py::build_pattern_sequence()) -- Kompressionsphasen mit
-        # variierender interner Zick-Zack-Farbfolge werden sonst nie als
-        # dasselbe Muster erkannt. Gleiche Best-Score-Logik wie bisher.
-        candidates = [genes_to_sequence_string(window), build_pattern_sequence(window)]
+        # Exakte Sequenz UND beide Wildcard-Pattern-Sequenzen versuchen
+        # (siehe encoder.py::build_pattern_sequence()/
+        # build_momentum_pattern_sequence()) -- Kompressionsphasen mit
+        # variierender interner Zick-Zack-Farbfolge bzw. Momentum-Kaskaden mit
+        # variierendem Docht/Volumen werden sonst nie als dasselbe Muster
+        # erkannt. Gleiche Best-Score-Logik wie bisher.
+        candidates = [
+            genes_to_sequence_string(window),
+            build_pattern_sequence(window),
+            build_momentum_pattern_sequence(window),
+        ]
 
         for sequence in candidates:
             # LONG prüfen — nur wenn das Genome im aktuellen Regime aktiv ist

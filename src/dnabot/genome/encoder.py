@@ -238,3 +238,52 @@ def build_pattern_sequence(genes: list[str]) -> str:
     if len(genes) <= 1:
         return genes_to_sequence_string(genes)
     return genes_to_sequence_string([wildcard_gene(g) for g in genes[:-1]] + [genes[-1]])
+
+
+def wildcard_gene_momentum(gene: str) -> str:
+    """
+    Reduziert ein Gen auf Richtung+Koerpergroesse; Volatilitaet/Wick/Volumen
+    werden zu Wildcards (X). Das Spiegelbild von wildcard_gene(): bei einer
+    Momentum-Kaskade ("Wasserfall" -- mehrere grosskoerperige Kerzen
+    hintereinander in dieselbe Richtung) ist die Richtung gerade KEIN Rauschen
+    sondern das Signal selbst und bleibt exakt; was zwischen sonst identisch
+    aussehenden Kaskaden am ehesten schwankt, sind Docht-Form und Volumen
+    (kleine Gegenbewegungen innerhalb einzelner Kerzen, Volumen-Spikes nicht
+    bei jedem Vorkommen) -- diese werden deshalb wildcarded, nicht Richtung.
+    """
+    parts = gene.split("-")
+    if len(parts) != 2 or len(parts[0]) != 3 or len(parts[1]) != 2:
+        return gene
+    main = parts[0]
+    return f"{main[0]}{main[1]}{WILDCARD}-{WILDCARD}{WILDCARD}"
+
+
+def build_momentum_pattern_sequence(genes: list[str]) -> str:
+    """
+    Baut die Momentum-Pattern-Sequenz: JEDE Position wird auf Richtung+
+    Koerpergroesse reduziert (wildcard_gene_momentum()) -- anders als bei
+    build_pattern_sequence() gibt es hier keine ausgezeichnete "Trigger"-
+    Kerze am Ende; jede Kerze der Kaskade traegt gleichermassen zum Signal
+    "N Kerzen konsistent in dieselbe Richtung, grosskoerperig" bei. Kollidiert
+    strukturell nie mit build_pattern_sequence() (Wildcard "X" steht bei
+    Kompression an Position 0, bei Momentum an Position 2 des Gens) und nie
+    mit einer echten exakten Sequenz (WILDCARD kommt dort nie vor).
+    """
+    return genes_to_sequence_string([wildcard_gene_momentum(g) for g in genes])
+
+
+def classify_pattern_type(sequence: str) -> str:
+    """
+    Bestimmt anhand der Wildcard-Position im ersten Gen, welcher Match-Typ
+    eine Sequenz ist -- rein fuer Logging/Anzeige (siehe genome_logic.py::
+    _build_signal()). "X" an Position 0 (Richtung) -> Kompressions-Pattern,
+    "X" an Position 2 (Volatilitaet) -> Momentum-Pattern, sonst exakt.
+    """
+    first = sequence.split("|", 1)[0]
+    if len(first) < 3:
+        return "exact"
+    if first[0] == WILDCARD:
+        return "compression"
+    if first[2] == WILDCARD:
+        return "momentum"
+    return "exact"

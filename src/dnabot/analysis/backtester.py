@@ -28,6 +28,7 @@ from dnabot.genome.encoder import (
 from dnabot.genome.regime import detect_regime, is_regime_allowed
 from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
 from dnabot.genome.scoring import kelly_multiplier
+from dnabot.genome.order_blocks import find_order_blocks, check_retest
 
 
 def _compute_cvd_slope(df: pd.DataFrame, slope_period: int = 5) -> pd.Series:
@@ -230,13 +231,19 @@ def _get_fine_slice(fine_data, start_ts, end_ts):
 def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                     max_hold_candles: int = 20,
                     trailing_callback_pct: float = None,
-                    fine_df: pd.DataFrame = None) -> dict:
+                    fine_df: pd.DataFrame = None,
+                    sl_price_override: float = None,
+                    tp_price_override: float = None) -> dict:
     """
     Simuliert einen Trade auf historischen Daten.
 
     Entry = Close der Signal-Kerze
-    SL = Low/High der letzten seq_len Kerzen
-    TP = Entry ± rr_ratio × SL-Distanz
+    SL = Low/High der letzten seq_len Kerzen (Standardfall) ODER
+    sl_price_override/tp_price_override, falls gesetzt (Order-Block-Signale:
+    die Zone kann viel weiter zurueckliegen als seq_len Kerzen, siehe
+    order_blocks.py::check_retest() -- die dort bereits validierten SL/TP-
+    Preise werden dann direkt uebernommen statt aus einem Kerzen-Fenster neu
+    hergeleitet). None (Standard) = altes Verhalten, unveraendert.
 
     trailing_callback_pct (0-1, z.B. 0.01 = 1%): wenn gesetzt, wird tp_price nur
     als AKTIVIERUNGS-Preis fuer einen Trailing Stop behandelt (wie live in
@@ -252,23 +259,28 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
     direction = signal['direction']
     rr_ratio = signal['rr_ratio']
 
-    seq_df = df.iloc[max(0, entry_idx - seq_len + 1): entry_idx + 1]
     entry_price = float(df['close'].iloc[entry_idx])
 
-    if direction == 'LONG':
-        sl_price = float(seq_df['low'].min())
-        sl_dist = entry_price - sl_price
-        if sl_dist <= 0:
-            sl_price = entry_price * 0.98
-            sl_dist = entry_price - sl_price
-        tp_price = entry_price + rr_ratio * sl_dist
+    if sl_price_override is not None and tp_price_override is not None:
+        sl_price = sl_price_override
+        tp_price = tp_price_override
+        sl_dist = (entry_price - sl_price) if direction == 'LONG' else (sl_price - entry_price)
     else:
-        sl_price = float(seq_df['high'].max())
-        sl_dist = sl_price - entry_price
-        if sl_dist <= 0:
-            sl_price = entry_price * 1.02
+        seq_df = df.iloc[max(0, entry_idx - seq_len + 1): entry_idx + 1]
+        if direction == 'LONG':
+            sl_price = float(seq_df['low'].min())
+            sl_dist = entry_price - sl_price
+            if sl_dist <= 0:
+                sl_price = entry_price * 0.98
+                sl_dist = entry_price - sl_price
+            tp_price = entry_price + rr_ratio * sl_dist
+        else:
+            sl_price = float(seq_df['high'].max())
             sl_dist = sl_price - entry_price
-        tp_price = entry_price - rr_ratio * sl_dist
+            if sl_dist <= 0:
+                sl_price = entry_price * 1.02
+                sl_dist = sl_price - entry_price
+            tp_price = entry_price - rr_ratio * sl_dist
 
     sl_pct = sl_dist / entry_price * 100.0
 
@@ -436,6 +448,17 @@ def run_backtest(
     alphabet = params.get('genome', {}).get('alphabet')
     genes = encode_dataframe(df, alphabet=alphabet)
 
+    # Order-Block-Zonen (optional, standardmaessig aus -- siehe genome/
+    # order_blocks.py) einmal vorab ueber den gesamten df berechnen, wie
+    # encode_dataframe() oben. check_retest() filtert pro Kerze intern
+    # lookahead-sicher auf Zonen, die VOR dieser Kerze entstanden sind.
+    ob_cfg = params.get('order_block', {})
+    ob_enabled = bool(ob_cfg.get('enabled', False))
+    ob_zones = find_order_blocks(df, alphabet or {}, impulse_length=ob_cfg.get('impulse_length', 3)) if ob_enabled else []
+    ob_rr_ratio = params.get('risk', {}).get('rr_ratio', 2.0)
+    ob_max_age = ob_cfg.get('zone_max_age_candles', 100)
+    ob_assumed_winrate = ob_cfg.get('assumed_winrate', 0.5)
+
     trades = []
     equity = start_capital
     equity_curve = [equity]
@@ -467,14 +490,41 @@ def run_backtest(
                 elif _cvd_val > 0 and signal['direction'] == 'SHORT':
                     signal = None
 
+        # Order-Block-Fallback: nur wenn (noch) kein Genome-Signal vorliegt
+        # (etabliertes System hat Vorrang, siehe order_blocks.py-Docstring).
+        # Regime-Gate von oben (is_regime_allowed) gilt bereits fuer die
+        # gesamte Kerze -- kein separates Gate hier noetig.
+        if signal is None and ob_enabled:
+            ob_signal = check_retest(df, i, ob_zones, market, timeframe,
+                                      rr_ratio=ob_rr_ratio, max_age_candles=ob_max_age,
+                                      assumed_winrate=ob_assumed_winrate)
+            if ob_signal is not None:
+                signal = {
+                    'direction': ob_signal['side'].upper(),
+                    'genome': {
+                        'genome_id': ob_signal['genome_id'],
+                        'score': ob_signal['score'],
+                        'wins': ob_signal['winrate'],
+                        'total_occurrences': 1,
+                    },
+                    'seq_len': ob_signal['seq_length'],
+                    'rr_ratio': ob_rr_ratio,
+                    '_ob_sl_price': ob_signal['sl_price'],
+                    '_ob_tp_price': ob_signal['tp_price'],
+                }
+
         if signal is None:
             i += 1
             equity_curve.append(equity)
             continue
 
         # Trade simulieren
-        trade = simulate_trade(signal, df, i, max_hold_candles,
-                               trailing_callback_pct=trailing_callback_pct, fine_df=fine_df)
+        trade = simulate_trade(
+            signal, df, i, max_hold_candles,
+            trailing_callback_pct=trailing_callback_pct, fine_df=fine_df,
+            sl_price_override=signal.get('_ob_sl_price'),
+            tp_price_override=signal.get('_ob_tp_price'),
+        )
 
         # Kelly-Multiplikator fuer DIESEN Trade, aus der point-in-time
         # Winrate des Signals (trade['genome_winrate'], via get_genome_as_of()

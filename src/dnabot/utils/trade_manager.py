@@ -26,6 +26,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.scoring import kelly_risk_pct as _kelly_risk_pct
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
+from dnabot.strategy.order_block_logic import get_order_block_signal
 
 MIN_NOTIONAL_USDT = 5.0
 MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
@@ -841,6 +842,10 @@ def place_entry_orders(
         # NEUTRAL-Statistikspalte, egal in welchem Regime er tatsaechlich lief,
         # waehrend discovery.py offline korrekt das tatsaechliche Regime trackt.
         "regime": genome_signal.get('regime', 'NEUTRAL'),
+        # Order-Block-Signale haben keine echte Genome-DB-Zeile (siehe
+        # genome/order_blocks.py-Docstring) -- self_learn_from_closed_trade()
+        # muss das erkennen und den DB-Schreibversuch ueberspringen.
+        "is_order_block": genome_signal.get('is_order_block', False),
     }
     _write_tracker(tracker_path, tracker)
 
@@ -895,6 +900,16 @@ def self_learn_from_closed_trade(
     active_genome = tracker.get('active_genome')
 
     if not active_genome:
+        return
+
+    if active_genome.get('is_order_block'):
+        # Order Blocks haben keine Genome-DB-Zeile und kein Signifikanz-
+        # Tracking (siehe genome/order_blocks.py) -- ein Upsert mit dem
+        # Platzhalter-"sequence"-String wuerde nur bedeutungslose Einmal-
+        # Zeilen in der Genome-DB erzeugen. Tracker trotzdem aufraeumen.
+        logger.info("OB-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking für Order Blocks).")
+        tracker['active_genome'] = None
+        _write_tracker(tracker_path, tracker)
         return
 
     entry_price = active_genome.get('entry_price', 0)
@@ -975,6 +990,15 @@ def full_trade_cycle(
         )
     else:
         logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
+
+    # 2b. Order-Block-Signal -- nur als Fallback, wenn kein Genome-Signal
+    # vorliegt (etabliertes System hat Vorrang, siehe order_block_logic.py-
+    # Docstring). get_order_block_signal() liefert selbst None, solange
+    # order_block_settings.enabled=false ist (Standard).
+    ob_signal = None
+    if not genome_signal:
+        ob_signal = get_order_block_signal(df, params)
+    genome_signal = genome_signal or ob_signal
 
     current_price = float(df['close'].iloc[-1])
 

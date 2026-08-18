@@ -59,6 +59,11 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     """
     global_risk = settings.get('risk_settings', {})
     global_genome = settings.get('genome_settings', {})
+    # Order Block: experimentelles, regelbasiertes Feature ohne eigenes
+    # Signifikanz-Tracking wie die Genome (siehe genome/order_blocks.py) --
+    # nur globale Config, kein per-Strategie-Override wie risk/genome_overrides,
+    # solange unklar ist ob es ueberhaupt einen Edge hat (per Default aus).
+    global_ob = settings.get('order_block_settings', {})
     overrides = find_strategy_overrides(symbol, timeframe, settings)
     risk_ov = overrides['risk']
     genome_ov = overrides['genome']
@@ -123,6 +128,12 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
         "behavior": {
             "use_longs":  risk_ov.get('use_longs', True),
             "use_shorts": risk_ov.get('use_shorts', True),
+        },
+        "order_block": {
+            "enabled":            global_ob.get('enabled', False),
+            "impulse_length":     global_ob.get('impulse_length', 3),
+            "zone_max_age_candles": global_ob.get('zone_max_age_candles', 100),
+            "assumed_winrate":    global_ob.get('assumed_winrate', 0.5),
         },
     }
 

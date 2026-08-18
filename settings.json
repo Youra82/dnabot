@@ -104,6 +104,13 @@
       }
     }
   },
+  "order_block_settings": {
+    "enabled": false,
+    "impulse_length": 3,
+    "zone_max_age_candles": 100,
+    "assumed_winrate": 0.5,
+    "_note": "Experimentell, per Default AUS. Order Block = letzte Kerze vor einem Momentum-Impuls, gilt als Support/Resistance-Zone (siehe genome/order_blocks.py). Anders als die Genome kein statistisch entdecktes/bewertetes Muster -- kein min_samples/Win-Rate-Tracking, nur eine feste Preisstruktur-Regel. Erst per Backtest/Walk-Forward auf plausible Win-Rate pruefen, bevor enabled=true live geschaltet wird. Wird nur genutzt wenn kein Genome-Signal vorliegt (Genome hat Vorrang). assumed_winrate ist nur ein Platzhalter fuers Kelly-Sizing, nach Backtest-Ergebnis anpassen."
+  },
   "risk_settings": {
     "risk_per_entry_pct": 3.0,
     "leverage": 5,

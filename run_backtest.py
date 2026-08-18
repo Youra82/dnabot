@@ -102,6 +102,7 @@ def main():
     scan_cfg    = settings.get('scan_settings', {})
     genome_cfg  = settings.get('genome_settings', {})
     risk_cfg    = settings.get('risk_settings', {})
+    ob_cfg      = settings.get('order_block_settings', {})
     active_strats = settings.get('live_trading_settings', {}).get('active_strategies', [])
 
     # Pairs bestimmen (Priorität: CLI > Env-Overrides > active_strategies)
@@ -178,6 +179,17 @@ def main():
         'risk': {
             'rr_ratio': _rr_ratio,
             'trailing_callback_rate_pct': risk_cfg.get('trailing_callback_rate_pct'),
+        },
+        # Order Block: dieselbe Aufloesung wie live in strategy/run.py::
+        # load_config() -- ohne das haette order_block_settings.enabled=true
+        # in settings.json KEINE Wirkung auf Backtests, obwohl der Live-Bot
+        # es sehen wuerde (die genaue Live/Backtest-Divergenz, vor der dieses
+        # Projekt sich an mehreren Stellen ausdruecklich schuetzt).
+        'order_block': {
+            'enabled':              ob_cfg.get('enabled', False),
+            'impulse_length':       ob_cfg.get('impulse_length', 3),
+            'zone_max_age_candles': ob_cfg.get('zone_max_age_candles', 100),
+            'assumed_winrate':      ob_cfg.get('assumed_winrate', 0.5),
         },
     }
     capital  = args.capital

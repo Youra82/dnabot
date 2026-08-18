@@ -602,6 +602,7 @@ def run_interactive_chart(settings: dict, secrets: dict):
     scan_cfg   = settings.get('scan_settings', {})
     genome_cfg = settings.get('genome_settings', {})
     risk_cfg   = settings.get('risk_settings', {})
+    ob_cfg     = settings.get('order_block_settings', {})
 
     generated = []
 
@@ -641,6 +642,16 @@ def run_interactive_chart(settings: dict, secrets: dict):
                 'alphabet':         resolve_alphabet(symbol, timeframe, settings),
             },
             'risk': {'rr_ratio': pair_rr_ratio},
+            # Order Block sichtbar machen, wenn aktiviert -- sonst zeigt der
+            # Chart (der einzige Ort, an dem Signale visuell geprueft werden)
+            # nie, was ein OB-Retest tatsaechlich ausloesen wuerde, selbst
+            # wenn settings.json es global aktiviert hat.
+            'order_block': {
+                'enabled':              ob_cfg.get('enabled', False),
+                'impulse_length':       ob_cfg.get('impulse_length', 3),
+                'zone_max_age_candles': ob_cfg.get('zone_max_age_candles', 100),
+                'assumed_winrate':      ob_cfg.get('assumed_winrate', 0.5),
+            },
         }
 
         # Backtest auf vollem DataFrame

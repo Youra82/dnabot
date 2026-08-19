@@ -32,18 +32,49 @@ echo "======================================================="
 echo ""
 
 # ── 1. Alte DB löschen? ──────────────────────────────────────────────────────
+# Frage unabhaengig davon stellen, ob genome.db gerade existiert -- sonst
+# bliebe z.B. alphabet_overrides.json (git-getrackt, existiert schon direkt
+# nach einem frischen Klon/update.sh) bei fehlender genome.db unbemerkt liegen,
+# obwohl ein "Neustart" gewuenscht war.
 DB_PATH="$SCRIPT_DIR/artifacts/db/genome.db"
-if [ -f "$DB_PATH" ]; then
-    read -p "Alte Genome-Datenbank vor dem Start löschen (Neustart)? (j/n) [Standard: n]: " RESET_DB
-    RESET_DB="${RESET_DB//[$'\r\n ']/}"
-    if [[ "$RESET_DB" == "j" || "$RESET_DB" == "J" || "$RESET_DB" == "y" || "$RESET_DB" == "Y" ]]; then
-        rm -f "$DB_PATH"
-        echo -e "${GREEN}✔ Alte Genome-DB gelöscht — Neustart.${NC}"
+read -p "Alte Genome-Datenbank vor dem Start löschen (Neustart)? (j/n) [Standard: n]: " RESET_DB
+RESET_DB="${RESET_DB//[$'\r\n ']/}"
+if [[ "$RESET_DB" == "j" || "$RESET_DB" == "J" || "$RESET_DB" == "y" || "$RESET_DB" == "Y" ]]; then
+    # Kompletter Neustart -- ALLES entfernen, was die Pipeline bisher
+    # optimiert/generiert hat, nicht nur genome.db: sonst haben
+    # Alphabet-Optimizer/min_samples-Sweep noch alte Optuna-Trial-Historie
+    # (TPE-Sampler baut darauf auf statt blind neu zu suchen) und bereits
+    # bestaetigte Alphabete wuerden trotz "Neustart" per resolve_pairs()-
+    # Skip-Check uebersprungen (siehe alphabet_store.py).
+    echo ""
+    echo -e "${YELLOW}Kompletter Neustart -- entferne alle bisherigen Pipeline-Ergebnisse:${NC}"
+    RESET_TARGETS=(
+        "artifacts/db/genome.db"
+        "artifacts/db/alphabet_optuna.db"
+        "artifacts/db/alphabet_optuna_test.db"
+        "artifacts/db/min_samples_optuna.db"
+        "alphabet_overrides.json"
+    )
+    for f in "${RESET_TARGETS[@]}"; do
+        if [ -f "$SCRIPT_DIR/$f" ]; then
+            rm -f "$SCRIPT_DIR/$f"
+            echo -e "  ${GREEN}✔ gelöscht:${NC} $f"
+        else
+            echo -e "  ${CYAN}·  nicht vorhanden (übersprungen):${NC} $f"
+        fi
+    done
+    shopt -s nullglob
+    RESULT_JSON_FILES=("$SCRIPT_DIR"/artifacts/results/*.json)
+    shopt -u nullglob
+    if [ ${#RESULT_JSON_FILES[@]} -gt 0 ]; then
+        rm -f "${RESULT_JSON_FILES[@]}"
+        echo -e "  ${GREEN}✔ gelöscht:${NC} artifacts/results/*.json (${#RESULT_JSON_FILES[@]} Datei(en))"
     else
-        echo -e "${GREEN}✔ Bestehende Genome-DB wird beibehalten.${NC}"
+        echo -e "  ${CYAN}·  nicht vorhanden (übersprungen):${NC} artifacts/results/*.json"
     fi
+    echo -e "${GREEN}✔ Neustart abgeschlossen — alle bisherigen Pipeline-Ergebnisse entfernt.${NC}"
 else
-    echo -e "${CYAN}ℹ  Keine bestehende Genome-DB gefunden — wird neu erstellt.${NC}"
+    echo -e "${GREEN}✔ Bestehende Genome-DB wird beibehalten.${NC}"
 fi
 
 # ── 2. Coins / Timeframes ────────────────────────────────────────────────────

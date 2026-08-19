@@ -169,6 +169,7 @@ class LazyFineData:
         self.fine_tf = fine_tf
         self._days = {}
         self._exchange = None
+        self._fetch_count = 0
 
     def _get_exchange(self):
         if self._exchange is not None:
@@ -194,8 +195,16 @@ class LazyFineData:
         try:
             day_str = day.strftime('%Y-%m-%d')
             next_day_str = (day + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, next_day_str)
+            # quiet=True: sonst zwei Log-Zeilen PRO TAG (dieser Aufruf passiert
+            # potenziell hunderte Male pro Backtest, einmal je neuem Kalendertag,
+            # den irgendein simulierter Trade durchlaeuft) -- ersetzt durch eine
+            # sich selbst ueberschreibende Fortschrittszeile, siehe unten.
+            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, next_day_str, quiet=True)
             self._days[day] = df if df is not None and not df.empty else None
+            self._fetch_count += 1
+            sys.stdout.write(f"\r  Lade Fein-Daten ({self.fine_tf}) fuer {self.symbol}: "
+                              f"Tag {self._fetch_count} (aktuell: {day_str})...   ")
+            sys.stdout.flush()
         except Exception:
             self._days[day] = None
 
@@ -208,11 +217,18 @@ class LazyFineData:
         last_day = (end_ts - pd.Timedelta(microseconds=1)).floor('D')
         parts = []
         day = first_day
+        count_before = self._fetch_count
         while day <= last_day:
             self._ensure_day(day)
             if self._days[day] is not None:
                 parts.append(self._days[day])
             day += pd.Timedelta(days=1)
+        if self._fetch_count > count_before:
+            # Neue Tage wurden in diesem Aufruf geladen -- Fortschrittszeile
+            # abschliessen, damit nachfolgende normale Logs nicht mitten in
+            # der Zeile landen.
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if not parts:
             return None
         combined = pd.concat(parts).sort_index()

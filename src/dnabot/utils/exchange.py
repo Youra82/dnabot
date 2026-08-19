@@ -128,7 +128,16 @@ class Exchange:
                 lo = mid
         return found_hi
 
-    def fetch_historical_ohlcv(self, symbol, timeframe, start_date_str, end_date_str):
+    def fetch_historical_ohlcv(self, symbol, timeframe, start_date_str, end_date_str, quiet=False):
+        """
+        quiet=True unterdrueckt die routinemaessigen Fortschritts-Logs (nicht
+        die Fehler-Logs) -- fuer backtester.py::LazyFineData, das diese
+        Funktion pro Kalendertag einzeln aufruft (potenziell hunderte Male
+        pro Backtest fuer die Intrabar-Trailing-Simulation) und sonst die
+        Konsole mit hunderten Zeilen fuer triviale 1-Tages-Fenster zuspammt.
+        Der normale Mehrtage-Bulk-Download (scan_and_learn.py etc.) bleibt
+        unveraendert sichtbar -- dort ist jede Zeile echter Fortschritt.
+        """
         if not self.markets:
             return pd.DataFrame()
         start_ts = int(self.exchange.parse8601(start_date_str + 'T00:00:00Z'))
@@ -136,7 +145,8 @@ class Exchange:
         tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_ohlcv = []
         current_ts = start_ts
-        logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
+        if not quiet:
+            logger.info(f"Historischer Download: {symbol} ({timeframe}) | {start_date_str} → {end_date_str}")
 
         # Schutz gegen Endlosschleife (uebernommen von ltbbot/titanbot exchange.py):
         # manche Exchange-Fehler (z.B. Bitget 40017 bei der noch nicht abgeschlossenen
@@ -155,10 +165,11 @@ class Exchange:
                     # sauber beenden statt sinnlos in die Zukunft zu "ueberspringen".
                     now_ms = self.exchange.milliseconds()
                     if current_ts >= now_ms - tf_ms:
-                        logger.info(
-                            f"Historischer Download {symbol} ({timeframe}) erreicht Gegenwart bei "
-                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} — keine weiteren Kerzen verfuegbar."
-                        )
+                        if not quiet:
+                            logger.info(
+                                f"Historischer Download {symbol} ({timeframe}) erreicht Gegenwart bei "
+                                f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} — keine weiteren Kerzen verfuegbar."
+                            )
                         break
                     # Bitget hat manche Fenster in der eigenen Historie schlicht nicht gespeichert
                     # (bestaetigt per Tages-Sweep: BTC 1h fehlt komplett vom 2026-04-18 bis
@@ -166,32 +177,36 @@ class Exchange:
                     # Statt blind in festen Schritten zu springen: aktiv nach dem naechsten
                     # verfuegbaren Datenpunkt suchen (exponentiell + Bisektion).
                     skip_from = pd.Timestamp(current_ts, unit='ms', tz='UTC').date()
-                    logger.warning(
-                        f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
-                        f"suche naechsten verfuegbaren Zeitpunkt..."
-                    )
+                    if not quiet:
+                        logger.warning(
+                            f"Leere Antwort {symbol} ({timeframe}) ab {skip_from} — "
+                            f"suche naechsten verfuegbaren Zeitpunkt..."
+                        )
                     next_ts = self._probe_next_available_ts(
                         symbol, timeframe, current_ts, min(end_ts, now_ms), tf_ms
                     )
                     if next_ts is None:
-                        logger.warning(
-                            f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
-                            f"{skip_from} (Ziel: {end_date_str}) — keine weiteren Daten bis Zieldatum gefunden."
-                        )
+                        if not quiet:
+                            logger.warning(
+                                f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
+                                f"{skip_from} (Ziel: {end_date_str}) — keine weiteren Daten bis Zieldatum gefunden."
+                            )
                         break
                     current_ts = next_ts
-                    logger.info(
-                        f"{symbol} ({timeframe}): Daten wieder verfuegbar ab "
-                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}."
-                    )
+                    if not quiet:
+                        logger.info(
+                            f"{symbol} ({timeframe}): Daten wieder verfuegbar ab "
+                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()}."
+                        )
                     continue
                 ohlcv = [c for c in ohlcv if c[0] <= end_ts]
                 if not ohlcv:
-                    logger.warning(
-                        f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
-                        f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
-                        f"— Antwort sprang über Zieldatum hinaus."
-                    )
+                    if not quiet:
+                        logger.warning(
+                            f"Historischer Download {symbol} ({timeframe}) vorzeitig beendet bei "
+                            f"{pd.Timestamp(current_ts, unit='ms', tz='UTC').date()} (Ziel: {end_date_str}) "
+                            f"— Antwort sprang über Zieldatum hinaus."
+                        )
                     break
                 all_ohlcv.extend(ohlcv)
                 # +1ms statt +tf_ms: Bitgets `since` ist exklusiv (timestamp > since),
@@ -233,7 +248,8 @@ class Exchange:
             return pd.DataFrame()
         df.sort_index(inplace=True)
         df = df[~df.index.duplicated(keep='last')]
-        logger.info(f"Geladen: {len(df)} Kerzen für {symbol}")
+        if not quiet:
+            logger.info(f"Geladen: {len(df)} Kerzen für {symbol}")
         return df
 
     def fetch_ticker(self, symbol):

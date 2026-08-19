@@ -726,13 +726,15 @@ def resolve_pairs(args, settings: dict) -> list:
         return env_pairs
     if args.all_scan_pairs:
         return resolve_full_pool_pairs(settings)
-    # Default: aktive Live-Strategien
-    active = settings.get('live_trading_settings', {}).get('active_strategies', [])
-    pairs = [(s['symbol'], s['timeframe']) for s in active if s.get('active', True)]
-    if not pairs:
-        logger.critical("Keine Pairs gefunden -- --symbol/--timeframe, --all-scan-pairs oder active_strategies noetig.")
-        sys.exit(1)
-    return pairs
+    # Default (kein --symbol/--timeframe, keine Env-Overrides, kein
+    # --all-scan-pairs): dieselbe Prioritaet wie scan_and_learn.py/
+    # run_backtest.py -- resolve_full_pool_pairs() prueft bereits
+    # scan_all_db_pairs vor active_strategies und hat einen Einzel-Default
+    # als letzten Ausweg, gibt also nie leer zurueck. Vorher fiel dieser Pfad
+    # direkt auf active_strategies zurueck und brach bei leerer Liste hart ab
+    # (z.B. run_pipeline.sh Schritt 0 ohne --all-scan-pairs-Flag), obwohl
+    # scan_all_db_pairs=true einen vollen Pool bereitgestellt haette.
+    return resolve_full_pool_pairs(settings)
 
 
 if __name__ == '__main__':

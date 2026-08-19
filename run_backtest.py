@@ -20,7 +20,10 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
-from dnabot.analysis.backtester import run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData
+from dnabot.analysis.backtester import (
+    run_backtest, save_results, print_backtest_summary, FINE_TF_MAP, LazyFineData,
+    simulate_trade_subset, FEE_PCT_PER_SIDE,
+)
 from dnabot.genome.scoring import breakeven_winrate
 from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 from dnabot.utils.strategy_overrides import find_strategy_overrides
@@ -82,6 +85,15 @@ def main():
                         help="Startdatum für Backtest (YYYY-MM-DD)")
     parser.add_argument('--end-date',    type=str,   default=None,
                         help="Enddatum für Backtest (YYYY-MM-DD)")
+    parser.add_argument('--oos-weeks',   type=int,   default=8,
+                        help="Zusaetzlicher Out-of-Sample-Report: die juengsten "
+                             "N Wochen der Trades werden mit frischem Kapital "
+                             "neu simuliert und separat ausgegeben (0 = aus). "
+                             "Die Trades selbst sind bereits point-in-time-sicher "
+                             "(get_genome_as_of()) -- dieser Report zeigt nur, wie "
+                             "das juengste, reifste Fenster fuer sich alleine "
+                             "abgeschnitten haette, statt in der Gesamt-Equity "
+                             "der ganzen History unterzugehen.")
     args = parser.parse_args()
 
     # Ein LEERER --symbol/--timeframe (im Unterschied zu "gar nicht angegeben")
@@ -295,6 +307,35 @@ def main():
         print_backtest_summary(results, symbol, timeframe)
         save_results(results, symbol, timeframe)
         all_stats.append((symbol, timeframe, results.get('stats', {})))
+
+        # Automatischer OOS-Report: juengste --oos-weeks Wochen isoliert mit
+        # frischem Kapital neu simuliert (siehe simulate_trade_subset()) --
+        # beantwortet "wie haette sich das zuletzt ganz ohne den angelernten
+        # Bereich geschlagen", ohne dass die im Volllauf verwobene Equity-
+        # Kurve der gesamten History das Bild verzerrt.
+        if args.oos_weeks and not df.empty:
+            data_end = df.index.max()
+            if data_end.tzinfo is None:
+                data_end = data_end.tz_localize('UTC')
+            oos_cutoff = data_end - timedelta(weeks=args.oos_weeks)
+            oos_trades = []
+            for t in results.get('trades', []):
+                ts = pd.Timestamp(str(t['entry_time']))
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize('UTC')
+                if ts >= oos_cutoff:
+                    oos_trades.append(t)
+            if oos_trades:
+                oos_fee_pct = risk_cfg.get('fee_pct', FEE_PCT_PER_SIDE)
+                oos_stats = simulate_trade_subset(
+                    oos_trades, capital, risk_pct, leverage, fee_pct=oos_fee_pct
+                )
+                print_backtest_summary(
+                    {"trades": oos_trades, "stats": oos_stats}, symbol, timeframe,
+                    label=f"Out-of-Sample, letzte {args.oos_weeks}W ab {oos_cutoff.date()}",
+                )
+            else:
+                print(f"  (Keine Trades in den letzten {args.oos_weeks} Wochen fuer OOS-Report)\n")
 
     db.close()
 

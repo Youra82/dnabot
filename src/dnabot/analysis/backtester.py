@@ -680,6 +680,49 @@ def _compute_stats(trades: list[dict], equity_curve: list[float], start_capital:
     }
 
 
+def simulate_trade_subset(trades: list[dict], start_capital: float,
+                           risk_per_trade_pct: float, leverage: int = 1,
+                           fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
+    """Re-simuliert eine TEILMENGE bereits generierter Trades (z.B. nur die
+    juengsten N Wochen fuer einen automatischen Out-of-Sample-Report) mit
+    FRISCHER Startequity. Die Trades selbst sind bereits point-in-time-sicher
+    (Genome-Auswahl via get_genome_as_of() im urspruenglichen run_backtest()-
+    Lauf, kein Hindsight-Bias) -- hier wird nur die Dollar-Verrechnung ab
+    neuem Startkapital wiederholt, weil die im Volllauf interleavte, von
+    frueheren Trades bereits gepraegte Equity-Kurve die eigenstaendige
+    Bewertung dieser Teilmenge sonst verzerren wuerde (gleiches Muster wie
+    analysis/alphabet_optimizer.py::_simulate_subset(), hier aber mit
+    Leverage-/MAX_NOTIONAL_USDT-Cap und Kelly-Multiplikator wie im
+    Original-Loop, statt einer vereinfachten Nachbildung).
+    """
+    equity = start_capital
+    equity_curve = [equity]
+    new_trades = []
+    for t in sorted(trades, key=lambda x: x['entry_time']):
+        sl_pct = t.get('sl_pct', 0.0)
+        if sl_pct <= 0:
+            continue
+        risk_amount = equity * (risk_per_trade_pct / 100.0) * t.get('kelly_multiplier', 1.0)
+        position_size = risk_amount / (sl_pct / 100.0)
+        max_position = equity * max(leverage, 1)
+        if position_size > max_position:
+            position_size = max_position
+            risk_amount = position_size * (sl_pct / 100.0)
+        if position_size > MAX_NOTIONAL_USDT:
+            position_size = MAX_NOTIONAL_USDT
+            risk_amount = position_size * (sl_pct / 100.0)
+        actual_pnl = position_size * (t['pnl_pct'] / 100.0)
+        if fee_pct:
+            actual_pnl -= position_size * (fee_pct / 100.0) * 2.0
+        equity += actual_pnl
+        nt = dict(t)
+        nt['pnl_usdt'] = actual_pnl
+        nt['equity_after'] = equity
+        new_trades.append(nt)
+        equity_curve.append(equity)
+    return _compute_stats(new_trades, equity_curve, start_capital)
+
+
 def save_results(results: dict, market: str, timeframe: str):
     """Speichert Backtest-Ergebnisse als JSON."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -700,12 +743,13 @@ def save_results(results: dict, market: str, timeframe: str):
     return path
 
 
-def print_backtest_summary(results: dict, market: str, timeframe: str):
+def print_backtest_summary(results: dict, market: str, timeframe: str, label: str = None):
     stats = results.get("stats", {})
     trades = results.get("trades", [])
 
+    header = f"BACKTEST: {market} ({timeframe})" + (f" — {label}" if label else "")
     print(f"\n{'=' * 60}")
-    print(f"  BACKTEST: {market} ({timeframe})")
+    print(f"  {header}")
     print(f"{'=' * 60}")
     print(f"  Trades gesamt:   {stats.get('total_trades', 0)}")
     print(f"  Wins / Losses:   {stats.get('wins', 0)} / {stats.get('losses', 0)}")

@@ -1,39 +1,8 @@
 {
   "live_trading_settings": {
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
-    "active_strategies": [
-      {
-        "symbol": "VET/USDT:USDT",
-        "timeframe": "1h",
-        "active": true
-      },
-      {
-        "symbol": "BCH/USDT:USDT",
-        "timeframe": "2h",
-        "active": true
-      },
-      {
-        "symbol": "BNB/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "ALGO/USDT:USDT",
-        "timeframe": "15m",
-        "active": true
-      },
-      {
-        "symbol": "FIL/USDT:USDT",
-        "timeframe": "4h",
-        "active": true
-      },
-      {
-        "symbol": "NEAR/USDT:USDT",
-        "timeframe": "6h",
-        "active": true
-      }
-    ],
-    "_active_strategies_source": "auto_optimizer_scheduler.py --force 2026-08-18: 6 Coins, Trades=152, WR=37.5%, PnL=+121.5%, MaxDD=20.9%, Risiko/Trade=3.0%"
+    "active_strategies": [],
+    "_active_strategies_source": "Portfolio-Optimierung 2026-07-09: 18 Coins, Trades=2072, WR=42.0%, PnL=+830887.9%, MaxDD=16.9%"
   },
   "scan_settings": {
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
@@ -90,18 +59,10 @@
     ],
     "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
     "use_daily_trend_filter": true,
-    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt).",
-    "_alphabet_by_pair_note": "Vom Alphabet-Optimizer pro Pair bestaetigte Alphabete/RR-Ratios liegen jetzt in alphabet_overrides.json (Repo-Root), nicht mehr hier -- wachsen mit jedem bestaetigten Pair und wuerden diese Datei sonst zumuellen. Siehe genome/alphabet_store.py::resolve_alphabet()/resolve_rr_ratio()."
-  },
-  "order_block_settings": {
-    "enabled": false,
-    "impulse_length": 3,
-    "zone_max_age_candles": 100,
-    "assumed_winrate": 0.5,
-    "_note": "Experimentell, per Default AUS. Order Block = letzte Kerze vor einem Momentum-Impuls, gilt als Support/Resistance-Zone (siehe genome/order_blocks.py). Anders als die Genome kein statistisch entdecktes/bewertetes Muster -- kein min_samples/Win-Rate-Tracking, nur eine feste Preisstruktur-Regel. Erst per Backtest/Walk-Forward auf plausible Win-Rate pruefen, bevor enabled=true live geschaltet wird. Wird nur genutzt wenn kein Genome-Signal vorliegt (Genome hat Vorrang). assumed_winrate ist nur ein Platzhalter fuers Kelly-Sizing, nach Backtest-Ergebnis anpassen."
+    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt)."
   },
   "risk_settings": {
-    "risk_per_entry_pct": 3.0,
+    "risk_per_entry_pct": 5.0,
     "leverage": 5,
     "margin_mode": "isolated",
     "rr_ratio": 2.0,
@@ -125,8 +86,6 @@
     "max_drawdown_pct": 30,
     "backtest_lookback_weeks": 26,
     "_backtest_lookback_note": "Wie viele Wochen zurück der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln. 26W gewählt statt Top-Calmar-1W: 1W hatte 19/129 Leerwochen (kein Trade) und niedrigste WR, Calmar dadurch künstlich hoch. 26W/8W hatten 0 Leerwochen bei ähnlichem Calmar (2026-07-09).",
-    "require_persistence": true,
-    "_require_persistence_note": "Kandidat muss auch im VORHERIGEN 26W-Fenster profitabel gewesen sein (2 aufeinanderfolgende gute Perioden statt reinem Calmar-Chasing). Per walk_forward_test.py über die volle 126-Wochen-Historie bestätigt: ohne Persistenz ist JEDER Lookback nach Bitget-Gebühren klar unprofitabel (-27% bis -57%, große Samples), mit Persistenz kommt 26W auf ~Breakeven (-1.6%) bei viel niedrigerem Drawdown (17.8% vs. 44-65%). Kein bestätigter Edge, aber die risikoärmste der getesteten Optionen (2026-08-18).",
     "send_telegram_on_completion": true,
     "scan_interval_hours": 168,
     "_scan_interval_note": "Wie oft der Genome-Scan läuft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",

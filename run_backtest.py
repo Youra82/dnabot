@@ -152,12 +152,26 @@ def main():
                     pairs.append((sym, tf))
                     seen.add((sym, tf))
     elif not args.all_from_db:
-        seen, pairs = set(), []
-        for s in active_strats:
-            sym, tf = s.get('symbol'), s.get('timeframe')
-            if sym and tf and (sym, tf) not in seen:
-                pairs.append((sym, tf))
-                seen.add((sym, tf))
+        # Gleiche Prioritaet wie scan_and_learn.py: scan_all_db_pairs (der
+        # tatsaechliche Gesamtpool aus der Genome-DB) vor der kleinen, manuell
+        # kuratierten active_strategies-Liste -- sonst backtestet dieser
+        # Fallback nur eine Handvoll live-aktiver Pairs, obwohl Schritt 1
+        # (Discovery) mit derselben scan_all_db_pairs-Regel gerade den
+        # kompletten DB-Pool gescannt hat (run_pipeline.sh ruft beide Skripte
+        # ohne --symbol/--timeframe auf, wenn der Coin/TF-Prompt leer bleibt
+        # -- "leer=auto" muss fuer beide Schritte dasselbe "auto" bedeuten).
+        pairs = []
+        if scan_cfg.get('scan_all_db_pairs', False):
+            db_temp = GenomeDB(DB_PATH)
+            pairs = db_temp.get_all_market_pairs()
+            db_temp.close()
+        if not pairs:
+            seen = set()
+            for s in active_strats:
+                sym, tf = s.get('symbol'), s.get('timeframe')
+                if sym and tf and (sym, tf) not in seen:
+                    pairs.append((sym, tf))
+                    seen.add((sym, tf))
         if not pairs:
             pairs = [('BTC/USDT:USDT', '4h')]
 

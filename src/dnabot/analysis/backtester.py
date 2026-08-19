@@ -71,6 +71,14 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 MAX_NOTIONAL_USDT = 200_000.0
+# Bitget-Taker, wie walk_forward_test.py/run_portfolio_optimizer.py/
+# analysis/fee_impact.py -- die eigentliche Backtest-Engine hier hatte
+# Gebuehren bisher NIE gesehen (nur die beiden genannten Tools, die aber
+# selbst keine Trades erzeugen, sondern schon fertige backtest_*.json neu
+# einlesen). Jeder Aufrufer von run_backtest()/simulate_trade() (run_backtest.py,
+# alphabet_optimizer.py's Optuna-Zielfunktion, interactive_chart.py, ...) wird
+# dadurch automatisch gebuehrenbewusst, ohne selbst etwas aendern zu muessen.
+FEE_PCT_PER_SIDE = 0.06
 
 # Feinere Timeframe je Strategie-Timeframe fuer die Trailing-Stop-Intrabar-Simulation
 # (oraclebot-Muster).
@@ -249,7 +257,8 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                     trailing_callback_pct: float = None,
                     fine_df: pd.DataFrame = None,
                     sl_price_override: float = None,
-                    tp_price_override: float = None) -> dict:
+                    tp_price_override: float = None,
+                    fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
     """
     Simuliert einen Trade auf historischen Daten.
 
@@ -270,6 +279,13 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
     fine_df: feinere Kerzen (oraclebot-Muster) fuer eine praezisere Trailing-
     Simulation als auf Basis der Coarse-Kerzen von `df` allein moeglich waere.
     Ohne fine_df wird auf `df` selbst zurueckgefallen (grobere Naeherung).
+
+    fee_pct: Bitget-Taker-Gebuehr PRO SEITE in % (faellt fuer jeden Trade
+    Ein+Ausstieg an). pnl_pct ist relativ zum Entry-Preis definiert, Gebuehren
+    (% vom Notional) wirken direkt auf derselben Skala -- 2*fee_pct wird
+    deshalb einfach von pnl_pct abgezogen, KEINE separate Positionsgroessen-
+    Rechnung noetig (die passiert schon beim Aufrufer in run_backtest(), der
+    diesen fee-bereinigten pnl_pct unveraendert in Dollar umrechnet).
     """
     seq_len = signal['seq_len']
     direction = signal['direction']
@@ -372,6 +388,8 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
         pnl_pct = (exit_price - entry_price) / entry_price * 100.0
     else:
         pnl_pct = (entry_price - exit_price) / entry_price * 100.0
+    if fee_pct:
+        pnl_pct -= 2.0 * fee_pct  # Ein- + Ausstieg, siehe Docstring-Herleitung oben
 
     return {
         'entry_time': str(df.index[entry_idx]),
@@ -422,6 +440,12 @@ def run_backtest(
     trailing_callback_pct = params.get('risk', {}).get('trailing_callback_rate_pct')
     if trailing_callback_pct is not None:
         trailing_callback_pct = float(trailing_callback_pct) / 100.0
+
+    # Bitget-Gebuehren (siehe simulate_trade()-Docstring) -- Default ist die
+    # echte Bitget-Taker-Gebuehr, per settings.json::risk_settings.fee_pct
+    # (oder risk_overrides.fee_pct pro Pair) ueberschreibbar, --fee-pct 0
+    # aequivalent fuer den alten gebuehrenfreien Vergleich.
+    fee_pct = params.get('risk', {}).get('fee_pct', FEE_PCT_PER_SIDE)
 
     # Kelly-Sizing (optional, standardmaessig aus): dieselbe Formel wie live
     # in trade_manager.py::place_entry_orders() (genome/scoring.py::
@@ -540,6 +564,7 @@ def run_backtest(
             trailing_callback_pct=trailing_callback_pct, fine_df=fine_df,
             sl_price_override=signal.get('_ob_sl_price'),
             tp_price_override=signal.get('_ob_tp_price'),
+            fee_pct=fee_pct,
         )
 
         # Kelly-Multiplikator fuer DIESEN Trade, aus der point-in-time

@@ -85,7 +85,7 @@ from dnabot.genome.discovery import discover_genomes
 from dnabot.genome.encoder import DEFAULT_ALPHABET
 from dnabot.genome.alphabet_store import alphabet_hash
 from dnabot.genome.scoring import breakeven_winrate
-from dnabot.analysis.backtester import run_backtest
+from dnabot.analysis.backtester import run_backtest, FEE_PCT_PER_SIDE
 from scan_and_learn import (
     load_settings, load_secrets, resolve_history_days, resolve_discovery_horizon,
     resolve_min_samples, get_min_samples_override,
@@ -166,7 +166,8 @@ def calmar(stats: dict) -> float:
     return pnl / dd if dd > 0 else pnl
 
 
-def _simulate_subset(trades: list, capital: float, risk_pct: float, leverage: int = 1) -> dict:
+def _simulate_subset(trades: list, capital: float, risk_pct: float, leverage: int = 1,
+                      fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
     """
     Rekonstruiert eine EIGENSTAENDIGE Equity-Kurve fuer eine Trade-Teilmenge
     (IS oder OOS) -- wie param_optimizer.py::simulate_trades. Noetig, weil
@@ -174,6 +175,13 @@ def _simulate_subset(trades: list, capital: float, risk_pct: float, leverage: in
     zusammen erzeugt (Positionsgroesse haengt von der Equity zum jeweiligen
     Zeitpunkt ab); wuerde man diese direkt splitten, wuerde die IS/OOS-
     Bewertung durch die jeweils andere Teilmenge verzerrt.
+
+    fee_pct: Bitget-Taker-Gebuehr pro Seite -- trades[]['pnl_pct'] kommt roh
+    aus run_backtest() (siehe backtester.py::simulate_trade()-Kommentar),
+    diese Funktion macht hier ihre EIGENE gebuehrenbewusste Dollar-Umrechnung,
+    exakt das gleiche Muster wie walk_forward_test.py/run_portfolio_
+    optimizer.py -- ohne das waere die Optuna-Zielfunktion (und damit jede
+    bestaetigte Alphabet/RR-Kombination) weiterhin fee-blind.
     """
     equity = capital
     peak = equity
@@ -184,6 +192,9 @@ def _simulate_subset(trades: list, capital: float, risk_pct: float, leverage: in
         risk_amount = min(equity * (risk_pct / 100.0),
                           equity * max(leverage, 1) * (sl_pct / 100.0))
         pnl = risk_amount * (t.get('pnl_pct', 0.0) / sl_pct)
+        if fee_pct:
+            position_size = risk_amount / (sl_pct / 100.0)
+            pnl -= position_size * (fee_pct / 100.0) * 2.0  # Ein- + Ausstieg
         equity += pnl
         outcome = t.get('outcome')
         if outcome == 'WIN':
@@ -284,8 +295,9 @@ def run_alphabet_trial(df: pd.DataFrame, db: GenomeDB, market: str, timeframe: s
     is_trades = [t for t in trades if pd.Timestamp(t['entry_time']) < split_ts]
     oos_trades = [t for t in trades if pd.Timestamp(t['entry_time']) >= split_ts]
 
-    is_stats = _simulate_subset(is_trades, capital, risk_cfg['risk_per_entry_pct'], risk_cfg['leverage'])
-    oos_stats = _simulate_subset(oos_trades, capital, risk_cfg['risk_per_entry_pct'], risk_cfg['leverage'])
+    fee_pct = risk_cfg.get('fee_pct', FEE_PCT_PER_SIDE)
+    is_stats = _simulate_subset(is_trades, capital, risk_cfg['risk_per_entry_pct'], risk_cfg['leverage'], fee_pct=fee_pct)
+    oos_stats = _simulate_subset(oos_trades, capital, risk_cfg['risk_per_entry_pct'], risk_cfg['leverage'], fee_pct=fee_pct)
     return is_stats, oos_stats
 
 

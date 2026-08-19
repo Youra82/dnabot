@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
@@ -72,12 +73,14 @@ DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 MAX_NOTIONAL_USDT = 200_000.0
 # Bitget-Taker, wie walk_forward_test.py/run_portfolio_optimizer.py/
-# analysis/fee_impact.py -- die eigentliche Backtest-Engine hier hatte
-# Gebuehren bisher NIE gesehen (nur die beiden genannten Tools, die aber
-# selbst keine Trades erzeugen, sondern schon fertige backtest_*.json neu
-# einlesen). Jeder Aufrufer von run_backtest()/simulate_trade() (run_backtest.py,
-# alphabet_optimizer.py's Optuna-Zielfunktion, interactive_chart.py, ...) wird
-# dadurch automatisch gebuehrenbewusst, ohne selbst etwas aendern zu muessen.
+# analysis/fee_impact.py/alphabet_optimizer.py::_simulate_subset(). Nur fuer
+# run_backtest()'s EIGENE Dollar-Umrechnung/Ausgabe (equity/stats/Konsole) --
+# NICHT fuer trade['pnl_pct'] (siehe simulate_trade()-Kommentar dort): der
+# rohe, gebuehrenfreie Kursverlauf landet unveraendert in backtest_*.json,
+# weil jedes der oben genannten Tools ihn selbst in Dollar umrechnet und
+# DABEI seine eigene fee_pct-Stufe abzieht -- Gebuehren zusaetzlich hier in
+# pnl_pct einzurechnen wuerde bei jedem dieser Tools zu einer Doppelzaehlung
+# fuehren (genau der Fehler, der eine fruehere Version dieses Fixes hatte).
 FEE_PCT_PER_SIDE = 0.06
 
 # Feinere Timeframe je Strategie-Timeframe fuer die Trailing-Stop-Intrabar-Simulation
@@ -172,14 +175,13 @@ class LazyFineData:
     kann viele Coarse-Kerzen ueberspannen, daher Tage-Bucketing ueber
     mehrere Kalendertage hinweg.
     """
-    PROGRESS_INTERVAL = 25  # nur jede N-te Tages-Ladung geloggt, siehe _ensure_day()
-
     def __init__(self, symbol, fine_tf):
         self.symbol = symbol
         self.fine_tf = fine_tf
         self._days = {}
         self._exchange = None
         self._fetch_count = 0
+        self._pbar = None
 
     def _get_exchange(self):
         if self._exchange is not None:
@@ -207,19 +209,20 @@ class LazyFineData:
             next_day_str = (day + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
             # quiet=True: sonst zwei Log-Zeilen PRO TAG (dieser Aufruf passiert
             # potenziell hunderte Male pro Backtest, einmal je neuem Kalendertag,
-            # den irgendein simulierter Trade durchlaeuft). Statt dessen unten
-            # nur alle PROGRESS_INTERVAL Tage EINE normale Log-Zeile -- ein
-            # \r-basiertes Ueberschreiben (erster Versuch) haengt zu sehr davon
-            # ab, ob die Ausgabe an ein echtes, live mitlesendes Terminal geht
-            # (bricht in screen/tee/umgeleiteten Log-Dateien: jede \r-Zeile
-            # landet dort als eigene Zeile statt zu ueberschreiben) -- seltener,
-            # normal geloggter Fortschritt ist robust ueberall gleich.
+            # den irgendein simulierter Trade durchlaeuft) -- stattdessen ein
+            # echter tqdm-Ladebalken (wie bei analysis/alphabet_optimizer.py's
+            # Optuna-Trials), lazy erzeugt beim ersten Fetch. Kein fester
+            # Gesamtwert bekannt (welche Tage ueberhaupt gebraucht werden,
+            # ergibt sich erst live aus den simulierten Trades) -- tqdm zeigt
+            # dann Anzahl+Rate statt Prozent/ETA, was hier ausreicht.
             df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, next_day_str, quiet=True)
             self._days[day] = df if df is not None and not df.empty else None
             self._fetch_count += 1
-            if self._fetch_count % self.PROGRESS_INTERVAL == 0:
-                logger.info(f"  Lade Fein-Daten ({self.fine_tf}) fuer {self.symbol}: "
-                            f"Tag {self._fetch_count} (aktuell: {day_str})...")
+            if self._pbar is None:
+                self._pbar = tqdm(desc=f"  Fein-Daten ({self.fine_tf}) {self.symbol}",
+                                   unit="Tag", leave=True)
+            self._pbar.set_postfix_str(day_str, refresh=False)
+            self._pbar.update(1)
         except Exception:
             self._days[day] = None
 
@@ -257,8 +260,7 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                     trailing_callback_pct: float = None,
                     fine_df: pd.DataFrame = None,
                     sl_price_override: float = None,
-                    tp_price_override: float = None,
-                    fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
+                    tp_price_override: float = None) -> dict:
     """
     Simuliert einen Trade auf historischen Daten.
 
@@ -280,12 +282,8 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
     Simulation als auf Basis der Coarse-Kerzen von `df` allein moeglich waere.
     Ohne fine_df wird auf `df` selbst zurueckgefallen (grobere Naeherung).
 
-    fee_pct: Bitget-Taker-Gebuehr PRO SEITE in % (faellt fuer jeden Trade
-    Ein+Ausstieg an). pnl_pct ist relativ zum Entry-Preis definiert, Gebuehren
-    (% vom Notional) wirken direkt auf derselben Skala -- 2*fee_pct wird
-    deshalb einfach von pnl_pct abgezogen, KEINE separate Positionsgroessen-
-    Rechnung noetig (die passiert schon beim Aufrufer in run_backtest(), der
-    diesen fee-bereinigten pnl_pct unveraendert in Dollar umrechnet).
+    KEIN fee_pct-Parameter hier bewusst -- pnl_pct bleibt roh, siehe Kommentar
+    bei der pnl_pct-Berechnung unten.
     """
     seq_len = signal['seq_len']
     direction = signal['direction']
@@ -388,8 +386,17 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
         pnl_pct = (exit_price - entry_price) / entry_price * 100.0
     else:
         pnl_pct = (entry_price - exit_price) / entry_price * 100.0
-    if fee_pct:
-        pnl_pct -= 2.0 * fee_pct  # Ein- + Ausstieg, siehe Docstring-Herleitung oben
+    # pnl_pct bleibt bewusst ROH (keine Gebuehren) -- dieser Wert landet
+    # unveraendert im "trades"-Rueckgabewert und wird in backtest_*.json
+    # gespeichert, wo walk_forward_test.py, run_portfolio_optimizer.py,
+    # analysis/fee_impact.py UND alphabet_optimizer.py::_simulate_subset()
+    # ihn direkt weiterlesen und JEWEILS SELBST in Dollar umrechnen +
+    # Gebuehren abziehen (identisches Muster ueberall, risk_amount*(pnl_pct/
+    # sl_pct) minus position_size*fee_pct/100*2). Gebuehren hier zusaetzlich
+    # in pnl_pct einzurechnen wuerde bei JEDEM dieser Tools zu einer
+    # Doppelzaehlung fuehren -- Gebuehren gehoeren an die Dollar-Umrechnung,
+    # nicht in den rohen Kursverlauf. run_backtest() macht seine EIGENE
+    # Dollar-Umrechnung weiter unten selbst gebuehrenbewusst.
 
     return {
         'entry_time': str(df.index[entry_idx]),
@@ -558,13 +565,13 @@ def run_backtest(
             equity_curve.append(equity)
             continue
 
-        # Trade simulieren
+        # Trade simulieren (pnl_pct bleibt roh -- Gebuehren werden unten bei
+        # der Dollar-Umrechnung angewandt, siehe simulate_trade()-Kommentar)
         trade = simulate_trade(
             signal, df, i, max_hold_candles,
             trailing_callback_pct=trailing_callback_pct, fine_df=fine_df,
             sl_price_override=signal.get('_ob_sl_price'),
             tp_price_override=signal.get('_ob_tp_price'),
-            fee_pct=fee_pct,
         )
 
         # Kelly-Multiplikator fuer DIESEN Trade, aus der point-in-time
@@ -598,6 +605,8 @@ def run_backtest(
                 position_size = MAX_NOTIONAL_USDT
                 risk_amount = position_size * (sl_pct / 100.0)
             actual_pnl = position_size * (trade['pnl_pct'] / 100.0)
+            if fee_pct:
+                actual_pnl -= position_size * (fee_pct / 100.0) * 2.0  # Ein- + Ausstieg
             equity += actual_pnl
         else:
             actual_pnl = 0.0

@@ -480,7 +480,7 @@ class GenomeDB:
                 COUNT(*) AS total,
                 SUM(active) AS active,
                 AVG(CASE WHEN active = 1 THEN score END) AS avg_score,
-                AVG(CAST(wins AS REAL) / MAX(total_occurrences, 1)) AS avg_wr
+                AVG(CASE WHEN active = 1 THEN CAST(wins AS REAL) / MAX(total_occurrences, 1) END) AS avg_wr
             FROM genomes
             GROUP BY market, timeframe
             ORDER BY market, timeframe

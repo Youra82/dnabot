@@ -16,30 +16,50 @@
 
 import hashlib
 import json
+import os
 
 from dnabot.genome.encoder import DEFAULT_ALPHABET, DISCOVERY_SCHEMA_VERSION
 
 ALPHABET_KEYS = tuple(DEFAULT_ALPHABET.keys())
 
+# alphabet_by_pair/rr_ratio_by_pair leben in einer eigenen Repo-Root-Datei,
+# nicht mehr in settings.json -- wachsen mit jedem vom Alphabet-Optimizer
+# bestaetigten Pair (bis zu ~130 Pairs x 6 Werte) und wuerden die fuer
+# Menschen gedachte settings.json sonst zumuellen. Genau wie settings.json/
+# secret.json normal git-getrackt -- update.sh sichert/stellt sie um
+# git reset --hard herum wieder her, push_configs.sh pusht sie manuell
+# ins Repo (gleiches, bereits etabliertes Muster, nur zweite Datei).
+_ALPHABET_OVERRIDES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'alphabet_overrides.json'
+)
+
+
+def _load_alphabet_overrides() -> dict:
+    try:
+        with open(_ALPHABET_OVERRIDES_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
 
 def resolve_alphabet(market: str, timeframe: str, settings: dict) -> dict:
     """
     Liest den Alphabet-Override fuer (market, timeframe) aus
-    settings.json::genome_settings.alphabet_by_pair, sonst DEFAULT_ALPHABET.
+    alphabet_overrides.json (Repo-Root), sonst DEFAULT_ALPHABET.
 
-    settings.json-Schema:
-        "genome_settings": {
+    alphabet_overrides.json-Schema:
+        {
           "alphabet_by_pair": {
             "ADA/USDT:USDT": { "30m": { "body_small": 0.29, ... } }
           }
         }
     """
-    by_pair = settings.get('genome_settings', {}).get('alphabet_by_pair', {})
+    by_pair = _load_alphabet_overrides().get('alphabet_by_pair', {})
     override = by_pair.get(market, {}).get(timeframe)
     if not override:
         return dict(DEFAULT_ALPHABET)
     # Nur bekannte Keys uebernehmen -- robust gegen unvollstaendige/veraltete
-    # Eintraege in settings.json (fehlende Keys fallen auf Default zurueck).
+    # Eintraege (fehlende Keys fallen auf Default zurueck).
     alphabet = dict(DEFAULT_ALPHABET)
     alphabet.update({k: v for k, v in override.items() if k in ALPHABET_KEYS})
     return alphabet
@@ -47,24 +67,25 @@ def resolve_alphabet(market: str, timeframe: str, settings: dict) -> dict:
 
 def resolve_rr_ratio(market: str, timeframe: str, settings: dict) -> float:
     """
-    Liest den RR-Ratio-Override fuer (market, timeframe) aus settings.json::
-    genome_settings.rr_ratio_by_pair (von analysis/alphabet_optimizer.py
-    gemeinsam mit dem Alphabet per Optuna gesucht und bestaetigt -- siehe
-    dortige Zielfunktion), sonst risk_settings.rr_ratio (globaler Default).
+    Liest den RR-Ratio-Override fuer (market, timeframe) aus
+    alphabet_overrides.json (von analysis/alphabet_optimizer.py gemeinsam mit
+    dem Alphabet per Optuna gesucht und bestaetigt -- siehe dortige
+    Zielfunktion), sonst settings.json::risk_settings.rr_ratio (globaler
+    Default -- bleibt in settings.json, ist reine Handkonfiguration).
 
     Prioritaet bei strategy/run.py (Live): ein manuell gesetztes
     risk_overrides.rr_ratio pro Strategie in active_strategies hat weiterhin
     Vorrang vor diesem automatisch gefundenen Wert -- explizite Config
     schlaegt automatisch Optimiertes, wie ueberall sonst in diesem Projekt.
 
-    settings.json-Schema:
-        "genome_settings": {
+    alphabet_overrides.json-Schema:
+        {
           "rr_ratio_by_pair": {
             "ADA/USDT:USDT": { "30m": 2.7 }
           }
         }
     """
-    by_pair = settings.get('genome_settings', {}).get('rr_ratio_by_pair', {})
+    by_pair = _load_alphabet_overrides().get('rr_ratio_by_pair', {})
     override = by_pair.get(market, {}).get(timeframe)
     if override is not None:
         return float(override)

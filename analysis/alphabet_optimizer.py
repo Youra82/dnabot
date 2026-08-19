@@ -74,6 +74,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 sys.path.append(PROJECT_ROOT)
 
+# alphabet_by_pair/rr_ratio_by_pair leben in einer eigenen Repo-Root-Datei,
+# nicht mehr in settings.json (siehe alphabet_store.py) -- wuerden die fuer
+# Menschen gedachte settings.json sonst mit hunderten Zahlen zumuellen.
+ALPHABET_OVERRIDES_PATH = os.path.join(PROJECT_ROOT, 'alphabet_overrides.json')
+
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
 from dnabot.genome.discovery import discover_genomes
@@ -504,7 +509,11 @@ def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: in
     # zweites Mal drueberbuegeln" galt nur fuer den Erfolgsfall.
     # --recheck-confirmed (skip_confirmed=False) ignoriert beide Sperren.
     if skip_confirmed:
-        by_pair = settings.get('genome_settings', {}).get('alphabet_by_pair', {})
+        try:
+            with open(ALPHABET_OVERRIDES_PATH) as f:
+                by_pair = json.load(f).get('alphabet_by_pair', {})
+        except Exception:
+            by_pair = {}
         now = datetime.now(timezone.utc)
         kept = []
         skipped_confirmed = 0
@@ -596,7 +605,7 @@ def print_summary(results: dict):
 def offer_apply(results: dict, settings: dict, auto_apply: bool = False):
     confirmed = {k: r for k, r in results.items() if r.get('confirmed')}
     if not confirmed:
-        print("\nKeine bestaetigten Pairs -- settings.json bleibt unveraendert.")
+        print("\nKeine bestaetigten Pairs -- alphabet_overrides.json bleibt unveraendert.")
         return
     print(f"\n{len(confirmed)} bestaetigte(s) Pair(s) koennen als Alphabet+RR-Ratio-Override uebernommen werden:")
     for key, r in confirmed.items():
@@ -606,27 +615,28 @@ def offer_apply(results: dict, settings: dict, auto_apply: bool = False):
         print("\n--auto-apply gesetzt -- uebernehme ohne Rueckfrage.")
     else:
         try:
-            ans = input("\nIn settings.json uebernehmen (genome_settings.alphabet_by_pair)? (j/n): ").strip().lower()
+            ans = input("\nIn alphabet_overrides.json uebernehmen? (j/n): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("\n(nicht-interaktiv -- settings.json bleibt unveraendert)")
+            print("\n(nicht-interaktiv -- alphabet_overrides.json bleibt unveraendert)")
             return
         if ans not in ('j', 'ja', 'y', 'yes'):
-            print("Abgebrochen -- settings.json bleibt unveraendert.")
+            print("Abgebrochen -- alphabet_overrides.json bleibt unveraendert.")
             return
 
-    settings_path = os.path.join(PROJECT_ROOT, 'settings.json')
-    with open(settings_path) as f:
-        s = json.load(f)
-    genome_settings = s.setdefault('genome_settings', {})
-    alphabet_by_pair = genome_settings.setdefault('alphabet_by_pair', {})
-    rr_ratio_by_pair = genome_settings.setdefault('rr_ratio_by_pair', {})
+    try:
+        with open(ALPHABET_OVERRIDES_PATH) as f:
+            overrides = json.load(f)
+    except Exception:
+        overrides = {}
+    alphabet_by_pair = overrides.setdefault('alphabet_by_pair', {})
+    rr_ratio_by_pair = overrides.setdefault('rr_ratio_by_pair', {})
     for key, r in confirmed.items():
         market, timeframe = key.split('|')
         alphabet_by_pair.setdefault(market, {})[timeframe] = r['best_params']
         rr_ratio_by_pair.setdefault(market, {})[timeframe] = r.get('best_rr_ratio', 2.0)
-    with open(settings_path, 'w') as f:
-        json.dump(s, f, indent=2, ensure_ascii=False)
-    print(f"settings.json aktualisiert ({len(confirmed)} Pair(s), Alphabet + RR-Ratio).")
+    with open(ALPHABET_OVERRIDES_PATH, 'w') as f:
+        json.dump(overrides, f, indent=2, ensure_ascii=False)
+    print(f"alphabet_overrides.json aktualisiert ({len(confirmed)} Pair(s), Alphabet + RR-Ratio).")
     print("  WICHTIG: naechster scan_and_learn.py-Lauf erkennt die Alphabet-Aenderung automatisch")
     print("  und fuehrt fuer diese Pairs einen vollstaendigen Rescan durch (alte Genome werden geloescht).")
 
@@ -725,10 +735,9 @@ if __name__ == '__main__':
     parser.add_argument('--analyze-only', action='store_true', help="Nur bestehende Ergebnisse zeigen")
     parser.add_argument('--reapply', action='store_true',
                         help="Bestaetigte Pairs aus dem vorhandenen alphabet_sweep.json direkt "
-                             "in settings.json uebernehmen, OHNE neu zu optimieren (keine Exchange-"
-                             "Verbindung/Optuna/Discovery noetig, dauert Sekunden). Fuer den Fall, "
-                             "dass settings.json::genome_settings.alphabet_by_pair verloren ging "
-                             "(z.B. durch update.sh vor dem settings.json-Backup-Fix) waehrend "
+                             "in alphabet_overrides.json uebernehmen, OHNE neu zu optimieren (keine "
+                             "Exchange-Verbindung/Optuna/Discovery noetig, dauert Sekunden). Fuer den "
+                             "Fall, dass alphabet_overrides.json verloren ging, waehrend "
                              "artifacts/results/alphabet_sweep.json (nicht in Git) noch die schon "
                              "berechneten Bestaetigungen enthaelt.")
     parser.add_argument('--auto-apply', action='store_true',

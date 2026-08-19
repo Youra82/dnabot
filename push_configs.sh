@@ -34,8 +34,25 @@ for st in strategies:
 " 2>/dev/null || echo "  (Konnte settings.json nicht parsen)"
 echo ""
 
+# Bestätigte Alphabete anzeigen (alphabet_overrides.json)
+if [ -f "alphabet_overrides.json" ]; then
+    echo "Bestätigte Alphabete in alphabet_overrides.json:"
+    python3 -c "
+import json
+with open('alphabet_overrides.json') as f:
+    o = json.load(f)
+by_pair = o.get('alphabet_by_pair', {})
+n = sum(len(tfs) for tfs in by_pair.values())
+print(f'  {n} Pair(s)/Timeframe(s) mit bestätigtem Alphabet.')
+" 2>/dev/null || echo "  (Konnte alphabet_overrides.json nicht parsen)"
+    echo ""
+fi
+
 # Änderungen prüfen
 git add settings.json
+if [ -f "alphabet_overrides.json" ]; then
+    git add alphabet_overrides.json
+fi
 STAGED=$(git diff --cached --name-only)
 
 if [ -z "$STAGED" ]; then
@@ -45,7 +62,7 @@ fi
 
 # Commit
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-git commit -m "Update: settings.json aktualisiert ($TIMESTAMP)"
+git commit -m "Update: Konfiguration aktualisiert ($TIMESTAMP)"
 
 # Push
 echo ""

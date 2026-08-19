@@ -13,13 +13,21 @@ if [ -f "secret.json" ]; then
 fi
 
 # settings.json sichern -- ist in Git getrackt, git reset --hard wirft sonst
-# jede lokale Laufzeit-Optimierung weg: vom Alphabet-Optimizer bestaetigte
-# alphabet_by_pair/rr_ratio_by_pair, per min_samples_sweep.py getunte
-# min_samples_by_timeframe, und die vom Portfolio-Optimizer gewaehlten
-# active_strategies -- alles landet nur hier, nie im Repo committed.
+# jede lokale Laufzeit-Optimierung weg: per min_samples_sweep.py getunte
+# min_samples_by_timeframe und die vom Portfolio-Optimizer gewaehlten
+# active_strategies -- landet nur hier, nie im Repo committed.
 if [ -f "settings.json" ]; then
     cp settings.json settings.json.bak
     echo "settings.json gesichert."
+fi
+
+# alphabet_overrides.json sichern -- gleicher Grund wie settings.json:
+# vom Alphabet-Optimizer bestaetigte alphabet_by_pair/rr_ratio_by_pair pro
+# Pair (siehe genome/alphabet_store.py) sind lokale Laufzeit-Optimierung,
+# kein im Repo committeter Stand.
+if [ -f "alphabet_overrides.json" ]; then
+    cp alphabet_overrides.json alphabet_overrides.json.bak
+    echo "alphabet_overrides.json gesichert."
 fi
 
 # Git update
@@ -38,6 +46,13 @@ if [ -f "settings.json.bak" ]; then
     cp settings.json.bak settings.json
     rm settings.json.bak
     echo "settings.json wiederhergestellt."
+fi
+
+# alphabet_overrides.json wiederherstellen
+if [ -f "alphabet_overrides.json.bak" ]; then
+    cp alphabet_overrides.json.bak alphabet_overrides.json
+    rm alphabet_overrides.json.bak
+    echo "alphabet_overrides.json wiederhergestellt."
 fi
 
 # Cache bereinigen

@@ -91,18 +91,7 @@
     "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
     "use_daily_trend_filter": true,
     "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt).",
-    "alphabet_by_pair": {
-      "BTC/USDT:USDT": {
-        "4h": {
-          "body_small": 0.2511807565247405,
-          "body_large": 0.6629431119954948,
-          "vol_mult": 1.4177793420835691,
-          "wick_body_ratio": 0.3115950885216335,
-          "wick_doji_ratio": 0.21685785941408728,
-          "vol_rel_mult": 1.176270396281799
-        }
-      }
-    }
+    "_alphabet_by_pair_note": "Vom Alphabet-Optimizer pro Pair bestaetigte Alphabete/RR-Ratios liegen jetzt in alphabet_overrides.json (Repo-Root), nicht mehr hier -- wachsen mit jedem bestaetigten Pair und wuerden diese Datei sonst zumuellen. Siehe genome/alphabet_store.py::resolve_alphabet()/resolve_rr_ratio()."
   },
   "order_block_settings": {
     "enabled": false,

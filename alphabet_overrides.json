@@ -1,0 +1,15 @@
+{
+  "alphabet_by_pair": {
+    "BTC/USDT:USDT": {
+      "4h": {
+        "body_small": 0.2511807565247405,
+        "body_large": 0.6629431119954948,
+        "vol_mult": 1.4177793420835691,
+        "wick_body_ratio": 0.3115950885216335,
+        "wick_doji_ratio": 0.21685785941408728,
+        "vol_rel_mult": 1.176270396281799
+      }
+    }
+  },
+  "rr_ratio_by_pair": {}
+}

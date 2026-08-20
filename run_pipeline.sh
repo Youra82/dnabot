@@ -227,8 +227,13 @@ echo ""
 # loest die Pairs selbst genauso auf.
 if [[ "$RUN_ALPHABET" == "j" || "$RUN_ALPHABET" == "J" || "$RUN_ALPHABET" == "y" || "$RUN_ALPHABET" == "Y" ]]; then
     echo -e "${YELLOW}[Schritt 0] Alphabet-Optimizer (Optuna, IS/OOS-Split)...${NC}"
+    # --capital/--risk: derselbe Wert wie oben abgefragt (bzw. Standard 1000/1.0,
+    # falls "Backtest durchfuehren?" mit n beantwortet wurde) -- ohne das bewertete
+    # der Optimizer Drawdown/PnL bisher stumm mit risk_settings aus settings.json
+    # (z.B. 5%/5x aus einer aggressiven Live-Portfolio-Optimierung), unabhaengig
+    # davon, was hier eingegeben wurde.
     $PYTHON "$SCRIPT_DIR/analysis/alphabet_optimizer.py" \
-        --n-trials "$ALPHABET_TRIALS" --auto-apply
+        --n-trials "$ALPHABET_TRIALS" --capital "$CAPITAL" --risk "$RISK" --auto-apply
     echo ""
 fi
 

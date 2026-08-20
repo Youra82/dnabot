@@ -368,8 +368,19 @@ def make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
 
 
 def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
-             n_trials: int, min_is_trades: int, min_oos_trades: int):
+             n_trials: int, min_is_trades: int, min_oos_trades: int,
+             risk_override: float = None, capital_override: float = None):
     genome_cfg, risk_cfg = load_genome_cfg(settings, timeframe)
+    # --risk/--capital ueberschreiben die aus settings.json gelesenen
+    # risk_settings -- run_pipeline.sh fragt Startkapital/Risiko interaktiv
+    # ab und reicht sie an Schritt 2 (Backtest) weiter, vorher aber NICHT an
+    # Schritt 0 (dieser Optimizer): der bewertete DD/PnL still mit den
+    # LIVE-Werten aus settings.json (z.B. risk_per_entry_pct=5.0, leverage=5
+    # aus einer aggressiven Portfolio-Optimierung), unabhaengig davon, was
+    # der Nutzer am Prompt eingegeben hatte -- die MAX_DD_PCT-Grenze traf
+    # dadurch faktisch viel haerter zu als der Nutzer beim Start annahm.
+    if risk_override is not None:
+        risk_cfg['risk_per_entry_pct'] = risk_override
     # Dieselbe history_days wie scan_and_learn.py/run_backtest.py -- vorher
     # nutzte dieser Optimizer per HISTORY_MULTIPLIER=2.0 die doppelte Historie,
     # was Alphabet+RR-Kombinationen bestaetigte, die auf der tatsaechlich von
@@ -382,7 +393,8 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     scan_cfg = settings.get('scan_settings', {})
     history_days = resolve_history_days(timeframe, scan_cfg.get('history_days'))
     discovery_horizon = resolve_discovery_horizon(timeframe, scan_cfg.get('discovery_horizon'))
-    capital = settings.get('optimization_settings', {}).get('start_capital', 1000.0)
+    capital = capital_override if capital_override is not None else \
+        settings.get('optimization_settings', {}).get('start_capital', 1000.0)
 
     df = exchange.fetch_historical_ohlcv(market, timeframe, *_date_range(history_days))
     if df is None or df.empty or len(df) < 200:
@@ -491,7 +503,8 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
 
 def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: int,
               auto_apply: bool = False, skip_confirmed: bool = True,
-              recheck_after_days: int = RECHECK_AFTER_DAYS_DEFAULT):
+              recheck_after_days: int = RECHECK_AFTER_DAYS_DEFAULT,
+              risk_override: float = None, capital_override: float = None):
     settings = load_settings()
     secrets = load_secrets()
     accounts = secrets.get('dnabot', [])
@@ -576,7 +589,8 @@ def run_sweep(pairs: list, n_trials: int, min_is_trades: int, min_oos_trades: in
         elapsed = time.time() - sweep_start
         print(f"\n[{idx + 1}/{len(pairs)}] {market} ({timeframe}) | bisher gelaufen: {_fmt_duration(elapsed)}")
         try:
-            r = run_pair(exchange, db, market, timeframe, settings, n_trials, min_is_trades, min_oos_trades)
+            r = run_pair(exchange, db, market, timeframe, settings, n_trials, min_is_trades, min_oos_trades,
+                         risk_override=risk_override, capital_override=capital_override)
         except Exception as e:
             logger.error(f"Fehler bei {market} ({timeframe}): {e}", exc_info=True)
             continue
@@ -744,6 +758,16 @@ if __name__ == '__main__':
     parser.add_argument('--all-scan-pairs', action='store_true',
                         help="Alle Pairs aus scan_settings.symbols x timeframes")
     parser.add_argument('--n-trials', type=int, default=N_TRIALS_DEFAULT)
+    parser.add_argument('--risk', type=float, default=None,
+                        help="Risiko pro Trade in %% fuer die DD/PnL-Bewertung -- "
+                             "ueberschreibt risk_settings.risk_per_entry_pct aus "
+                             "settings.json (z.B. von run_pipeline.sh durchgereicht, "
+                             "damit der Optimizer denselben Wert bewertet, den der "
+                             "Nutzer am Prompt eingegeben hat, nicht die u.U. viel "
+                             "aggressiveren Live-Settings)")
+    parser.add_argument('--capital', type=float, default=None,
+                        help="Startkapital fuer die DD/PnL-Bewertung -- ueberschreibt "
+                             "optimization_settings.start_capital aus settings.json")
     parser.add_argument('--min-is-trades', type=int, default=MIN_IS_TRADES_DEFAULT)
     parser.add_argument('--min-oos-trades', type=int, default=MIN_OOS_TRADES_DEFAULT)
     parser.add_argument('--analyze-only', action='store_true', help="Nur bestehende Ergebnisse zeigen")
@@ -799,4 +823,5 @@ if __name__ == '__main__':
     _pairs = resolve_pairs(args, _settings)
     run_sweep(_pairs, args.n_trials, args.min_is_trades, args.min_oos_trades,
               auto_apply=args.auto_apply, skip_confirmed=not args.recheck_confirmed,
-              recheck_after_days=args.recheck_after_days)
+              recheck_after_days=args.recheck_after_days,
+              risk_override=args.risk, capital_override=args.capital)

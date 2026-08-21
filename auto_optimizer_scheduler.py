@@ -218,9 +218,19 @@ def _run_alphabet_optimizer(opt_settings: dict) -> int:
     false -- explizit aktivieren, da das den Optimierungslauf deutlich
     verlaengert) und .alphabet_optimizer_trials (Default 20).
     """
-    trials = int(opt_settings.get('alphabet_optimizer_trials', 20))
-    cmd = [PYTHON_EXE, ALPHABET_SCRIPT, '--all-scan-pairs', '--n-trials', str(trials), '--auto-apply']
-    _log(f"ALPHABET_START trials={trials}")
+    trials  = int(opt_settings.get('alphabet_optimizer_trials', 20))
+    # --risk/--capital: dieselben Werte, die _run_portfolio_optimizer() weiter
+    # unten fuer denselben Lauf verwendet (optimization_settings.risk_pct/
+    # start_capital) -- ohne das bewertet der Optimizer Drawdown/PnL still mit
+    # risk_settings aus settings.json (den LIVE-Werten, z.B. 5%/5x aus einer
+    # aggressiven Portfolio-Optimierung), was die MAX_DD_PCT-Grenze faktisch
+    # viel haerter treffen laesst als hier beabsichtigt (siehe run_pipeline.sh,
+    # derselbe Fix -- dort ueber $CAPITAL/$RISK vom Nutzer-Prompt).
+    capital = str(opt_settings.get('start_capital', 1000))
+    risk    = str(opt_settings.get('risk_pct', 1.0))
+    cmd = [PYTHON_EXE, ALPHABET_SCRIPT, '--all-scan-pairs', '--n-trials', str(trials),
+           '--capital', capital, '--risk', risk, '--auto-apply']
+    _log(f"ALPHABET_START trials={trials} capital={capital} risk={risk}")
     result = subprocess.run(cmd)
     _log(f"ALPHABET_EXIT rc={result.returncode}")
     return result.returncode

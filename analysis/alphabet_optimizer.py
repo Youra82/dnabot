@@ -449,7 +449,29 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     valid = [t for t in study.trials if t.value is not None and t.value > -1e4]
     if not valid:
         print(f"  {market} ({timeframe}): keine gueltigen Trials (zu wenig IS-Trades oder DD > {MAX_DD_PCT}%).")
-        return None
+        # Trotzdem einen Ergebnis-Eintrag MIT checked_at zurueckgeben (statt
+        # None) -- sonst greift die run_sweep()-Sperre "in den letzten
+        # recheck_after_days Tagen bereits geprueft" fuer dieses Pair NIE,
+        # weil ohne gespeicherten Eintrag nichts zum Vergleichen da ist. Genau
+        # die Pairs, die HIER durchfallen (fast der ganze 1h/2h-Bereich),
+        # wurden dadurch bei jedem einzelnen Scheduler-Lauf komplett neu
+        # optimiert -- die Sperre wirkte nur fuer Pairs mit einem gueltigen,
+        # aber unbestaetigten Ergebnis, nicht fuer diesen Fall.
+        empty_stats = {"total_trades": 0, "win_rate": 0.0, "total_pnl_pct": 0.0, "max_drawdown_pct": 0.0}
+        return {
+            'market': market, 'timeframe': timeframe,
+            'n_trials': len(study.trials),
+            'split_date': str(split_ts.date()),
+            'baseline_params': dict(DEFAULT_ALPHABET),
+            'baseline_rr_ratio': risk_cfg['rr_ratio'],
+            'baseline_is': b_is, 'baseline_oos': b_oos,
+            'best_params': dict(DEFAULT_ALPHABET),
+            'best_rr_ratio': risk_cfg['rr_ratio'],
+            'best_is': empty_stats, 'best_oos': empty_stats,
+            'confirmed': False,
+            'no_valid_trials': True,
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+        }
 
     best = max(valid, key=lambda t: t.value)
     best_is = best.user_attrs['is_stats']

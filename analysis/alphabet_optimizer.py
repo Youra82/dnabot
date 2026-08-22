@@ -116,6 +116,19 @@ MIN_OOS_TRADES_DEFAULT = 10  # Bestaetigung erfordert zusaetzlich genug OOS-
                               # sehen: 5 OOS-Trades reichten fuer "bestaetigt").
 MAX_DD_PCT = 30.0            # weich bestraft (Gradient Richtung Grenze), nicht hart verworfen
 
+EARLY_STOP_PATIENCE = 8      # Trials ohne Verbesserung des besten Werts, bevor
+                              # ein Pair vorzeitig abgebrochen wird (Rest der
+                              # n_trials wird uebersprungen). 8 von z.B. 20
+                              # Trials ohne jede Verbesserung ist ein starkes
+                              # Signal, dass weitere Trials denselben Bereich
+                              # nur wiederholt abtasten -- TPE bekommt trotzdem
+                              # genug Versuche (mind. 8), bevor aufgegeben wird.
+                              # Spart Zeit vor allem bei strukturell aussichtslosen
+                              # Pairs (z.B. fast der gesamte 1h/2h-Bereich diese
+                              # Session), ohne echte Verbesserungssuchen fruehzeitig
+                              # abzuwuergen -- die verlaengern die Patience ja durch
+                              # jede Verbesserung von Neuem.
+
 RECHECK_AFTER_DAYS_DEFAULT = 30  # Nicht-bestaetigte Pairs werden erst nach
                              # dieser Sperrfrist erneut geprueft (Zeitstempel
                              # in alphabet_sweep.json::checked_at). Ohne das
@@ -430,11 +443,33 @@ def run_pair(exchange, db, market: str, timeframe: str, settings: dict,
     with tqdm(total=n_trials, desc=f"{market} {timeframe}", unit="trial") as pbar:
         def _progress(study, trial):
             pbar.update(1)
+
+        # Early Stopping: bricht dieses Pair ab, sobald sich der beste Wert
+        # ueber EARLY_STOP_PATIENCE aufeinanderfolgende Trials nicht verbessert
+        # hat, statt stur alle n_trials durchzuziehen (siehe EARLY_STOP_PATIENCE
+        # -Kommentar). study.best_value existiert erst nach dem ersten
+        # abgeschlossenen Trial.
+        stall_state = {'since_improve': 0, 'last_best': None}
+
+        def _early_stop(study, trial):
+            try:
+                current_best = study.best_value
+            except ValueError:
+                return  # noch kein abgeschlossener Trial
+            if stall_state['last_best'] is None or current_best > stall_state['last_best']:
+                stall_state['last_best'] = current_best
+                stall_state['since_improve'] = 0
+            else:
+                stall_state['since_improve'] += 1
+            if stall_state['since_improve'] >= EARLY_STOP_PATIENCE:
+                pbar.set_postfix_str(f"early stop nach {EARLY_STOP_PATIENCE} Trials ohne Verbesserung")
+                study.stop()
+
         study.optimize(
             make_objective(df, db, market, timeframe, genome_cfg, risk_cfg,
                             discovery_horizon, split_ts, capital, min_is_trades),
             n_trials=n_trials,
-            callbacks=[_progress],
+            callbacks=[_progress, _early_stop],
         )
 
     baseline_trial = next((t for t in study.trials if t.user_attrs.get('is_baseline')), None)

@@ -175,6 +175,18 @@ class LazyFineData:
     kann viele Coarse-Kerzen ueberspannen, daher Tage-Bucketing ueber
     mehrere Kalendertage hinweg.
     """
+    # Wie viele Kalendertage pro Netzwerk-Request geholt werden, sobald ein
+    # noch unbekannter Tag gebraucht wird -- vorher exakt 1 Tag pro Request
+    # (siehe _ensure_day()-Kommentar unten), das kostete bei 700-1500 Tagen
+    # Backtest-Spanne hunderte einzelne Roundtrips (~10 Min/Pair allein fuers
+    # Laden, beobachtet ueber mehrere Laeufe diese Session). Bitget liefert
+    # bis zu 200 Kerzen/Request -- bei 15m sind das ~2 Tage pro Seite, ein
+    # 14-Tage-Fenster bleibt klar unter der Pagination-Grenze des darunter
+    # liegenden fetch_historical_ohlcv() (das selbst mehrseitig paginiert,
+    # ein Request pro Seite). Ergebnis bleibt identisch (dieselben Kerzen),
+    # nur die Anzahl der Roundtrips sinkt deutlich.
+    _BATCH_DAYS = 14
+
     def __init__(self, symbol, fine_tf):
         self.symbol = symbol
         self.fine_tf = fine_tf
@@ -206,23 +218,30 @@ class LazyFineData:
             return
         try:
             day_str = day.strftime('%Y-%m-%d')
-            next_day_str = (day + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-            # quiet=True: sonst zwei Log-Zeilen PRO TAG (dieser Aufruf passiert
-            # potenziell hunderte Male pro Backtest, einmal je neuem Kalendertag,
-            # den irgendein simulierter Trade durchlaeuft) -- stattdessen ein
-            # echter tqdm-Ladebalken (wie bei analysis/alphabet_optimizer.py's
-            # Optuna-Trials), lazy erzeugt beim ersten Fetch. Kein fester
-            # Gesamtwert bekannt (welche Tage ueberhaupt gebraucht werden,
-            # ergibt sich erst live aus den simulierten Trades) -- tqdm zeigt
-            # dann Anzahl+Rate statt Prozent/ETA, was hier ausreicht.
-            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, next_day_str, quiet=True)
-            self._days[day] = df if df is not None and not df.empty else None
+            # Ganzes _BATCH_DAYS-Fenster ab `day` in EINEM Rutsch holen statt
+            # nur diesen einen Tag -- fetch_historical_ohlcv() paginiert selbst
+            # mehrseitig, ein einzelner Tag verschenkt also nur Kapazitaet
+            # (200 Kerzen/Seite bei 15m ~= 2 Tage). Alle im Fenster enthaltenen
+            # Tage werden aus DIESER EINEN Antwort befuellt (auch echte Luecken
+            # als None), damit spaetere _ensure_day()-Aufrufe fuer benachbarte
+            # Tage aus dem Cache bedient werden statt erneut zu fetchen.
+            window_end_str = (day + pd.Timedelta(days=self._BATCH_DAYS)).strftime('%Y-%m-%d')
+            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, window_end_str, quiet=True)
             self._fetch_count += 1
             if self._pbar is None:
                 self._pbar = tqdm(desc=f"  Fein-Daten ({self.fine_tf}) {self.symbol}",
                                    unit="Tag", leave=True)
-            self._pbar.set_postfix_str(day_str, refresh=False)
-            self._pbar.update(1)
+            if df is not None and not df.empty:
+                grouped = {d: g for d, g in df.groupby(df.index.floor('D'))}
+            else:
+                grouped = {}
+            for offset in range(self._BATCH_DAYS):
+                d = day + pd.Timedelta(days=offset)
+                if d in self._days:
+                    continue
+                self._days[d] = grouped.get(d)
+                self._pbar.set_postfix_str(d.strftime('%Y-%m-%d'), refresh=False)
+                self._pbar.update(1)
         except Exception:
             self._days[day] = None
 

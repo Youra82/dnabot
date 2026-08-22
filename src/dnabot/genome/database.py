@@ -104,6 +104,7 @@ class GenomeDB:
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
         genome_id           TEXT NOT NULL,
         occurred_at         TEXT NOT NULL,
+        resolved_at         TEXT NOT NULL,
         is_win              INTEGER NOT NULL,
         move_pct            REAL NOT NULL,
         regime              TEXT NOT NULL DEFAULT 'NEUTRAL'
@@ -172,6 +173,7 @@ class GenomeDB:
         self._conn.commit()
         self._migrate()
         self._migrate_scan_log()
+        self._migrate_occurrences()
 
     def _migrate(self):
         """Fügt fehlende Spalten zu bestehenden DBs hinzu (rückwärtskompatibel)."""
@@ -203,6 +205,22 @@ class GenomeDB:
             logger.info("DB Migration: scan_log Spalte 'alphabet_hash' hinzugefügt.")
         self._conn.commit()
 
+    def _migrate_occurrences(self):
+        """resolved_at nachtraeglich hinzufuegen (siehe get_genome_as_of()-Docstring:
+        occurred_at markiert den ENTRY-Zeitpunkt eines Vorkommens, nicht den Zeitpunkt,
+        ab dem sein Ergebnis tatsaechlich feststand -- ein Backtest, der nur nach
+        occurred_at < cutoff filtert, kann Vorkommen "kennen", deren SL/TP/Timeout in
+        Wahrheit erst bis zu discovery_horizon Kerzen SPAETER feststand. Fuer
+        Alt-Zeilen ohne echten Aufloesungszeitpunkt bleibt occurred_at als Fallback
+        (identisch zum bisherigen, leicht optimistischen Verhalten) -- erst ein
+        frischer discover_genomes()-Lauf schreibt den echten resolved_at-Wert."""
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(genome_occurrences)")}
+        if 'resolved_at' not in existing:
+            self._conn.execute("ALTER TABLE genome_occurrences ADD COLUMN resolved_at TEXT")
+            self._conn.execute("UPDATE genome_occurrences SET resolved_at = occurred_at WHERE resolved_at IS NULL")
+            logger.info("DB Migration: genome_occurrences Spalte 'resolved_at' hinzugefügt (Alt-Zeilen: Fallback = occurred_at).")
+        self._conn.commit()
+
     def close(self):
         self._conn.close()
 
@@ -221,6 +239,7 @@ class GenomeDB:
         move_pct: float,
         regime: str = 'NEUTRAL',
         occurred_at: str = None,
+        resolved_at: str = None,
     ) -> bool:
         """
         Erstellt oder aktualisiert ein Genome mit einem Trade-Ergebnis.
@@ -235,19 +254,33 @@ class GenomeDB:
         genome_occurrences gespeichert -- Basis fuer zeitpunktbezogene
         ("as-of") Backtest-Auswertungen ohne Hindsight-Bias (siehe
         get_genome_as_of()).
+
+        resolved_at: Zeitpunkt, ab dem das Ergebnis (is_win) DIESES Vorkommens
+        tatsaechlich feststand -- bei Discovery-Scans ist das NICHT occurred_at
+        (Entry-Kerze), sondern die Kerze, an der SL/TP/Timeout eintrat, bis zu
+        discovery_horizon Kerzen spaeter (siehe discovery.py::discover_genomes()).
+        Ohne das wuerde get_genome_as_of() ein Vorkommen schon als "bekannt"
+        zaehlen, sobald occurred_at vor dem Cutoff liegt, obwohl das Ergebnis in
+        Wahrheit erst mehrere Kerzen spaeter feststand -- ein kleineres, aber
+        echtes Lookahead-Leck zusaetzlich zum grossen, bereits gefixten Bug (alle
+        Backtests nutzten frueher die All-Time-DB statt zeitpunktbezogener Scores).
+        None (Default) = resolved_at = occurred_at, das bestehende Verhalten fuer
+        Live-Self-Learning-Aufrufe (dort passiert Insert erst NACH Trade-Abschluss,
+        occurred_at ist dort also bereits der Aufloesungszeitpunkt).
         """
         gid = _genome_id(sequence, market, timeframe, direction)
         now = datetime.now(timezone.utc).isoformat()
         occ_ts = occurred_at or now
+        resolved_ts = resolved_at or occ_ts
 
         # Regime auf bekannte Werte beschränken (HIGH_VOL zählen wir nicht)
         regime_key = regime if regime in self._REGIME_COLS else 'NEUTRAL'
         occ_col, wins_col = self._REGIME_COLS[regime_key]
 
         self._conn.execute(
-            "INSERT INTO genome_occurrences (genome_id, occurred_at, is_win, move_pct, regime) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (gid, occ_ts, 1 if is_win else 0, move_pct, regime_key)
+            "INSERT INTO genome_occurrences (genome_id, occurred_at, resolved_at, is_win, move_pct, regime) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (gid, occ_ts, resolved_ts, 1 if is_win else 0, move_pct, regime_key)
         )
 
         existing = self._conn.execute(
@@ -343,9 +376,17 @@ class GenomeDB:
         nur die Aktivierungs-Pruefung selbst laeuft pro Regime.
         """
         gid = _genome_id(sequence, market, timeframe, direction)
+        # Filter auf resolved_at (nicht occurred_at): ein Vorkommen darf erst
+        # zaehlen, wenn sein Ergebnis tatsaechlich feststand -- bei
+        # Discovery-Scans ist das bis zu discovery_horizon Kerzen NACH
+        # occurred_at (siehe upsert_genome_outcome()-Docstring). Sonst kann ein
+        # Backtest an Kerze C das Ergebnis eines Vorkommens "kennen", das in
+        # Wahrheit erst nach C feststand -- ein kleines, aber echtes
+        # Lookahead-Leck. ORDER BY bleibt occurred_at (Decay misst, wann das
+        # MUSTER zuletzt auftrat, nicht wann sein Ergebnis feststand).
         rows = self._conn.execute(
             "SELECT is_win, move_pct, regime, occurred_at FROM genome_occurrences "
-            "WHERE genome_id = ? AND occurred_at < ? ORDER BY occurred_at",
+            "WHERE genome_id = ? AND resolved_at < ? ORDER BY occurred_at",
             (gid, cutoff_iso)
         ).fetchall()
         if not rows:

@@ -40,7 +40,7 @@ REGIME_RECALC_INTERVAL = 20
 
 
 def _simulate_sl_tp_path(sl_price: float, tp_price: float, future_highs: np.ndarray,
-                          future_lows: np.ndarray, direction: str, timeout_price: float) -> tuple[str, float]:
+                          future_lows: np.ndarray, direction: str, timeout_price: float) -> tuple[str, float, int]:
     """
     Prueft pfadabhaengig, ob SL oder TP innerhalb von future_highs/future_lows
     zuerst getroffen wird (Grob-Kerzen-Naeherung, siehe Modul-Docstring).
@@ -50,7 +50,11 @@ def _simulate_sl_tp_path(sl_price: float, tp_price: float, future_highs: np.ndar
     pro Bar vor TP prueft).
 
     Returns:
-        (outcome, exit_price) mit outcome in {"WIN", "LOSS", "TIMEOUT"}
+        (outcome, exit_price, resolve_offset) mit outcome in {"WIN", "LOSS", "TIMEOUT"}.
+        resolve_offset = Index INNERHALB von future_highs/future_lows, an dem das
+        Ergebnis feststand (0 = bereits an der ersten Zukunfts-Kerze) -- Basis fuer
+        den echten resolved_at-Zeitstempel in discover_genomes(), siehe dortigen
+        Kommentar und database.py::upsert_genome_outcome()-Docstring.
     """
     if direction == "LONG":
         sl_hit_mask = future_lows <= sl_price
@@ -63,10 +67,10 @@ def _simulate_sl_tp_path(sl_price: float, tp_price: float, future_highs: np.ndar
     tp_idx = int(np.argmax(tp_hit_mask)) if tp_hit_mask.any() else None
 
     if sl_idx is not None and (tp_idx is None or sl_idx <= tp_idx):
-        return "LOSS", sl_price
+        return "LOSS", sl_price, sl_idx
     if tp_idx is not None:
-        return "WIN", tp_price
-    return "TIMEOUT", timeout_price
+        return "WIN", tp_price, tp_idx
+    return "TIMEOUT", timeout_price, len(future_highs) - 1
 
 
 def discover_genomes(
@@ -208,9 +212,13 @@ def discover_genomes(
             short_result = _simulate_sl_tp_path(short_sl, short_tp, future_highs, future_lows, "SHORT", timeout_price)
 
             # Immer BEIDE Richtungen aufzeichnen — gibt realistische Win/Loss-Statistiken.
-            for direction, (outcome, exit_price) in [("LONG", long_result), ("SHORT", short_result)]:
+            for direction, (outcome, exit_price, resolve_offset) in [("LONG", long_result), ("SHORT", short_result)]:
                 is_win = outcome == "WIN"
                 move_pct = abs((exit_price - entry_price) / entry_price * 100.0)
+                # Echter Aufloesungszeitpunkt (siehe upsert_genome_outcome()-
+                # Docstring): resolve_offset ist ein Index INNERHALB von
+                # future_highs/future_lows, das bei entry_idx beginnt.
+                resolved_at = df.index[entry_idx + resolve_offset].isoformat()
 
                 # Exakte Sequenz + beide Wildcard-Pattern-Varianten aufzeichnen
                 # -- jede bekommt ihre eigene genome_id (siehe database.py::
@@ -230,6 +238,7 @@ def discover_genomes(
                         move_pct=move_pct,
                         regime=regime,
                         occurred_at=occurred_at,
+                        resolved_at=resolved_at,
                     )
                     if is_new:
                         new_genomes += 1

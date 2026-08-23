@@ -7,6 +7,10 @@
   "scan_settings": {
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
     "min_samples_to_activate": 2,
+    "min_samples_by_timeframe": {
+      "6h": 6
+    },
+    "_min_samples_by_timeframe_note": "6h=6 validiert 2026-08-23 (recherche/fix_direction_sweep.py, 20 Pairs, 70/30-Split): min_samples_to_activate=2 (globaler Default oben) ist fuer 6h die SCHLECHTESTE Wahl (OOS WR 20.5%, Fund C in Memory research_dnabot_direction_calibration.md) -- n=6-10 ist der Sweet Spot. Andere Timeframes bewusst NICHT angefasst (nicht validiert), fallen weiter auf min_samples_to_activate=2 zurueck. WICHTIG: siehe Memory Fund E -- ein scheinbarer SHORT-Bias erwies sich als reines Markt-Beta, NICHT auf eine feste Richtung optimieren.",
     "scan_all_db_pairs": true,
     "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies",
     "symbols": [

@@ -10,3 +10,5 @@ artifacts/results/
 artifacts/db/
 *.log
 .DS_Store
+recherche/
+livedaten/

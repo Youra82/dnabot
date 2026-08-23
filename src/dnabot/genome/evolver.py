@@ -30,10 +30,21 @@
 #
 # HINWEIS (2026-08-13): kurzzeitig auf eine Wilson-Score-Konfidenzuntergrenze
 # umgestellt, dann bewusst wieder auf die einfache Punktschaetzung zurueckgesetzt.
-# Genome-Menge ist die Prioritaet (Genome sind die Handelsbasis) -- Qualitaets-
-# filterung passiert stattdessen als separate Schicht ueber einen Wochentrend-
-# Filter beim Live-Signal, nicht ueber eine strengere Aktivierungsschwelle, die
-# die Menge zu stark reduziert.
+# Genome-Menge war die Prioritaet.
+#
+# WIEDER AUF WILSON-UNTERGRENZE UMGESTELLT (2026-08-23): eine gross angelegte
+# Recherche-Session (siehe Memory research_dnabot_direction_calibration.md,
+# Fund C/O) zeigte ueber mehrere Feature-Kategorien und Stichprobengroessen
+# hinweg konsistent, dass die reine Punktschaetzung bei kleinem n (insbesondere
+# min_samples=2, damals als "bestaetigt beste Wahl" eingestuft) systematisch
+# die UNZUVERLAESSIGSTEN Genome am staerksten belohnt (Winner's-Curse) --
+# n=2-Trades zeigten in einer 20-Pair/2855-Trade-Stichprobe die schlechteste
+# tatsaechliche OOS-Trefferquote aller Bucket-Groessen. Die Wilson-Untergrenze
+# (scoring.py::wilson_lower_bound()) verlangt, dass selbst die KONSERVATIVE
+# untere Konfidenzgrenze noch ueber min_winrate liegt, nicht nur der
+# Mittelwert -- bestraft kleine Stichproben automatisch, ohne min_samples
+# separat hochsetzen zu muessen. Menge bleibt weiterhin hoch (min_samples
+# selbst unveraendert), nur die QUALITAETS-Schwelle ist jetzt strenger.
 #
 # active_regimes = JSON-Liste der Regime, in denen das Genome gehandelt wird.
 
@@ -43,7 +54,7 @@ import math
 from datetime import datetime, timezone
 
 from dnabot.genome.database import GenomeDB
-from dnabot.genome.scoring import compute_score
+from dnabot.genome.scoring import compute_score, wilson_lower_bound
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +160,9 @@ def evolve(
             winrate = wins / occ
             effective_occ = occ * decay
             score = compute_score(winrate, avg_move, effective_occ)
+            wr_lower = wilson_lower_bound(wins, occ)
 
-            if winrate >= min_winrate and score >= score_threshold:
+            if wr_lower >= min_winrate and score >= score_threshold:
                 active_regimes.append(regime)
                 best_score = max(best_score, score)
                 total_regime_activations[regime] += 1
@@ -171,7 +183,8 @@ def evolve(
                 global_winrate = global_wins / total
                 effective_occ = total * decay
                 best_score = compute_score(global_winrate, avg_move, effective_occ)
-                if global_winrate >= min_winrate and best_score >= score_threshold:
+                global_wr_lower = wilson_lower_bound(global_wins, total)
+                if global_wr_lower >= min_winrate and best_score >= score_threshold:
                     active_regimes = ['NEUTRAL']
                     is_active = True
                     total_regime_activations['NEUTRAL'] += 1

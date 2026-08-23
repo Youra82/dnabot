@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional
 import os
 
-from dnabot.genome.scoring import compute_score as _compute_score
+from dnabot.genome.scoring import compute_score as _compute_score, wilson_lower_bound as _wilson_lower_bound
 
 logger = logging.getLogger(__name__)
 
@@ -403,24 +403,30 @@ class GenomeDB:
         def _regime_score(subset):
             occ = len(subset)
             if occ == 0:
-                return 0, 0.0, 0.0
+                return 0, 0.0, 0.0, 0
             wins = sum(r['is_win'] for r in subset)
             winrate = wins / occ
             last_occurred = subset[-1]['occurred_at']
             decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
             effective_occ = occ * decay
             score = _compute_score(winrate, global_avg_move, effective_occ)
-            return occ, winrate, score
+            return occ, winrate, score, wins
 
+        # Wilson-Score-Konfidenzuntergrenze statt Punktschaetzung als
+        # Aktivierungs-Kriterium -- siehe evolver.py::evolve() fuer
+        # Begruendung (research_dnabot_direction_calibration.md Fund C/O),
+        # muss hier identisch angewendet werden (feedback_live_backtest_
+        # must_match.md).
         regimes_to_try = [regime] if regime else ['TREND', 'RANGE', 'NEUTRAL']
         active_regimes = []
         best_score = 0.0
         for r in regimes_to_try:
             subset = [row for row in rows if row['regime'] == r]
-            occ, winrate, score = _regime_score(subset)
+            occ, winrate, score, wins = _regime_score(subset)
             if occ < min_samples:
                 continue
-            if winrate >= min_winrate and score >= score_threshold:
+            wr_lower = _wilson_lower_bound(wins, occ)
+            if wr_lower >= min_winrate and score >= score_threshold:
                 active_regimes.append(r)
                 best_score = max(best_score, score)
 
@@ -428,7 +434,8 @@ class GenomeDB:
             last_occurred = rows[-1]['occurred_at']
             decay = _decay_as_of(last_occurred, cutoff_iso, effective_half_life)
             global_score = _compute_score(global_winrate, global_avg_move, total * decay)
-            if global_winrate >= min_winrate and global_score >= score_threshold:
+            global_wr_lower = _wilson_lower_bound(global_wins, total)
+            if global_wr_lower >= min_winrate and global_score >= score_threshold:
                 active_regimes = ['NEUTRAL']
                 best_score = global_score
 

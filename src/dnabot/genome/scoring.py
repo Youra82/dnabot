@@ -13,6 +13,38 @@ Kein Import von evolver.py/database.py hier -- vermeidet Zirkel-Importe
 import math
 
 
+def wilson_lower_bound(wins: int, occurrences: int, z: float = 1.96) -> float:
+    """
+    Untere Grenze des Wilson-Score-Konfidenzintervalls fuer eine Binomial-
+    Trefferquote (Standard: 95%-Konfidenz, z=1.96).
+
+    Ersetzt die reine Punktschaetzung (wins/occurrences) als Aktivierungs-
+    Kriterium: bei kleinem n liegt die untere Grenze deutlich unter der
+    Punktschaetzung (z.B. wins=2/occ=2 -> Punktschaetzung 100%, Wilson-
+    Untergrenze nur ~34%), bei grossem n naehern sich beide an. Direkt
+    begruendet durch research_dnabot_direction_calibration.md Fund C/O:
+    kleine Stichproben (n=2) zeigten die schlechteste tatsaechliche OOS-
+    Trefferquote trotz oft perfekter Punktschaetzung -- die reine Punkt-
+    schaetzung belohnt genau die unzuverlaessigsten Genome am staerksten
+    (winner's-curse-Effekt bei der Aktivierungsschwelle).
+
+    Frueher (bis 2026-08-13) kurzzeitig im Einsatz, dann zugunsten von mehr
+    Genome-Menge wieder auf die reine Punktschaetzung zurueckgesetzt (siehe
+    evolver.py-Docstring) -- diese Session (2026-08-23, Fund C/O/Y) zeigte
+    ueber 25 unabhaengige Tests konsistent, dass die Genome-Menge selbst kein
+    nachweisbares Signal enthaelt und die Punktschaetzung genau deswegen
+    irrefuehrend ist; Wiedereinfuehrung als evidenzbasierte Korrektur.
+    """
+    if occurrences <= 0:
+        return 0.0
+    n = float(occurrences)
+    p = wins / n
+    denom = 1.0 + z * z / n
+    center = p + z * z / (2.0 * n)
+    margin = z * math.sqrt((p * (1.0 - p) + z * z / (4.0 * n)) / n)
+    return max(0.0, (center - margin) / denom)
+
+
 def breakeven_winrate(rr_ratio: float, margin_pct: float = 0.05) -> float:
     """
     Mindest-Winrate, die ein Genome mit gegebenem Risk:Reward-Verhaeltnis

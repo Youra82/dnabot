@@ -431,6 +431,7 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
         'genome_id': signal['genome']['genome_id'],
         'genome_score': signal['genome']['score'],
         'genome_winrate': signal['genome']['wins'] / max(signal['genome']['total_occurrences'], 1),
+        'genome_total_occurrences': signal['genome']['total_occurrences'],
         'seq_len': seq_len,
         'exit_idx': exit_idx,
     }

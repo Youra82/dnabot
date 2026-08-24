@@ -27,6 +27,7 @@ from dnabot.genome.database import GenomeDB
 from dnabot.genome.scoring import kelly_risk_pct as _kelly_risk_pct
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
 from dnabot.strategy.order_block_logic import get_order_block_signal
+from dnabot.strategy.momentum_exit_logic import get_momentum_exit_signal
 
 MIN_NOTIONAL_USDT = 5.0
 MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
@@ -846,6 +847,7 @@ def place_entry_orders(
         # genome/order_blocks.py-Docstring) -- self_learn_from_closed_trade()
         # muss das erkennen und den DB-Schreibversuch ueberspringen.
         "is_order_block": genome_signal.get('is_order_block', False),
+        "is_momentum_exit": genome_signal.get('is_momentum_exit', False),
     }
     _write_tracker(tracker_path, tracker)
 
@@ -902,12 +904,15 @@ def self_learn_from_closed_trade(
     if not active_genome:
         return
 
-    if active_genome.get('is_order_block'):
-        # Order Blocks haben keine Genome-DB-Zeile und kein Signifikanz-
-        # Tracking (siehe genome/order_blocks.py) -- ein Upsert mit dem
+    if active_genome.get('is_order_block') or active_genome.get('is_momentum_exit'):
+        # Order Blocks UND Momentum-Exit-Trades haben keine Genome-DB-Zeile
+        # und kein Signifikanz-Tracking (siehe genome/order_blocks.py bzw.
+        # strategy/momentum_exit_logic.py -- deren Edge steckt in der Exit-
+        # Mechanik, nicht in einer Gen-Vorhersage) -- ein Upsert mit dem
         # Platzhalter-"sequence"-String wuerde nur bedeutungslose Einmal-
         # Zeilen in der Genome-DB erzeugen. Tracker trotzdem aufraeumen.
-        logger.info("OB-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking für Order Blocks).")
+        kind = "Momentum-Exit" if active_genome.get('is_momentum_exit') else "OB"
+        logger.info(f"{kind}-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking).")
         tracker['active_genome'] = None
         _write_tracker(tracker_path, tracker)
         return
@@ -979,26 +984,37 @@ def full_trade_cycle(
         logger.error(f"Zu wenig Daten ({len(df) if df is not None else 0}). Abbruch.")
         return
 
-    # 2. Genome-Signal
+    # 2. Signal -- 'momentum_exit'-Strategien (siehe Fund AQ in
+    # research_dnabot_direction_calibration.md) nutzen NUR den nicht-
+    # praediktiven Momentum-Signal-Pfad, komplett getrennt vom Genome-System
+    # (kein Genome-DB-Zugriff noetig, kein Mischen zweier unterschiedlicher
+    # Handelslogiken fuer dasselbe Pair/Timeframe).
     db = GenomeDB(db_path)
-    genome_signal = get_genome_signal(df, params, db)
-
-    if genome_signal:
-        logger.info(
-            f"Genome Signal: {genome_signal['side'].upper()} | "
-            f"Score: {genome_signal['score']:.3f} | WR: {genome_signal['winrate']:.1%}"
-        )
+    if params.get('strategy_type') == 'momentum_exit':
+        genome_signal = get_momentum_exit_signal(df, params)
+        if genome_signal:
+            logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()}")
+        else:
+            logger.info("Kein Momentum-Exit-Signal (deaktiviert, zu wenig Kerzen, oder HIGH_VOL-Regime).")
     else:
-        logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
+        genome_signal = get_genome_signal(df, params, db)
 
-    # 2b. Order-Block-Signal -- nur als Fallback, wenn kein Genome-Signal
-    # vorliegt (etabliertes System hat Vorrang, siehe order_block_logic.py-
-    # Docstring). get_order_block_signal() liefert selbst None, solange
-    # order_block_settings.enabled=false ist (Standard).
-    ob_signal = None
-    if not genome_signal:
-        ob_signal = get_order_block_signal(df, params)
-    genome_signal = genome_signal or ob_signal
+        if genome_signal:
+            logger.info(
+                f"Genome Signal: {genome_signal['side'].upper()} | "
+                f"Score: {genome_signal['score']:.3f} | WR: {genome_signal['winrate']:.1%}"
+            )
+        else:
+            logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
+
+        # 2b. Order-Block-Signal -- nur als Fallback, wenn kein Genome-Signal
+        # vorliegt (etabliertes System hat Vorrang, siehe order_block_logic.py-
+        # Docstring). get_order_block_signal() liefert selbst None, solange
+        # order_block_settings.enabled=false ist (Standard).
+        ob_signal = None
+        if not genome_signal:
+            ob_signal = get_order_block_signal(df, params)
+        genome_signal = genome_signal or ob_signal
 
     current_price = float(df['close'].iloc[-1])
 

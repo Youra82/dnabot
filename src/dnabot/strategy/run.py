@@ -64,9 +64,11 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     # nur globale Config, kein per-Strategie-Override wie risk/genome_overrides,
     # solange unklar ist ob es ueberhaupt einen Edge hat (per Default aus).
     global_ob = settings.get('order_block_settings', {})
+    global_mom = settings.get('momentum_exit_settings', {})
     overrides = find_strategy_overrides(symbol, timeframe, settings)
     risk_ov = overrides['risk']
     genome_ov = overrides['genome']
+    mom_ov = overrides.get('momentum_exit', {})
 
     # Prioritaet: manueller Strategie-Override (risk_overrides.rr_ratio in
     # active_strategies) > vom Alphabet-Optimizer bestaetigte, pro Pair
@@ -84,6 +86,14 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
         "market": {
             "symbol": symbol,
             "timeframe": timeframe,
+        },
+        # 'genome' (Standard) oder 'momentum_exit' -- siehe
+        # strategy_overrides.py-Docstring und Fund AQ in
+        # research_dnabot_direction_calibration.md.
+        "strategy_type": overrides.get('strategy_type', 'genome'),
+        "momentum_exit": {
+            "enabled": mom_ov.get('enabled', global_mom.get('enabled', False)),
+            "seq_len": mom_ov.get('seq_len', global_mom.get('seq_len', 5)),
         },
         "risk": {
             "risk_per_entry_pct": risk_ov.get('risk_per_entry_pct',

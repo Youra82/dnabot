@@ -1,8 +1,30 @@
 {
   "live_trading_settings": {
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
-    "active_strategies": [],
-    "_active_strategies_source": "Portfolio-Optimierung 2026-07-09: 18 Coins, Trades=2072, WR=42.0%, PnL=+830887.9%, MaxDD=16.9%"
+    "active_strategies": [
+      { "symbol": "BTC/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "XRP/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "ETH/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "SOL/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "ADA/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "AAVE/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
+      { "symbol": "DOGE/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } }
+    ],
+    "_active_strategies_source": "2026-08-24: momentum_exit-Strategie (Fund AQ/AR, siehe Memory research_dnabot_direction_calibration.md) fuer alle 7 recherchierten Pairs bei 6h -- validiert per backtest_momentum_exit.py gegen echte Bitget-Daten ueber die echte Live-Signalfunktion: 6/7 Pairs positiv voller Zeitraum, 5/7 positiv im 26W-OOS-Fenster (SOL OOS -14.6%, DOGE/ETH OOS marginal). User hat explizit alle 7 wie getestet aktiviert."
   },
   "scan_settings": {
     "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
@@ -64,6 +86,11 @@
     "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
     "use_daily_trend_filter": true,
     "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt)."
+  },
+  "momentum_exit_settings": {
+    "enabled": false,
+    "seq_len": 5,
+    "_note": "Nicht-praediktiver Risiko-/Exit-Signal-Pfad (Fund AQ, 2026-08-24, siehe Memory research_dnabot_direction_calibration.md) -- Richtung = eigene Kerzenrichtung (Momentum-Fortsetzung, kein Vorhersage-Anspruch), Edge steckt in engem SL-Fenster + engem Trailing-Stop statt in Richtungs-Auswahl. NUR 6h auf zwei unabhaengigen Fenstern validiert: seq_len=5, rr_ratio=1.5, risk_per_entry_pct=1.0, trailing_callback_rate_pct=0.5 (per risk_overrides pro Pair/Timeframe in active_strategies setzen, siehe strategy_overrides.py-Docstring-Beispiel). 4h/2h/1h NICHT validiert (4h/2h leicht negativ im Backtest, 1h explodierte bei zu hoher Positionsgroesse -- siehe Fund AQ). Global 'enabled': false -- erst PER PAIR/TIMEFRAME ueber active_strategies[].strategy_type='momentum_exit' bewusst aktivieren, und vorher mit backtest_momentum_exit.py auf frischen Daten pruefen."
   },
   "risk_settings": {
     "risk_per_entry_pct": 5.0,

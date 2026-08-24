@@ -830,6 +830,19 @@ def write_to_settings(selected: list, risk_pct: float = None):
         if old.get('genome_overrides'):
             entry['genome_overrides'] = old['genome_overrides']
         new_strategies.append(entry)
+
+    # Nicht-Genome-Strategien (z.B. strategy_type='momentum_exit', siehe
+    # strategy/momentum_exit_logic.py + Fund AQ/AR in research_dnabot_
+    # direction_calibration.md) unveraendert erhalten -- dieser Optimizer
+    # sucht/bewertet AUSSCHLIESSLICH Genome-Portfolios, hat also keine Basis,
+    # ueber solche Eintraege zu urteilen. Ohne das wuerden sie beim naechsten
+    # automatischen Lauf (auto_optimizer_scheduler.py) stillschweigend aus
+    # active_strategies verschwinden.
+    selected_pairs = {(pr['market'], pr['timeframe']) for pr in selected}
+    for key, old in existing_by_pair.items():
+        if key not in selected_pairs and old.get('strategy_type', 'genome') != 'genome':
+            new_strategies.append(old)
+
     settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
 
     if risk_pct is not None:

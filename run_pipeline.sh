@@ -13,16 +13,26 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$SCRIPT_DIR/.venv/bin/python3"
-VENV_PATH="$SCRIPT_DIR/.venv/bin/activate"
 
-# ── Venv prüfen ─────────────────────────────────────────────────────────────
-if [ ! -f "$PYTHON" ]; then
+# ── Venv finden (Unix-Layout ODER Windows-Layout, z.B. Git Bash unter Windows) ──
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+    VENV_ACTIVATE="$SCRIPT_DIR/.venv/bin/activate"
+elif [ -f "$SCRIPT_DIR/.venv/Scripts/python.exe" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/Scripts/python.exe"
+    VENV_ACTIVATE="$SCRIPT_DIR/.venv/Scripts/activate"
+else
     echo -e "${RED}FEHLER: .venv nicht gefunden. Erst install.sh ausführen!${NC}"
     exit 1
 fi
-source "$VENV_PATH"
-echo -e "${GREEN}✔ Virtuelle Umgebung wurde erfolgreich aktiviert.${NC}"
+# Windows-Konsole: cp1252-Default bricht bei UTF-8-Sonderzeichen in Log-
+# Meldungen (Pfeile, Kastenzeichen) -- nicht fatal, aber stoerende
+# "Logging error"-Tracebacks. Betrifft Unix-Terminals nicht, dort ist es ein No-Op.
+export PYTHONIOENCODING=utf-8
+if [ -f "$VENV_ACTIVATE" ]; then
+    source "$VENV_ACTIVATE"
+fi
+echo -e "${GREEN}✔ Virtuelle Umgebung wurde erfolgreich aktiviert (${PYTHON}).${NC}"
 
 # ── Header ───────────────────────────────────────────────────────────────────
 echo ""

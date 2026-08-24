@@ -7,7 +7,7 @@ teilen, aber auf grundverschiedenen Prinzipien beruhen:
 | Strategie | Prinzip | Live-Status (2026-08-24) |
 |---|---|---|
 | **Genome-System** (`genome_logic.py`) | Kerzen als Gen-Sequenzen kodieren, Muster-Datenbank, Richtungsvorhersage | Nach 44 unabhängigen Recherche-Funden (siehe `research_dnabot_direction_calibration.md`) **kein robuster, filterbarer Richtungs-Edge in reinem OHLCV nachweisbar** — Architektur bleibt erhalten (Forschungswert, Self-Learning-Infrastruktur), aber ohne belastbare Live-Erwartung |
-| **momentum_exit** (`momentum_exit_logic.py`) | **Kein** Vorhersage-Anspruch beim Einstieg (einfache Kerzen-Momentum-Fortsetzung) — der Edge steckt gezielt in Risiko-/Exit-Parametern (enges SL-Fenster + enger Trailing-Stop) | **Aktiv** für 7 Paare bei 6h (BTC/XRP/ETH/SOL/ADA/AAVE/DOGE), auf echten Bitget-Daten über die Live-Signalfunktion validiert (siehe unten) |
+| **momentum_exit** (`momentum_exit_logic.py`) | **Kein** Vorhersage-Anspruch beim Einstieg (einfache Kerzen-Momentum-Fortsetzung) — der Edge steckt in einer **lebenden, selbstlernenden Risiko-Gen-Datenbank** (`risk_genome_db.py` + `risk_evolver.py`, strukturell wie das Genome-System, nur mit Risiko-/Exit-Parametern statt Kerzenmustern als "Gen") | **6 von 7 Paaren aktiv** bei 6h (BTC/XRP/ETH/ADA/AAVE/DOGE) — SOL vom Evolver selbst deaktiviert (echter Out-of-Sample-Test negativ), auf echten Bitget-Daten über die Live-Signalfunktion validiert (siehe unten) |
 
 Keine neuronalen Netze, keine Black-Box — beide Strategien sind deterministisch
 und vollständig nachvollziehbar.

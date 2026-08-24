@@ -2,27 +2,111 @@
   "live_trading_settings": {
     "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
     "active_strategies": [
-      { "symbol": "BTC/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "XRP/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "ETH/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "SOL/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "ADA/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "AAVE/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } },
-      { "symbol": "DOGE/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-        "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-        "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } }
+      {
+        "symbol": "BTC/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "XRP/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "ETH/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "SOL/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "ADA/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "AAVE/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      },
+      {
+        "symbol": "DOGE/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "risk_overrides": {
+          "rr_ratio": 1.5,
+          "risk_per_entry_pct": 1.0,
+          "trailing_callback_rate_pct": 0.5
+        },
+        "momentum_exit_overrides": {
+          "enabled": true,
+          "seq_len": 5
+        },
+        "active": true
+      }
     ],
     "_active_strategies_source": "2026-08-24: momentum_exit-Strategie (Fund AQ/AR, siehe Memory research_dnabot_direction_calibration.md) fuer alle 7 recherchierten Pairs bei 6h -- validiert per backtest_momentum_exit.py gegen echte Bitget-Daten ueber die echte Live-Signalfunktion: 6/7 Pairs positiv voller Zeitraum, 5/7 positiv im 26W-OOS-Fenster (SOL OOS -14.6%, DOGE/ETH OOS marginal). User hat explizit alle 7 wie getestet aktiviert."
   },
@@ -116,10 +200,10 @@
     "risk_pct": 4.0,
     "max_drawdown_pct": 30,
     "backtest_lookback_weeks": 26,
-    "_backtest_lookback_note": "Wie viele Wochen zurück der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln. 26W gewählt statt Top-Calmar-1W: 1W hatte 19/129 Leerwochen (kein Trade) und niedrigste WR, Calmar dadurch künstlich hoch. 26W/8W hatten 0 Leerwochen bei ähnlichem Calmar (2026-07-09).",
+    "_backtest_lookback_note": "Wie viele Wochen zurÃ¼ck der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln. 26W gewÃ¤hlt statt Top-Calmar-1W: 1W hatte 19/129 Leerwochen (kein Trade) und niedrigste WR, Calmar dadurch kÃ¼nstlich hoch. 26W/8W hatten 0 Leerwochen bei Ã¤hnlichem Calmar (2026-07-09).",
     "send_telegram_on_completion": true,
     "scan_interval_hours": 168,
-    "_scan_interval_note": "Wie oft der Genome-Scan läuft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",
+    "_scan_interval_note": "Wie oft der Genome-Scan lÃ¤uft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",
     "reset_db_before_optimize": false,
     "reset_db_every_n_runs": 2,
     "alphabet_optimizer_enabled": true,

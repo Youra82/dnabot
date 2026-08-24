@@ -26,12 +26,21 @@ logging.basicConfig(
 )
 
 
+def _resolve_python_exe():
+    """Plattformuebergreifend wie run_pipeline.sh: Unix-Layout zuerst pruefen
+    (unveraendertes Verhalten auf dem Linux-VPS), Windows-Fallback fuer lokale Tests."""
+    unix_python = os.path.join(SCRIPT_DIR, '.venv', 'bin', 'python3')
+    if os.path.exists(unix_python):
+        return unix_python
+    return os.path.join(SCRIPT_DIR, '.venv', 'Scripts', 'python.exe')
+
+
 def _run_auto_optimizer():
     """Startet den Auto-Optimizer-Scheduler (non-blocking, prüft nur ob fällig)."""
     scheduler = os.path.join(SCRIPT_DIR, 'auto_optimizer_scheduler.py')
     if not os.path.exists(scheduler):
         return
-    python_exe = os.path.join(SCRIPT_DIR, '.venv', 'bin', 'python3')
+    python_exe = _resolve_python_exe()
     try:
         subprocess.Popen(
             [python_exe, scheduler],
@@ -48,13 +57,13 @@ def main():
     secret_file = os.path.join(SCRIPT_DIR, 'secret.json')
     runner_script = os.path.join(SCRIPT_DIR, 'src', 'dnabot', 'strategy', 'run.py')
 
-    python_exe = os.path.join(SCRIPT_DIR, '.venv', 'bin', 'python3')
+    python_exe = _resolve_python_exe()
     if not os.path.exists(python_exe):
         logging.critical(f"Python-Interpreter nicht gefunden: {python_exe}")
         return
 
     logging.info("=" * 55)
-    logging.info("  dnabot Master Runner — Genome Trading System")
+    logging.info("  dnabot Master Runner — Genome + momentum_exit")
     logging.info("=" * 55)
 
     _run_auto_optimizer()

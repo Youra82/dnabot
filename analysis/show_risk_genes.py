@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # analysis/show_risk_genes.py
-# Report ueber die Risiko-Gen-Datenbank (momentum_exit-Strategie).
-# Pendant zu src/dnabot/analysis/show_results.py --mode 1 (Genome-Library-
-# Report), aber fuer Risiko-/Exit-Gene statt Kerzenmuster.
+# Report ueber die Risiko-Gen-Datenbank (momentum_exit-Strategie): zeigt pro
+# Pair/Timeframe das aktive Gen (falls vorhanden) und die Top-Kandidaten.
 
 import os
 import sys

@@ -1,10 +1,13 @@
 # src/dnabot/utils/trade_manager.py
-# Trade-Management für dnabot (Genome-basierte Signale)
+# Trade-Management für dnabot (momentum_exit-Strategie, siehe
+# strategy/momentum_exit_logic.py)
 #
 # Unterschiede zu dbot/ltbbot:
-#   - Signal kommt von genome_logic (nicht LSTM)
-#   - SL = Low/High der Sequenz-Kerzen (nicht % vom Entry)
-#   - Self-Learning: Nach Trade-Abschluss wird Genome in DB aktualisiert
+#   - Signal kommt von momentum_exit_logic (nicht-praediktiver Einstieg,
+#     Richtung = eigene Kerzenrichtung; Edge steckt im Risiko-/Exit-Gen)
+#   - SL = Low/High der letzten seq_len Kerzen (nicht % vom Entry)
+#   - Self-Learning: Nach Trade-Abschluss wird das aktive Risiko-Gen in der
+#     RiskGenomeDB aktualisiert (Calmar-Tracking, siehe genome/risk_genome_db.py)
 #   - 1 Entry (kein 3-Layer-System)
 
 import logging
@@ -23,11 +26,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 
 from dnabot.utils.telegram import send_message, send_photo
 from dnabot.utils.exchange import Exchange
-from dnabot.genome.database import GenomeDB
 from dnabot.genome.risk_genome_db import RiskGenomeDB
-from dnabot.genome.scoring import kelly_risk_pct as _kelly_risk_pct
-from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
-from dnabot.strategy.order_block_logic import get_order_block_signal
 from dnabot.strategy.momentum_exit_logic import get_momentum_exit_signal
 
 MIN_NOTIONAL_USDT = 5.0
@@ -443,14 +442,15 @@ def housekeeper_routine(exchange: Exchange, symbol: str, logger: logging.Logger)
         return False
 
 
-# ─── Chart-Generierung: Genome-Kerzendiagramm ────────────────────────────────
+# ─── Chart-Generierung: Entry-Kerzendiagramm ─────────────────────────────────
 
-def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
-                                symbol: str, timeframe: str,
-                                n_candles: int = 40) -> str:
+def _generate_entry_chart_png(df: pd.DataFrame, signal: dict,
+                               symbol: str, timeframe: str,
+                               n_candles: int = 40) -> str:
     """
-    Zeichnet Kerzendiagramm mit hervorgehobenem Genome-Muster und Entry/SL/TP-Tags.
-    Gibt Pfad zur temporaeren PNG-Datei zurueck (oder None bei Fehler).
+    Zeichnet Kerzendiagramm mit hervorgehobenem SL-Sequenzfenster und
+    Entry/SL/TP(Trailing-Aktivierung)-Tags. Gibt Pfad zur temporaeren
+    PNG-Datei zurueck (oder None bei Fehler).
     """
     try:
         import matplotlib
@@ -473,19 +473,14 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     lows   = display_df['low'].values
     closes = display_df['close'].values
 
-    side        = genome_signal.get('side', 'long')
-    entry_price = genome_signal.get('entry_price', closes[-1])
-    sl_price    = genome_signal.get('sl_price', 0.0)
-    tp_price    = genome_signal.get('tp_price', 0.0)
-    seq_length  = int(genome_signal.get('seq_length', 4))
-    sequence    = genome_signal.get('sequence', '')
-    score       = genome_signal.get('score', 0.0)
-    winrate     = genome_signal.get('winrate', 0.0)
-    occurrences = genome_signal.get('total_occurrences', 0)
-    genome_id   = genome_signal.get('genome_id', '')[:8]
-    regime      = genome_signal.get('regime', '')
-    avg_move    = genome_signal.get('avg_move_pct', 0.0)
-    gene_codes  = [g for g in sequence.split('|') if g]  # z.B. ['B3H-UH', 'S2H-DH', ...]
+    side         = signal.get('side', 'long')
+    entry_price  = signal.get('entry_price', closes[-1])
+    sl_price     = signal.get('sl_price', 0.0)
+    tp_price     = signal.get('tp_price', 0.0)
+    seq_length   = int(signal.get('seq_length', 5))
+    risk_gene_id = (signal.get('risk_gene_id') or '')[:8]
+    rr_ratio     = signal.get('gene_rr_ratio', 0.0)
+    trailing_pct = signal.get('gene_trailing_pct', 0.0)
 
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.patch.set_facecolor('#0d1117')
@@ -507,24 +502,20 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     def _in_range(price):
         return y_lo < float(price) < y_hi
 
-    # 2. Genome-Pattern-Hintergrund (letzte seq_length Kerzen)
+    # 2. SL-Fenster-Hintergrund (letzte seq_length Kerzen bestimmen den SL)
     pat_start = max(0, n - seq_length - 1)
     pat_end   = n - 1
     pat_color = '#00e676' if side == 'long' else '#ff1744'
     ax.axvspan(pat_start - 0.5, pat_end + 0.5,
                color=pat_color, alpha=0.08, zorder=1)
-    # Vertikale Klammer-Linie unten
     ax.annotate('', xy=(pat_end + 0.5, y_lo), xytext=(pat_start - 0.5, y_lo),
                 arrowprops=dict(arrowstyle='-', color=pat_color, lw=0.8, alpha=0.5))
-    # Sequenz-Label unterhalb
     mid_x = (pat_start + pat_end) / 2
     ax.text(mid_x, y_lo + (y_hi - y_lo) * 0.01,
-            f'DNA: {sequence}', color=pat_color, fontsize=7,
+            f'SL-Fenster (seq_len={seq_length})', color=pat_color, fontsize=7,
             ha='center', va='bottom', fontfamily='monospace', alpha=0.85, zorder=7)
 
-    # 3. Kerzen + Gene-Code-Labels über Pattern-Kerzen
-    gene_start = n - seq_length   # erster Index der eigentlichen Pattern-Kerzen
-    label_h    = (y_hi - y_lo) * 0.02
+    # 3. Kerzen
     for i in range(n):
         o, h, l, c = opens[i], highs[i], lows[i], closes[i]
         in_pat = pat_start <= i <= pat_end
@@ -537,16 +528,6 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
             (i - bar_w / 2, min(o, c)), bar_w, body_h,
             boxstyle="square,pad=0", linewidth=0, facecolor=color, zorder=3,
         ))
-        # Gene-Code-Label über jeder Pattern-Kerze
-        if gene_start <= i < gene_start + len(gene_codes):
-            gene_idx = i - gene_start
-            code = gene_codes[gene_idx]
-            ax.text(i, h + label_h, code,
-                    color=pat_color, fontsize=6.5, ha='center', va='bottom',
-                    fontfamily='monospace', fontweight='bold',
-                    rotation=0, zorder=8,
-                    bbox=dict(facecolor='#0d1117', edgecolor=pat_color,
-                              alpha=0.75, boxstyle='round,pad=0.15', linewidth=0.5))
 
     # 4. Risiko/Reward-Zonen
     if sl_price and _in_range(sl_price):
@@ -567,29 +548,16 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
                 bbox=dict(facecolor=color, edgecolor='none', alpha=0.92,
                           boxstyle='square,pad=0.25'))
 
-    _price_tag(tp_price,    'TP',    '#00c853')
-    _price_tag(entry_price, 'Entry', '#ffd700')
-    _price_tag(sl_price,    'SL',    '#ff1744')
+    _price_tag(tp_price,    'Trail-Akt.', '#00c853')
+    _price_tag(entry_price, 'Entry',      '#ffd700')
+    _price_tag(sl_price,    'SL',         '#ff1744')
 
-    # 6. Genome-Infobox oben links
+    # 6. Infobox oben links
     side_label = 'LONG ▲' if side == 'long' else 'SHORT ▼'
-    sl_pct  = abs(entry_price - sl_price) / entry_price * 100 if sl_price else 0
-    tp_pct  = abs(tp_price - entry_price) / entry_price * 100 if tp_price else 0
-    rr      = tp_pct / sl_pct if sl_pct > 0 else 0
-    regime_str = f"   [{regime}]" if regime else ""
-    avg_str    = f"   AvgMove: {avg_move:.2f}%" if avg_move else ""
     info_lines = [
-        f"{side_label}   R:R 1:{rr:.1f}{regime_str}",
-        f"Score:   {score:.3f}   WR: {winrate:.1%}   n={occurrences}{avg_str}",
-        f"Genome:  {genome_id}...",
+        f"{side_label}   RR 1:{rr_ratio:.1f}   Trail: {trailing_pct:.1f}%",
+        f"Risiko-Gen: {risk_gene_id}...",
     ]
-    # Gene-Codes als Bedingungen anzeigen (eine pro Zeile)
-    if gene_codes and gene_codes[0] != '[SIMULATION]':
-        info_lines.append("─" * 28)
-        for j, code in enumerate(gene_codes):
-            info_lines.append(f"  K{j+1}: {code}")
-    else:
-        info_lines.append(f"Seq:     {sequence[:35]}")
     ax.text(0.01, 0.98, '\n'.join(info_lines),
             transform=ax.transAxes, fontsize=8, va='top', ha='left',
             color='#cccccc', fontfamily='monospace',
@@ -615,36 +583,34 @@ def _generate_genome_chart_png(df: pd.DataFrame, genome_signal: dict,
     from datetime import timezone
     ts       = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     sym_safe = symbol.replace('/', '-').replace(':', '-')
-    path     = os.path.join(tmp_dir, f'genome_entry_{sym_safe}_{timeframe}_{ts}.png')
+    path     = os.path.join(tmp_dir, f'entry_{sym_safe}_{timeframe}_{ts}.png')
     fig.savefig(path, dpi=130, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
     return path
 
 
-def _send_genome_chart(df: pd.DataFrame, genome_signal: dict, symbol: str,
-                        timeframe: str, telegram_config: dict, logger: logging.Logger):
-    """Generiert Genome-Chart-PNG und sendet es via Telegram."""
+def _send_entry_chart(df: pd.DataFrame, signal: dict, symbol: str,
+                       timeframe: str, telegram_config: dict, logger: logging.Logger):
+    """Generiert Entry-Chart-PNG und sendet es via Telegram."""
     if not telegram_config or not telegram_config.get('bot_token') or not telegram_config.get('chat_id'):
         return
     try:
-        path = _generate_genome_chart_png(df, genome_signal, symbol, timeframe)
+        path = _generate_entry_chart_png(df, signal, symbol, timeframe)
         if path and os.path.exists(path):
-            side_label = 'LONG' if genome_signal.get('side') == 'long' else 'SHORT'
-            ep = genome_signal.get('entry_price', 0)
-            sl = genome_signal.get('sl_price', 0)
-            tp = genome_signal.get('tp_price', 0)
+            side_label = 'LONG' if signal.get('side') == 'long' else 'SHORT'
+            ep = signal.get('entry_price', 0)
+            sl = signal.get('sl_price', 0)
+            tp = signal.get('tp_price', 0)
             caption = (
                 f"DNABOT | {symbol} ({timeframe})\n"
-                f"{side_label} @ {ep:.6g}  |  SL: {sl:.6g}  |  TP: {tp:.6g}\n"
-                f"Score: {genome_signal.get('score', 0):.3f}  |  "
-                f"WR: {genome_signal.get('winrate', 0):.1%}  |  "
-                f"n={genome_signal.get('total_occurrences', 0)}"
+                f"{side_label} @ {ep:.6g}  |  SL: {sl:.6g}  |  Trail-Akt.: {tp:.6g}\n"
+                f"Risiko-Gen: {(signal.get('risk_gene_id') or '')[:8]}..."
             )
             send_photo(telegram_config.get('bot_token'), telegram_config.get('chat_id'),
                        path, caption)
             os.remove(path)
     except Exception as e:
-        logger.warning(f"Genome-Chart senden fehlgeschlagen: {e}")
+        logger.warning(f"Entry-Chart senden fehlgeschlagen: {e}")
 
 
 # ─── Entry Orders ─────────────────────────────────────────────────────────────
@@ -660,17 +626,17 @@ def place_entry_orders(
     df: pd.DataFrame = None,
 ):
     """
-    Platziert einen Entry-Trade basierend auf dem Genome-Signal.
+    Platziert einen Entry-Trade basierend auf dem momentum_exit-Signal.
 
-    Entry: Market-Order (sofort, da Sequenz bereits abgeschlossen ist)
-    SL: Aus der Sequenz-Struktur (Low/High der Genome-Kerzen)
-    TP: 2:1 R:R vom Entry
+    Entry: Market-Order (sofort, da Signalkerze bereits abgeschlossen ist)
+    SL: Aus dem seq_len-Fenster (Low/High der letzten Kerzen)
+    Trailing-Aktivierung: RR * SL-Distanz vom Entry (siehe momentum_exit_logic.py)
     """
     symbol = params['market']['symbol']
     side = genome_signal.get('side')
 
     if side is None:
-        logger.info("Kein Genome-Signal → kein Trade.")
+        logger.info("Kein Signal → kein Trade.")
         return
 
     if side == 'long' and not params.get('behavior', {}).get('use_longs', True):
@@ -682,25 +648,7 @@ def place_entry_orders(
 
     risk = params['risk']
     leverage = risk['leverage']
-    fallback_risk_pct = risk.get('risk_per_entry_pct', 1.0)
-    if risk.get('use_kelly_sizing', False):
-        threshold_winrate = params.get('genome', {}).get('min_winrate', 0.45)
-        risk_pct = _kelly_risk_pct(
-            winrate=genome_signal.get('winrate', 0.0),
-            rr_ratio=risk.get('rr_ratio', 2.0),
-            threshold_winrate=threshold_winrate,
-            min_mult=risk.get('kelly_min_mult', 0.5),
-            max_mult=risk.get('kelly_max_mult', 3.0),
-            fallback_risk_pct=fallback_risk_pct,
-            dampening=risk.get('kelly_dampening', 0.3),
-        )
-        logger.info(
-            f"[Kelly Sizing] WR={genome_signal.get('winrate', 0.0):.1%} "
-            f"(Schwelle {threshold_winrate:.1%}) RR={risk.get('rr_ratio', 2.0)} "
-            f"-> Risk={risk_pct:.2f}% (statt fix {fallback_risk_pct:.2f}%)"
-        )
-    else:
-        risk_pct = fallback_risk_pct
+    risk_pct = risk.get('risk_per_entry_pct', 1.0)
     trailing_callback = risk.get('trailing_callback_rate_pct', 1.0) / 100.0
 
     # Risiko-Reduktion bei schlechter Performance
@@ -759,7 +707,7 @@ def place_entry_orders(
     logger.info(
         f"[Entry] {side.upper()} {amount_coins:.6f} {symbol} | "
         f"Market @ ~{entry_price:.4f} | SL={sl_price:.4f} ({sl_pct:.2f}%) | "
-        f"TP={tp_price:.4f} | Score={genome_signal['score']:.3f}"
+        f"Trail-Akt.={tp_price:.4f} | Gen={(genome_signal.get('risk_gene_id') or '')[:8]}"
     )
 
     new_tp_ids = []
@@ -819,7 +767,7 @@ def place_entry_orders(
         housekeeper_routine(exchange, symbol, logger)
         return
 
-    # Tracker aktualisieren (Genome-Info für Self-Learning)
+    # Tracker aktualisieren (Signal-Info für Self-Learning)
     tracker = read_tracker(tracker_path)
     tracker['stop_loss_ids'] = new_sl_ids
     tracker['take_profit_ids'] = new_tp_ids
@@ -829,26 +777,11 @@ def place_entry_orders(
     tracker['last_notified_entry_price'] = actual_entry
     tracker['last_notified_side'] = side
     tracker['active_genome'] = {
-        "genome_id": genome_signal['genome_id'],
-        "sequence": genome_signal['sequence'],
         "direction": side.upper(),
         "seq_length": genome_signal['seq_length'],
-        "score": genome_signal['score'],
-        "winrate": genome_signal['winrate'],
-        "total_occurrences": genome_signal['total_occurrences'],
         "entry_price": actual_entry,
         "sl_price": sl_price,
         "tp_price": tp_price,
-        # Regime zum Signal-Zeitpunkt (von genome_logic.py gesetzt) -- wird beim
-        # Trade-Abschluss ans Self-Learning zurueckgegeben, siehe
-        # self_learn_from_closed_trade(). Ohne das landet JEDER Live-Trade in der
-        # NEUTRAL-Statistikspalte, egal in welchem Regime er tatsaechlich lief,
-        # waehrend discovery.py offline korrekt das tatsaechliche Regime trackt.
-        "regime": genome_signal.get('regime', 'NEUTRAL'),
-        # Order-Block-Signale haben keine echte Genome-DB-Zeile (siehe
-        # genome/order_blocks.py-Docstring) -- self_learn_from_closed_trade()
-        # muss das erkennen und den DB-Schreibversuch ueberspringen.
-        "is_order_block": genome_signal.get('is_order_block', False),
         "is_momentum_exit": genome_signal.get('is_momentum_exit', False),
         "risk_gene_id": genome_signal.get('risk_gene_id'),
         "entry_time": datetime.now(timezone.utc).isoformat(),
@@ -878,29 +811,25 @@ def place_entry_orders(
             f"🛡️ Risiko:       {risk_pct:.1f}% ({risk_usdt:.2f} USDT)\n"
             f"📦 Kontr.:       {actual_contracts:.4f}\n"
             f"{'─' * 32}\n"
-            f"🧬 Genome:  {genome_signal['genome_id'][:8]}... | "
-            f"Score: {genome_signal['score']:.3f} | "
-            f"WR: {genome_signal['winrate']:.1%} | "
-            f"n={genome_signal['total_occurrences']}\n"
-            f"🔢 Sequenz: {genome_signal['sequence']}"
+            f"🧬 Risiko-Gen:  {(genome_signal.get('risk_gene_id') or '')[:8]}..."
         )
         send_message(telegram_config.get('bot_token'), telegram_config.get('chat_id'), msg)
     except Exception as e:
         logger.warning(f"Telegram-Benachrichtigung fehlgeschlagen: {e}")
 
-    # Chart mit Genome-Pattern per Telegram senden
-    _send_genome_chart(df, genome_signal, symbol, timeframe, telegram_config, logger)
+    # Chart per Telegram senden
+    _send_entry_chart(df, genome_signal, symbol, timeframe, telegram_config, logger)
 
 
 # ─── Self-Learning Update ─────────────────────────────────────────────────────
 
 def self_learn_from_closed_trade(
-    tracker_path: str, db: GenomeDB, outcome: str,
+    tracker_path: str, outcome: str,
     exit_price: float, logger: logging.Logger, risk_db: RiskGenomeDB = None,
 ):
     """
-    Aktualisiert die Genome-DB (Kerzenmuster) ODER die RiskGenomeDB
-    (Risiko-/Exit-Gene, momentum_exit) nach einem abgeschlossenen Trade.
+    Aktualisiert das aktive Risiko-Gen in der RiskGenomeDB (Calmar-Tracking,
+    siehe genome/risk_genome_db.py) nach einem abgeschlossenen Trade.
     Wird aufgerufen wenn SL oder TP/Trailing-Stop ausgeloest wurde.
     """
     tracker = read_tracker(tracker_path)
@@ -920,69 +849,30 @@ def self_learn_from_closed_trade(
     else:
         actual_move_pct = 0.0
 
-    if active_genome.get('is_momentum_exit'):
-        # Echtes Self-Learning fuer Risiko-/Exit-Gene (siehe genome/
-        # risk_genome_db.py) -- Pendant zu update_genome_with_trade_result()
-        # fuer Kerzenmuster, nur mit Calmar-relevanten Feldern (pnl_pct/sl_pct)
-        # statt Winrate/avg_move.
-        risk_gene_id = active_genome.get('risk_gene_id')
-        sl_price = active_genome.get('sl_price', 0)
-        if risk_db is not None and risk_gene_id and entry_price > 0 and sl_price:
-            sl_pct = abs(entry_price - sl_price) / entry_price * 100.0
-            risk_db.record_trade(
-                risk_gene_id=risk_gene_id,
-                entry_time=active_genome.get('entry_time', datetime.now(timezone.utc).isoformat()),
-                exit_time=datetime.now(timezone.utc).isoformat(),
-                outcome=outcome,
-                pnl_pct=actual_move_pct,
-                sl_pct=sl_pct,
-                source='live',
-            )
-            logger.info(f"[RiskGenomeDB] Gen {risk_gene_id} aktualisiert: {outcome}, "
-                        f"pnl={actual_move_pct:+.2f}%")
-        else:
-            logger.warning("Momentum-Exit-Trade abgeschlossen, aber kein risk_gene_id/sl_price "
-                           "im Tracker -- kein Self-Learning fuer dieses Risiko-Gen.")
-        tracker['active_genome'] = None
-        _write_tracker(tracker_path, tracker)
-        return
+    risk_gene_id = active_genome.get('risk_gene_id')
+    sl_price = active_genome.get('sl_price', 0)
+    if risk_db is not None and risk_gene_id and entry_price > 0 and sl_price:
+        sl_pct = abs(entry_price - sl_price) / entry_price * 100.0
+        risk_db.record_trade(
+            risk_gene_id=risk_gene_id,
+            entry_time=active_genome.get('entry_time', datetime.now(timezone.utc).isoformat()),
+            exit_time=datetime.now(timezone.utc).isoformat(),
+            outcome=outcome,
+            pnl_pct=actual_move_pct,
+            sl_pct=sl_pct,
+            source='live',
+        )
+        logger.info(f"[RiskGenomeDB] Gen {risk_gene_id} aktualisiert: {outcome}, "
+                    f"pnl={actual_move_pct:+.2f}%")
+    else:
+        logger.warning("Trade abgeschlossen, aber kein risk_gene_id/sl_price "
+                       "im Tracker -- kein Self-Learning fuer dieses Risiko-Gen.")
 
-    if active_genome.get('is_order_block'):
-        # Order Blocks haben keine Genome-DB-Zeile und kein Signifikanz-
-        # Tracking (siehe genome/order_blocks.py-Docstring) -- ein Upsert mit
-        # dem Platzhalter-"sequence"-String wuerde nur bedeutungslose Einmal-
-        # Zeilen in der Genome-DB erzeugen. Tracker trotzdem aufraeumen.
-        logger.info("OB-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking).")
-        tracker['active_genome'] = None
-        _write_tracker(tracker_path, tracker)
-        return
-
-    update_genome_with_trade_result(
-        db=db,
-        genome_id=active_genome['genome_id'],
-        sequence=active_genome['sequence'],
-        market=tracker.get('market', ''),
-        timeframe=tracker.get('timeframe', ''),
-        direction=direction,
-        seq_length=active_genome['seq_length'],
-        outcome=outcome,
-        actual_move_pct=actual_move_pct,
-        # Regime vom Signal-Zeitpunkt (in place_entry_orders() gespeichert) --
-        # ohne das faellt update_genome_with_trade_result() auf 'NEUTRAL'
-        # zurueck, unabhaengig vom tatsaechlichen Regime des Trades.
-        regime=active_genome.get('regime', 'NEUTRAL'),
-    )
-
-    # Genome aus Tracker löschen (Trade abgeschlossen)
     tracker['active_genome'] = None
     _write_tracker(tracker_path, tracker)
 
 
-def _close_dbs(db: GenomeDB, risk_db: RiskGenomeDB):
-    """Schliesst welche DB-Verbindung(en) auch immer in diesem Zyklus geoeffnet wurden --
-    genome-Strategien nutzen nur `db`, momentum_exit nur `risk_db` (siehe full_trade_cycle)."""
-    if db is not None:
-        db.close()
+def _close_dbs(risk_db: RiskGenomeDB):
     if risk_db is not None:
         risk_db.close()
 
@@ -993,14 +883,13 @@ def full_trade_cycle(
     exchange: Exchange,
     params: dict,
     telegram_config: dict,
-    db_path: str,
     logger: logging.Logger,
 ):
     """
     Vollständiger Handelszyklus für dnabot:
 
     1. OHLCV-Daten laden
-    2. Genome-Signal berechnen
+    2. momentum_exit-Signal berechnen (aktives Risiko-Gen aus RiskGenomeDB)
     3. SL/TP-Trigger prüfen + Self-Learning
     4. Alte Entry-Orders stornieren
     5. Offene Position verwalten ODER neue Entry platzieren
@@ -1022,51 +911,25 @@ def full_trade_cycle(
         logger.error(f"Zu wenig Daten ({len(df) if df is not None else 0}). Abbruch.")
         return
 
-    # 2. Signal -- 'momentum_exit'-Strategien (siehe Fund AQ in
-    # research_dnabot_direction_calibration.md) nutzen NUR den nicht-
-    # praediktiven Momentum-Signal-Pfad, komplett getrennt vom Kerzen-Genome-
-    # System, aber mit einer EIGENEN, lebenden Risiko-Gen-Datenbank
-    # (siehe genome/risk_genome_db.py) -- kein Mischen zweier
-    # unterschiedlicher Handelslogiken fuer dasselbe Pair/Timeframe.
-    db = None
-    risk_db = None
-    if params.get('strategy_type') == 'momentum_exit':
-        risk_db = RiskGenomeDB(RISK_DB_PATH)
-        genome_signal = get_momentum_exit_signal(df, params, db=risk_db)
-        if genome_signal:
-            # Aktives Risiko-Gen bestimmt live rr_ratio/trailing/risk -- ueberschreibt
-            # die statische settings.json-Konfiguration fuer DIESEN Zyklus (params
-            # wird pro Cronjob-Lauf frisch aus settings.json gebaut, kein Bleed-Over).
-            params = dict(params)
-            params['risk'] = {**params['risk'],
-                               'rr_ratio': genome_signal['gene_rr_ratio'],
-                               'trailing_callback_rate_pct': genome_signal['gene_trailing_pct'],
-                               'risk_per_entry_pct': genome_signal['gene_risk_pct']}
-            logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()} "
-                        f"(Gen {genome_signal['risk_gene_id']})")
-        else:
-            logger.info("Kein Momentum-Exit-Signal (deaktiviert, zu wenig Kerzen, "
-                        "oder kein aktives Risiko-Gen fuer dieses Pair/Timeframe).")
+    # 2. Signal -- nicht-praediktiver Momentum-Einstieg (Richtung = eigene
+    # Kerzenrichtung), Risiko/Exit-Parameter kommen aus dem aktiven Risiko-Gen
+    # der RiskGenomeDB (siehe genome/risk_genome_db.py, momentum_exit_logic.py).
+    risk_db = RiskGenomeDB(RISK_DB_PATH)
+    genome_signal = get_momentum_exit_signal(df, params, db=risk_db)
+    if genome_signal:
+        # Aktives Risiko-Gen bestimmt live rr_ratio/trailing/risk -- ueberschreibt
+        # die statische settings.json-Konfiguration fuer DIESEN Zyklus (params
+        # wird pro Cronjob-Lauf frisch aus settings.json gebaut, kein Bleed-Over).
+        params = dict(params)
+        params['risk'] = {**params['risk'],
+                           'rr_ratio': genome_signal['gene_rr_ratio'],
+                           'trailing_callback_rate_pct': genome_signal['gene_trailing_pct'],
+                           'risk_per_entry_pct': genome_signal['gene_risk_pct']}
+        logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()} "
+                    f"(Gen {genome_signal['risk_gene_id']})")
     else:
-        db = GenomeDB(db_path)
-        genome_signal = get_genome_signal(df, params, db)
-
-        if genome_signal:
-            logger.info(
-                f"Genome Signal: {genome_signal['side'].upper()} | "
-                f"Score: {genome_signal['score']:.3f} | WR: {genome_signal['winrate']:.1%}"
-            )
-        else:
-            logger.info("Kein aktives Genome-Signal für aktuellen Markt.")
-
-        # 2b. Order-Block-Signal -- nur als Fallback, wenn kein Genome-Signal
-        # vorliegt (etabliertes System hat Vorrang, siehe order_block_logic.py-
-        # Docstring). get_order_block_signal() liefert selbst None, solange
-        # order_block_settings.enabled=false ist (Standard).
-        ob_signal = None
-        if not genome_signal:
-            ob_signal = get_order_block_signal(df, params)
-        genome_signal = genome_signal or ob_signal
+        logger.info("Kein Momentum-Exit-Signal (deaktiviert, zu wenig Kerzen, "
+                    "oder kein aktives Risiko-Gen fuer dieses Pair/Timeframe).")
 
     current_price = float(df['close'].iloc[-1])
 
@@ -1196,7 +1059,7 @@ def full_trade_cycle(
                 record_trade_result(tracker_path, outcome, logger)
                 try:
                     price_for_learning = fill_price if fill_price else current_price
-                    self_learn_from_closed_trade(tracker_path, db, outcome_label, price_for_learning, logger, risk_db=risk_db)
+                    self_learn_from_closed_trade(tracker_path, outcome_label, price_for_learning, logger, risk_db=risk_db)
                 except Exception as e:
                     logger.error(f"Self-Learning Fehler: {e}")
                 emoji = "✅" if outcome == 'win' else "🛑"
@@ -1205,7 +1068,7 @@ def full_trade_cycle(
                         telegram_config.get('bot_token'),
                         telegram_config.get('chat_id'),
                         f"{emoji} dnabot {reason}: {symbol} ({timeframe})\n"
-                        f"Genome aktualisiert → {outcome_label}"
+                        f"Risiko-Gen aktualisiert → {outcome_label}"
                     )
                 except Exception:
                     pass
@@ -1221,14 +1084,14 @@ def full_trade_cycle(
 
         if balance < MIN_NOTIONAL_USDT:
             logger.warning(f"Guthaben zu niedrig ({balance:.2f} USDT).")
-            _close_dbs(db, risk_db)
+            _close_dbs(risk_db)
             return
 
         if genome_signal is None:
             logger.info("Kein Signal → kein Entry.")
-            _close_dbs(db, risk_db)
+            _close_dbs(risk_db)
             return
         place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger, df=df)
 
-    _close_dbs(db, risk_db)
+    _close_dbs(risk_db)
     logger.info(f"Trade-Zyklus abgeschlossen für {symbol} ({timeframe}).")

@@ -1,6 +1,6 @@
 {
   "live_trading_settings": {
-    "_note": "active_strategies: welche Coins live getradet werden. scan_settings.symbols: welche Coins gescannt/gelernt werden.",
+    "_note": "active_strategies: welche Coins live getradet werden (momentum_exit). risk_genome_discover.py liest daraus automatisch alle Eintraege mit strategy_type='momentum_exit'.",
     "active_strategies": [
       {
         "symbol": "BTC/USDT:USDT",
@@ -110,67 +110,6 @@
     ],
     "_active_strategies_source": "2026-08-24: momentum_exit-Strategie (Fund AQ/AR, siehe Memory research_dnabot_direction_calibration.md) fuer alle 7 recherchierten Pairs bei 6h -- validiert per backtest_momentum_exit.py gegen echte Bitget-Daten ueber die echte Live-Signalfunktion: 6/7 Pairs positiv voller Zeitraum, 5/7 positiv im 26W-OOS-Fenster (SOL OOS -14.6%, DOGE/ETH OOS marginal). User hat explizit alle 7 wie getestet aktiviert."
   },
-  "scan_settings": {
-    "_note": "Alle Felder optional. Nicht gesetzt → automatisch nach Timeframe: history_days (4h→730d), discovery_horizon (4h→6, entspricht max_hold_candles der SL/TP-Pfadsimulation), min_samples_to_activate (4h→80). TP/SL kommen aus risk_settings.rr_ratio (struktureller SL + RR-Verhaeltnis, siehe discovery.py).",
-    "min_samples_to_activate": 2,
-    "min_samples_by_timeframe": {
-      "6h": 6
-    },
-    "_min_samples_by_timeframe_note": "6h=6 validiert 2026-08-23 (recherche/fix_direction_sweep.py, 20 Pairs, 70/30-Split): min_samples_to_activate=2 (globaler Default oben) ist fuer 6h die SCHLECHTESTE Wahl (OOS WR 20.5%, Fund C in Memory research_dnabot_direction_calibration.md) -- n=6-10 ist der Sweet Spot. Andere Timeframes bewusst NICHT angefasst (nicht validiert), fallen weiter auf min_samples_to_activate=2 zurueck. WICHTIG: siehe Memory Fund E -- ein scheinbarer SHORT-Bias erwies sich als reines Markt-Beta, NICHT auf eine feste Richtung optimieren.",
-    "scan_all_db_pairs": true,
-    "_scan_all_db_pairs_note": "true = Auto-Optimizer scannt alle Pairs aus der Genome-DB, nicht nur active_strategies",
-    "symbols": [
-      "ADA/USDT:USDT",
-      "ALGO/USDT:USDT",
-      "ARB/USDT:USDT",
-      "ATOM/USDT:USDT",
-      "AVAX/USDT:USDT",
-      "BCH/USDT:USDT",
-      "BNB/USDT:USDT",
-      "BTC/USDT:USDT",
-      "DOGE/USDT:USDT",
-      "DOT/USDT:USDT",
-      "ETC/USDT:USDT",
-      "ETH/USDT:USDT",
-      "FIL/USDT:USDT",
-      "HBAR/USDT:USDT",
-      "LINK/USDT:USDT",
-      "LTC/USDT:USDT",
-      "NEAR/USDT:USDT",
-      "SOL/USDT:USDT",
-      "UNI/USDT:USDT",
-      "VET/USDT:USDT",
-      "XLM/USDT:USDT",
-      "XRP/USDT:USDT"
-    ],
-    "timeframes": [
-      "30m",
-      "1h",
-      "2h",
-      "4h",
-      "6h"
-    ],
-    "_symbols_timeframes_note": "Fester Scan-Pool (2026-08-12 aus genome.db extrahiert, 22 Coins x 5 TFs) -- damit ./run_pipeline.sh bei den Coin/TF-Prompts einfach mit Enter (Auto) den vollen Pool neu aufbaut."
-  },
-  "genome_settings": {
-    "sequence_lengths": [
-      4,
-      5,
-      6
-    ],
-    "min_score": 0.08,
-    "_min_winrate_note": "Nicht gesetzt -> automatisch aus risk_settings.rr_ratio abgeleitet (Breakeven-Winrate 1/(1+rr_ratio) + 5 Prozentpunkte Puffer, siehe scoring.py::breakeven_winrate). Explizit hier setzen um das zu ueberschreiben.",
-    "half_life_days": 180,
-    "score_formula": "winrate * avg_move_pct * log(1 + occ_regime) * decay",
-    "allowed_regimes": [
-      "TREND",
-      "RANGE",
-      "NEUTRAL"
-    ],
-    "regime_comment": "HIGH_VOL wird immer blockiert. TREND/RANGE/NEUTRAL konfigurierbar.",
-    "use_daily_trend_filter": true,
-    "_use_daily_trend_filter_note": "Laufender Bias der AKTUELLEN Tageskerze (Tages-Open vs. aktueller Preis, siehe genome/daily_bias.py): rot bisher -> nur Shorts, gruen bisher -> nur Longs. Identische Funktion in Backtest UND Live (genome_logic.py) -- ersetzt den fruaheren, nur im Backtest existierenden Wochentrend-Filter (entfernt)."
-  },
   "momentum_exit_settings": {
     "enabled": false,
     "seq_len": 5,
@@ -184,9 +123,8 @@
     "trailing_callback_rate_pct": 1.0
   },
   "optimization_settings": {
-    "enabled": true,
     "schedule": {
-      "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format)",
+      "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format). Steuert wie oft auto_optimizer_scheduler.py die Risiko-Gen-Discovery (risk_genome_discover.py) erneut anstoesst.",
       "day_of_week": 6,
       "hour": 3,
       "minute": 0,
@@ -196,18 +134,8 @@
         "unit": "days"
       }
     },
-    "start_capital": 100,
-    "risk_pct": 4.0,
-    "max_drawdown_pct": 30,
     "backtest_lookback_weeks": 26,
-    "_backtest_lookback_note": "Wie viele Wochen zurÃ¼ck der Auto-Optimizer schaut. Optimal per run_walkforward.sh ermitteln. 26W gewÃ¤hlt statt Top-Calmar-1W: 1W hatte 19/129 Leerwochen (kein Trade) und niedrigste WR, Calmar dadurch kÃ¼nstlich hoch. 26W/8W hatten 0 Leerwochen bei Ã¤hnlichem Calmar (2026-07-09).",
-    "send_telegram_on_completion": true,
-    "scan_interval_hours": 168,
-    "_scan_interval_note": "Wie oft der Genome-Scan lÃ¤uft wenn enabled=false (nur neues Lernen, keine Portfolio-Optimierung)",
-    "reset_db_before_optimize": false,
-    "reset_db_every_n_runs": 2,
-    "alphabet_optimizer_enabled": true,
-    "alphabet_optimizer_trials": 20,
-    "_alphabet_optimizer_note": "Laeuft VOR der Discovery (siehe auto_optimizer_scheduler.py::_run_alphabet_optimizer): sucht per Optuna ein eigenes Encoder-Alphabet fuer jedes Pair im aktuellen Scan-Pool (analysis/alphabet_optimizer.py --all-scan-pairs --auto-apply). Pairs mit bereits bestaetigtem Alphabet werden automatisch uebersprungen (kein wiederholtes Neu-Optimieren). Verlaengert den Optimierungslauf spuerbar -- bei Bedarf hier deaktivieren."
+    "_backtest_lookback_note": "Dokumentiert die im Projekt etablierte OOS-Fensterkonvention (siehe risk_genome_discover.py::OOS_WEEKS, dort als Konstante hartkodiert, nicht aus dieser Datei gelesen). 26W gewaehlt statt kuerzerer Fenster: kuerzere Fenster hatten mehr Leerwochen (kein Trade) und dadurch kuenstlich hohen Calmar.",
+    "send_telegram_on_completion": true
   }
 }

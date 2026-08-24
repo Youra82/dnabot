@@ -1,305 +1,46 @@
 # src/dnabot/analysis/backtester.py
-# Backtester für das dnabot Genome-System
+# Backtest-Kernfunktionen fuer die momentum_exit-Strategie.
 #
-# Simuliert den Bot auf historischen Daten:
-#   1. Für jede Kerze: Prüfe ob ein Genome-Signal vorliegt
-#   2. Wenn Signal: Simuliere Trade (Entry, SL, TP)
-#   3. Prüfe in den Folgekerzen ob SL oder TP zuerst getroffen wurde
-#   4. Berechne Gesamtstatistiken
+# Frueher auch das Genome-System-Backtest-Herzstueck (run_backtest(), Regime-/
+# Order-Block-/CVD-/Daily-Bias-Filter) -- nach der Entfernung des Genome-
+# Systems (2026-08-24) bleibt nur das uebrig, was momentum_exit tatsaechlich
+# nutzt: simulate_trade() (Kern-Trade-Simulation, live UND Backtest identisch,
+# siehe feedback_live_backtest_must_match), simulate_trade_subset() (OOS-
+# Teilmengen-Reporting) und die Ergebnis-Speicherung/-Anzeige.
 
 import os
-import sys
 import json
 import logging
-import argparse
 from datetime import datetime, timezone
 
 import pandas as pd
-import numpy as np
-from tqdm import tqdm
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
-
-from dnabot.genome.database import GenomeDB
-from dnabot.genome.encoder import (
-    encode_dataframe, genes_to_sequence_string, build_pattern_sequence,
-    build_momentum_pattern_sequence,
-)
-from dnabot.genome.regime import detect_regime, is_regime_allowed
-from dnabot.genome.daily_bias import compute_daily_bias_series, daily_bias_blocks
-from dnabot.genome.scoring import kelly_multiplier
-from dnabot.genome.order_blocks import find_order_blocks, check_retest
-
-
-def _compute_cvd_slope(df: pd.DataFrame, slope_period: int = 5) -> pd.Series:
-    """
-    Cumulative Volume Delta (CVD) als Order-Flow-Bestaetigung -- portiert aus
-    probebot/features/volume.py::add_all_volume (dort als cvd_slope bereits
-    als Feature genutzt) und mbots Layer-5-Volumen-Bestaetigung, unabhaengig
-    voneinander auf denselben Ansatz gekommen. Approximation ohne Tick-Daten:
-    Delta = Volumen * Vorzeichen(close-open) pro Kerze. Positiver Slope =
-    Kaufdruck ueberwiegt (fuer LONG), negativer = Verkaufsdruck (fuer SHORT).
-    Rein rueckwaertsgewandt (cumsum + diff auf bereits geschlossenen Kerzen),
-    kein Look-Ahead.
-    """
-    delta = df['volume'] * np.sign(df['close'] - df['open'])
-    cvd = delta.cumsum()
-    return cvd.diff(slope_period)
-
-
-# Regime wird alle N Kerzen neu berechnet (Performance, wie discovery.py)
-REGIME_RECALC_INTERVAL_BT = 20
-
-
-def _get_backtest_regime(df: pd.DataFrame, idx: int, cache: dict, window: int = 100) -> str:
-    """
-    Live-aequivalente Regime-Erkennung fuer den Backtest (bisher fehlte das hier
-    komplett -- der Backtest hat JEDES Genom unabhaengig vom aktuellen Markt-
-    regime gematcht, waehrend genome_logic.py live nur Genome zulaesst, deren
-    active_regimes das AKTUELLE Regime enthalten. Vor dem discovery.py-Regime-
-    Fix (2026-08-13) fiel das nicht auf, weil ohnehin alles NEUTRAL war.
-    """
-    bucket = (idx // REGIME_RECALC_INTERVAL_BT) * REGIME_RECALC_INTERVAL_BT
-    if bucket not in cache:
-        sub_df = df.iloc[max(0, bucket - window): bucket + 1]
-        cache[bucket] = detect_regime(sub_df)
-    return cache[bucket]
-
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 MAX_NOTIONAL_USDT = 200_000.0
-# Bitget-Taker, wie walk_forward_test.py/run_portfolio_optimizer.py/
-# analysis/fee_impact.py/alphabet_optimizer.py::_simulate_subset(). Nur fuer
-# run_backtest()'s EIGENE Dollar-Umrechnung/Ausgabe (equity/stats/Konsole) --
+# Bitget-Taker. Nur fuer die Dollar-Umrechnung in simulate_trade_subset() --
 # NICHT fuer trade['pnl_pct'] (siehe simulate_trade()-Kommentar dort): der
-# rohe, gebuehrenfreie Kursverlauf landet unveraendert in backtest_*.json,
-# weil jedes der oben genannten Tools ihn selbst in Dollar umrechnet und
-# DABEI seine eigene fee_pct-Stufe abzieht -- Gebuehren zusaetzlich hier in
-# pnl_pct einzurechnen wuerde bei jedem dieser Tools zu einer Doppelzaehlung
-# fuehren (genau der Fehler, der eine fruehere Version dieses Fixes hatte).
+# rohe, gebuehrenfreie Kursverlauf landet unveraendert im Trade-Dict, Aufrufer
+# rechnen selbst in Dollar um und ziehen dabei ihre eigene fee_pct-Stufe ab.
 FEE_PCT_PER_SIDE = 0.06
-
-# Feinere Timeframe je Strategie-Timeframe fuer die Trailing-Stop-Intrabar-Simulation
-# (oraclebot-Muster).
-FINE_TF_MAP = {
-    '5m': '1m', '15m': '1m', '30m': '1m',
-    '1h': '5m', '2h': '5m',
-    '4h': '15m', '6h': '15m',
-    '1d': '1h',
-}
-
-
-def _find_best_signal(genes: list[str], market: str, timeframe: str,
-                       db: GenomeDB, params: dict, cutoff_iso: str = None,
-                       current_regime: str = None) -> dict | None:
-    """Sucht das beste aktive Genome-Signal in den letzten genome_cfg['sequence_lengths'] Genen.
-
-    Wenn cutoff_iso gesetzt ist, werden Genome-Stats point-in-time aus
-    genome_occurrences berechnet (nur Occurrences vor cutoff_iso) statt aus
-    der aktuellen All-Time-Aggregation -- verhindert Hindsight-Bias im
-    Backtest (siehe get_genome_as_of() in database.py). Ohne cutoff_iso
-    (z.B. Live-Nutzung) bleibt das alte Verhalten über db.get_genome().
-
-    current_regime: aktuelles Markt-Regime (TREND/RANGE/NEUTRAL). get_genome_as_of()
-    wird MIT regime=None aufgerufen, damit es wie evolver.py::evolve() ALLE drei
-    Regime-Buckets prueft und eine active_regimes-Liste zurueckgibt (ein Genome
-    kann in mehreren Regimen gleichzeitig aktiv sein) -- current_regime muss nur
-    IRGENDWO in dieser Liste vorkommen, aequivalent zu genome_logic.py's
-    _regime_active() live (Listen-Mitgliedschaft, kein Exact-Match auf ein
-    einzelnes "bestes" Regime). Die fruehere Exact-Match-Variante verwarf
-    systematisch gueltige Signale, sobald ein Genome nur regime-uebergreifend
-    (globaler NEUTRAL-Fallback) genug point-in-time-Samples hatte, obwohl live
-    dieselbe Situation als "ueberall aktiv" behandelt.
-    """
-    genome_cfg = params.get('genome', {})
-    min_score = genome_cfg.get('min_score', 0.05)
-    seq_lengths = genome_cfg.get('sequence_lengths', [4, 5, 6])
-    rr_ratio = params.get('risk', {}).get('rr_ratio', 2.0)
-    min_winrate = genome_cfg.get('min_winrate', 0.45)
-    min_samples = genome_cfg.get('min_samples', 20)
-    half_life_days = genome_cfg.get('half_life_days', 180.0)
-
-    best = None
-    best_score = -1.0
-
-    for seq_len in sorted(seq_lengths, reverse=True):
-        if len(genes) < seq_len:
-            continue
-        window = genes[-seq_len:]
-        # Exakte Sequenz UND beide Wildcard-Pattern-Sequenzen versuchen (siehe
-        # encoder.py::build_pattern_sequence()/build_momentum_pattern_
-        # sequence() -- muss mit genome_logic.py::get_genome_signal() in
-        # lockstep bleiben, sonst validiert der Backtest ein anderes Matching
-        # als live tatsaechlich laeuft).
-        candidates = (
-            genes_to_sequence_string(window),
-            build_pattern_sequence(window),
-            build_momentum_pattern_sequence(window),
-        )
-        for seq in candidates:
-            for direction in ['LONG', 'SHORT']:
-                if cutoff_iso is not None:
-                    g = db.get_genome_as_of(
-                        seq, market, timeframe, direction, cutoff_iso,
-                        regime=None,
-                        min_samples=min_samples, min_winrate=min_winrate,
-                        score_threshold=min_score, half_life_days=half_life_days,
-                    )
-                    if g and current_regime is not None and current_regime not in g['active_regimes']:
-                        g = None
-                else:
-                    g = db.get_genome(seq, market, timeframe, direction)
-                if g and g['active'] and g['score'] >= min_score and g['score'] > best_score:
-                    best_score = g['score']
-                    best = {
-                        'direction': direction,
-                        'genome': g,
-                        'seq_len': seq_len,
-                        'rr_ratio': rr_ratio,
-                    }
-
-    return best
-
-
-class LazyFineData:
-    """
-    On-Demand-Fetcher fuer Fein-Daten (Intrabar-Trailing-Simulation). Laedt
-    Fein-Kerzen nur fuer die Tage, die tatsaechlich von einem simulierten
-    Trade durchlaufen werden, statt den kompletten Backtest-Zeitraum vorab
-    herunterzuladen. Ergebnis ist identisch zum eagerly geladenen DataFrame,
-    nur Zeitpunkt und Groesse der Netzwerk-Fetches aendern sich. Ein Trade
-    kann viele Coarse-Kerzen ueberspannen, daher Tage-Bucketing ueber
-    mehrere Kalendertage hinweg.
-    """
-    # Wie viele Kalendertage pro Netzwerk-Request geholt werden, sobald ein
-    # noch unbekannter Tag gebraucht wird -- vorher exakt 1 Tag pro Request
-    # (siehe _ensure_day()-Kommentar unten), das kostete bei 700-1500 Tagen
-    # Backtest-Spanne hunderte einzelne Roundtrips (~10 Min/Pair allein fuers
-    # Laden, beobachtet ueber mehrere Laeufe diese Session). Bitget liefert
-    # bis zu 200 Kerzen/Request -- bei 15m sind das ~2 Tage pro Seite, ein
-    # 14-Tage-Fenster bleibt klar unter der Pagination-Grenze des darunter
-    # liegenden fetch_historical_ohlcv() (das selbst mehrseitig paginiert,
-    # ein Request pro Seite). Ergebnis bleibt identisch (dieselben Kerzen),
-    # nur die Anzahl der Roundtrips sinkt deutlich.
-    _BATCH_DAYS = 14
-
-    def __init__(self, symbol, fine_tf):
-        self.symbol = symbol
-        self.fine_tf = fine_tf
-        self._days = {}
-        self._exchange = None
-        self._fetch_count = 0
-        self._pbar = None
-
-    def _get_exchange(self):
-        if self._exchange is not None:
-            return self._exchange
-        try:
-            with open(os.path.join(PROJECT_ROOT, 'secret.json'), 'r') as f:
-                secrets = json.load(f)
-            accounts = secrets.get('dnabot', [])
-            if accounts:
-                from dnabot.utils.exchange import Exchange
-                self._exchange = Exchange(accounts[0])
-        except Exception:
-            self._exchange = None
-        return self._exchange
-
-    def _ensure_day(self, day):
-        if day in self._days:
-            return
-        exchange = self._get_exchange()
-        if exchange is None or not exchange.markets:
-            self._days[day] = None
-            return
-        try:
-            day_str = day.strftime('%Y-%m-%d')
-            # Ganzes _BATCH_DAYS-Fenster ab `day` in EINEM Rutsch holen statt
-            # nur diesen einen Tag -- fetch_historical_ohlcv() paginiert selbst
-            # mehrseitig, ein einzelner Tag verschenkt also nur Kapazitaet
-            # (200 Kerzen/Seite bei 15m ~= 2 Tage). Alle im Fenster enthaltenen
-            # Tage werden aus DIESER EINEN Antwort befuellt (auch echte Luecken
-            # als None), damit spaetere _ensure_day()-Aufrufe fuer benachbarte
-            # Tage aus dem Cache bedient werden statt erneut zu fetchen.
-            window_end_str = (day + pd.Timedelta(days=self._BATCH_DAYS)).strftime('%Y-%m-%d')
-            df = exchange.fetch_historical_ohlcv(self.symbol, self.fine_tf, day_str, window_end_str, quiet=True)
-            self._fetch_count += 1
-            if self._pbar is None:
-                self._pbar = tqdm(desc=f"  Fein-Daten ({self.fine_tf}) {self.symbol}",
-                                   unit="Tag", leave=True)
-            if df is not None and not df.empty:
-                grouped = {d: g for d, g in df.groupby(df.index.floor('D'))}
-            else:
-                grouped = {}
-            for offset in range(self._BATCH_DAYS):
-                d = day + pd.Timedelta(days=offset)
-                if d in self._days:
-                    continue
-                self._days[d] = grouped.get(d)
-                self._pbar.set_postfix_str(d.strftime('%Y-%m-%d'), refresh=False)
-                self._pbar.update(1)
-        except Exception:
-            self._days[day] = None
-
-    def get_slice(self, start_ts, end_ts):
-        if self.fine_tf is None:
-            return None
-        start_ts = pd.Timestamp(start_ts)
-        end_ts = pd.Timestamp(end_ts)
-        first_day = start_ts.floor('D')
-        last_day = (end_ts - pd.Timedelta(microseconds=1)).floor('D')
-        parts = []
-        day = first_day
-        while day <= last_day:
-            self._ensure_day(day)
-            if self._days[day] is not None:
-                parts.append(self._days[day])
-            day += pd.Timedelta(days=1)
-        if not parts:
-            return None
-        combined = pd.concat(parts).sort_index()
-        combined = combined[~combined.index.duplicated(keep='first')]
-        return combined.loc[(combined.index >= start_ts) & (combined.index < end_ts)]
-
-
-def _get_fine_slice(fine_data, start_ts, end_ts):
-    if fine_data is None:
-        return None
-    if hasattr(fine_data, 'get_slice'):
-        return fine_data.get_slice(start_ts, end_ts)
-    return fine_data.loc[(fine_data.index >= start_ts) & (fine_data.index < end_ts)]
 
 
 def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                     max_hold_candles: int = 20,
-                    trailing_callback_pct: float = None,
-                    fine_df: pd.DataFrame = None,
-                    sl_price_override: float = None,
-                    tp_price_override: float = None) -> dict:
+                    trailing_callback_pct: float = None) -> dict:
     """
-    Simuliert einen Trade auf historischen Daten.
+    Simuliert einen Trade auf historischen Daten -- identische Funktion fuer
+    Live (ueber trade_manager.py::place_entry_orders() nachgebildetes
+    Verhalten) und Backtest (backtest_momentum_exit.py, risk_genome_discover.py).
 
     Entry = Close der Signal-Kerze
-    SL = Low/High der letzten seq_len Kerzen (Standardfall) ODER
-    sl_price_override/tp_price_override, falls gesetzt (Order-Block-Signale:
-    die Zone kann viel weiter zurueckliegen als seq_len Kerzen, siehe
-    order_blocks.py::check_retest() -- die dort bereits validierten SL/TP-
-    Preise werden dann direkt uebernommen statt aus einem Kerzen-Fenster neu
-    hergeleitet). None (Standard) = altes Verhalten, unveraendert.
-
-    trailing_callback_pct (0-1, z.B. 0.01 = 1%): wenn gesetzt, wird tp_price nur
-    als AKTIVIERUNGS-Preis fuer einen Trailing Stop behandelt (wie live in
-    trade_manager.py via place_trailing_stop_order), statt als sofortiger Take-
-    Profit-Exit. Das ist die Live-Realitaet -- ohne diesen Parameter (None)
-    bleibt das alte Verhalten (fixer TP-Exit) fuer Rueckwaertskompatibilitaet
-    erhalten.
-    fine_df: feinere Kerzen (oraclebot-Muster) fuer eine praezisere Trailing-
-    Simulation als auf Basis der Coarse-Kerzen von `df` allein moeglich waere.
-    Ohne fine_df wird auf `df` selbst zurueckgefallen (grobere Naeherung).
+    SL = Low/High der letzten seq_len Kerzen
+    trailing_callback_pct (0-1, z.B. 0.01 = 1%): tp_price wird als
+    AKTIVIERUNGS-Preis fuer einen Trailing Stop behandelt (wie live via
+    place_trailing_stop_order), statt als sofortiger Take-Profit-Exit.
 
     KEIN fee_pct-Parameter hier bewusst -- pnl_pct bleibt roh, siehe Kommentar
     bei der pnl_pct-Berechnung unten.
@@ -310,42 +51,28 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
 
     entry_price = float(df['close'].iloc[entry_idx])
 
-    if sl_price_override is not None and tp_price_override is not None:
-        sl_price = sl_price_override
-        tp_price = tp_price_override
-        sl_dist = (entry_price - sl_price) if direction == 'LONG' else (sl_price - entry_price)
-    else:
-        seq_df = df.iloc[max(0, entry_idx - seq_len + 1): entry_idx + 1]
-        if direction == 'LONG':
-            sl_price = float(seq_df['low'].min())
+    seq_df = df.iloc[max(0, entry_idx - seq_len + 1): entry_idx + 1]
+    if direction == 'LONG':
+        sl_price = float(seq_df['low'].min())
+        sl_dist = entry_price - sl_price
+        if sl_dist <= 0:
+            sl_price = entry_price * 0.98
             sl_dist = entry_price - sl_price
-            if sl_dist <= 0:
-                sl_price = entry_price * 0.98
-                sl_dist = entry_price - sl_price
-            tp_price = entry_price + rr_ratio * sl_dist
-        else:
-            sl_price = float(seq_df['high'].max())
+        tp_price = entry_price + rr_ratio * sl_dist
+    else:
+        sl_price = float(seq_df['high'].max())
+        sl_dist = sl_price - entry_price
+        if sl_dist <= 0:
+            sl_price = entry_price * 1.02
             sl_dist = sl_price - entry_price
-            if sl_dist <= 0:
-                sl_price = entry_price * 1.02
-                sl_dist = sl_price - entry_price
-            tp_price = entry_price - rr_ratio * sl_dist
+        tp_price = entry_price - rr_ratio * sl_dist
 
     sl_pct = sl_dist / entry_price * 100.0
 
     entry_time = df.index[entry_idx]
     last_idx = min(entry_idx + max_hold_candles, len(df) - 1)
     end_time = df.index[last_idx]
-
-    # Walk-Bars: feinere Kerzen bevorzugt (praeziserer Trailing-Verlauf),
-    # sonst die Coarse-Kerzen von df selbst (altes Verhalten).
-    if fine_df is not None:
-        walk_bars = _get_fine_slice(fine_df, entry_time + pd.Timedelta(microseconds=1), end_time + pd.Timedelta(microseconds=1))
-        using_fine = walk_bars is not None and not walk_bars.empty
-    else:
-        using_fine = False
-    if not using_fine:
-        walk_bars = df.iloc[entry_idx + 1: last_idx + 1]
+    walk_bars = df.iloc[entry_idx + 1: last_idx + 1]
 
     outcome = 'TIMEOUT'
     exit_price = float(df['close'].iloc[last_idx])
@@ -393,29 +120,16 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
                         outcome, exit_price, exit_time = 'WIN', trail_level, ts
                         break
 
-    # exit_idx (Coarse-Index) wird fuer die Fortsetzung der Hauptschleife gebraucht --
-    # bei Fein-Simulation ueber die Zeit statt ueber den Index bestimmt.
-    if using_fine:
-        exit_idx = df.index.searchsorted(exit_time)
-        exit_idx = min(exit_idx, len(df) - 1)
-    else:
-        exit_idx = last_idx if outcome == 'TIMEOUT' else df.index.get_loc(exit_time)
+    exit_idx = last_idx if outcome == 'TIMEOUT' else df.index.get_loc(exit_time)
 
     if direction == 'LONG':
         pnl_pct = (exit_price - entry_price) / entry_price * 100.0
     else:
         pnl_pct = (entry_price - exit_price) / entry_price * 100.0
-    # pnl_pct bleibt bewusst ROH (keine Gebuehren) -- dieser Wert landet
-    # unveraendert im "trades"-Rueckgabewert und wird in backtest_*.json
-    # gespeichert, wo walk_forward_test.py, run_portfolio_optimizer.py,
-    # analysis/fee_impact.py UND alphabet_optimizer.py::_simulate_subset()
-    # ihn direkt weiterlesen und JEWEILS SELBST in Dollar umrechnen +
-    # Gebuehren abziehen (identisches Muster ueberall, risk_amount*(pnl_pct/
-    # sl_pct) minus position_size*fee_pct/100*2). Gebuehren hier zusaetzlich
-    # in pnl_pct einzurechnen wuerde bei JEDEM dieser Tools zu einer
-    # Doppelzaehlung fuehren -- Gebuehren gehoeren an die Dollar-Umrechnung,
-    # nicht in den rohen Kursverlauf. run_backtest() macht seine EIGENE
-    # Dollar-Umrechnung weiter unten selbst gebuehrenbewusst.
+    # pnl_pct bleibt bewusst ROH (keine Gebuehren) -- Aufrufer (simulate_trade_subset(),
+    # risk_genome_db.py::record_trade()) rechnen selbst in Dollar um und ziehen dabei
+    # ihre eigene fee_pct-Stufe ab. Gebuehren hier zusaetzlich einzurechnen wuerde zu
+    # einer Doppelzaehlung fuehren.
 
     return {
         'entry_time': str(df.index[entry_idx]),
@@ -435,220 +149,6 @@ def simulate_trade(signal: dict, df: pd.DataFrame, entry_idx: int,
         'seq_len': seq_len,
         'exit_idx': exit_idx,
     }
-
-
-def run_backtest(
-    df: pd.DataFrame,
-    market: str,
-    timeframe: str,
-    db: GenomeDB,
-    params: dict,
-    start_capital: float = 1000.0,
-    risk_per_trade_pct: float = 1.0,
-    max_hold_candles: int = 20,
-    warmup_candles: int = 35,
-    leverage: int = 1,
-    fine_df: pd.DataFrame = None,
-) -> dict:
-    """
-    Führt einen vollständigen Backtest durch.
-
-    Returns:
-        dict mit trades (Liste), stats (Zusammenfassung)
-    """
-    if len(df) < warmup_candles + 10:
-        logger.warning(f"Zu wenig Kerzen für Backtest ({len(df)}). Min: {warmup_candles + 10}")
-        return {"trades": [], "stats": {}}
-
-    logger.info(f"[Backtest] {market} ({timeframe}) | {len(df)} Kerzen | Kapital: {start_capital} USDT")
-
-    # Trailing Stop (wie live in trade_manager.py via place_trailing_stop_order) statt
-    # fixem TP-Exit -- tp_price wird zum Aktivierungspreis. None = altes Verhalten.
-    trailing_callback_pct = params.get('risk', {}).get('trailing_callback_rate_pct')
-    if trailing_callback_pct is not None:
-        trailing_callback_pct = float(trailing_callback_pct) / 100.0
-
-    # Bitget-Gebuehren (siehe simulate_trade()-Docstring) -- Default ist die
-    # echte Bitget-Taker-Gebuehr, per settings.json::risk_settings.fee_pct
-    # (oder risk_overrides.fee_pct pro Pair) ueberschreibbar, --fee-pct 0
-    # aequivalent fuer den alten gebuehrenfreien Vergleich.
-    fee_pct = params.get('risk', {}).get('fee_pct', FEE_PCT_PER_SIDE)
-
-    # Kelly-Sizing (optional, standardmaessig aus): dieselbe Formel wie live
-    # in trade_manager.py::place_entry_orders() (genome/scoring.py::
-    # kelly_multiplier(), geteilt statt getrennt implementiert) -- sonst
-    # validiert dieser Backtest eine Positionsgroesse, die live gar nicht
-    # zustande kommt, sobald use_kelly_sizing fuer dieses Pair aktiv ist.
-    risk_cfg_bt = params.get('risk', {})
-    use_kelly_sizing = bool(risk_cfg_bt.get('use_kelly_sizing', False))
-    kelly_min_mult = risk_cfg_bt.get('kelly_min_mult', 0.5)
-    kelly_max_mult = risk_cfg_bt.get('kelly_max_mult', 3.0)
-    kelly_dampening = risk_cfg_bt.get('kelly_dampening', 0.3)
-    kelly_threshold_winrate = params.get('genome', {}).get('min_winrate', 0.45)
-
-    # Tagestrend-Filter (optional, standardmaessig aus -- siehe daily_bias.py,
-    # dieselbe Funktion wie live in genome_logic.py, damit Backtest und Live
-    # garantiert dasselbe Signal blocken/durchlassen): laufender Bias der
-    # AKTUELLEN Tageskerze (Tages-Open vs. jeweils aktuellem Close) -- rot
-    # bisher -> nur Shorts, gruen bisher -> nur Longs.
-    use_daily_trend_filter = bool(params.get('genome', {}).get('use_daily_trend_filter', False))
-    daily_bias_series = compute_daily_bias_series(df) if use_daily_trend_filter else None
-
-    # CVD-Bestaetigungsfilter (optional, standardmaessig aus): Order-Flow-Schicht
-    # orthogonal zum Tagestrend -- blockt Signale gegen den aktuellen Kauf-/
-    # Verkaufsdruck statt gegen den uebergeordneten Trend.
-    use_cvd_filter = bool(params.get('genome', {}).get('use_cvd_filter', False))
-    cvd_slope = None
-    if use_cvd_filter:
-        cvd_period = int(params.get('genome', {}).get('cvd_slope_period', 5))
-        cvd_slope = _compute_cvd_slope(df, slope_period=cvd_period)
-
-    # Markt-Regime-Gate (Aequivalent zu genome_logic.py live) -- fehlte hier bisher
-    # komplett, siehe _get_backtest_regime()-Docstring.
-    allowed_regimes = params.get('genome', {}).get('allowed_regimes', ['TREND', 'RANGE', 'NEUTRAL'])
-    regime_cache_bt = {}
-
-    # Alle Gene vorberechnen (Alphabet-Override fuer dieses Pair, falls in
-    # settings.json::genome_settings.alphabet_by_pair gesetzt -- muss zum
-    # Alphabet passen, mit dem die Genome-DB fuer dieses Pair befuellt wurde,
-    # sonst matchen die hier gebauten Sequenz-Strings nie einen DB-Eintrag)
-    alphabet = params.get('genome', {}).get('alphabet')
-    genes = encode_dataframe(df, alphabet=alphabet)
-
-    # Order-Block-Zonen (optional, standardmaessig aus -- siehe genome/
-    # order_blocks.py) einmal vorab ueber den gesamten df berechnen, wie
-    # encode_dataframe() oben. check_retest() filtert pro Kerze intern
-    # lookahead-sicher auf Zonen, die VOR dieser Kerze entstanden sind.
-    ob_cfg = params.get('order_block', {})
-    ob_enabled = bool(ob_cfg.get('enabled', False))
-    ob_zones = find_order_blocks(df, alphabet or {}, impulse_length=ob_cfg.get('impulse_length', 3)) if ob_enabled else []
-    ob_rr_ratio = params.get('risk', {}).get('rr_ratio', 2.0)
-    ob_max_age = ob_cfg.get('zone_max_age_candles', 100)
-    ob_assumed_winrate = ob_cfg.get('assumed_winrate', 0.5)
-
-    trades = []
-    equity = start_capital
-    equity_curve = [equity]
-    i = warmup_candles
-
-    while i < len(df) - max_hold_candles:
-        current_regime = _get_backtest_regime(df, i, regime_cache_bt)
-        if not is_regime_allowed(current_regime, allowed_regimes):
-            i += 1
-            equity_curve.append(equity)
-            continue
-
-        current_genes = genes[:i + 1]
-
-        # Signal suchen (point-in-time -- kein Hindsight-Bias aus zukünftigen Occurrences)
-        cutoff_iso = df.index[i].isoformat()
-        signal = _find_best_signal(current_genes, market, timeframe, db, params,
-                                    cutoff_iso=cutoff_iso, current_regime=current_regime)
-
-        if signal is not None and daily_bias_series is not None:
-            if daily_bias_blocks(daily_bias_series.iloc[i], signal['direction']):
-                signal = None
-
-        if signal is not None and use_cvd_filter and cvd_slope is not None:
-            _cvd_val = cvd_slope.iloc[i]
-            if pd.notna(_cvd_val):
-                if _cvd_val < 0 and signal['direction'] == 'LONG':
-                    signal = None
-                elif _cvd_val > 0 and signal['direction'] == 'SHORT':
-                    signal = None
-
-        # Order-Block-Fallback: nur wenn (noch) kein Genome-Signal vorliegt
-        # (etabliertes System hat Vorrang, siehe order_blocks.py-Docstring).
-        # Regime-Gate von oben (is_regime_allowed) gilt bereits fuer die
-        # gesamte Kerze -- kein separates Gate hier noetig.
-        if signal is None and ob_enabled:
-            ob_signal = check_retest(df, i, ob_zones, market, timeframe,
-                                      rr_ratio=ob_rr_ratio, max_age_candles=ob_max_age,
-                                      assumed_winrate=ob_assumed_winrate)
-            if ob_signal is not None:
-                signal = {
-                    'direction': ob_signal['side'].upper(),
-                    'genome': {
-                        'genome_id': ob_signal['genome_id'],
-                        'score': ob_signal['score'],
-                        'wins': ob_signal['winrate'],
-                        'total_occurrences': 1,
-                    },
-                    'seq_len': ob_signal['seq_length'],
-                    'rr_ratio': ob_rr_ratio,
-                    '_ob_sl_price': ob_signal['sl_price'],
-                    '_ob_tp_price': ob_signal['tp_price'],
-                }
-
-        if signal is None:
-            i += 1
-            equity_curve.append(equity)
-            continue
-
-        # Trade simulieren (pnl_pct bleibt roh -- Gebuehren werden unten bei
-        # der Dollar-Umrechnung angewandt, siehe simulate_trade()-Kommentar)
-        trade = simulate_trade(
-            signal, df, i, max_hold_candles,
-            trailing_callback_pct=trailing_callback_pct, fine_df=fine_df,
-            sl_price_override=signal.get('_ob_sl_price'),
-            tp_price_override=signal.get('_ob_tp_price'),
-        )
-
-        # Kelly-Multiplikator fuer DIESEN Trade, aus der point-in-time
-        # Winrate des Signals (trade['genome_winrate'], via get_genome_as_of()
-        # -- kein Hindsight-Bias) und dem fuer dieses Pair verwendeten
-        # rr_ratio. 1.0 wenn use_kelly_sizing aus ist -- unveraendertes altes
-        # Verhalten.
-        if use_kelly_sizing:
-            trade_kelly_mult = kelly_multiplier(
-                winrate=trade['genome_winrate'],
-                rr_ratio=signal['rr_ratio'],
-                threshold_winrate=kelly_threshold_winrate,
-                min_mult=kelly_min_mult,
-                max_mult=kelly_max_mult,
-                dampening=kelly_dampening,
-            )
-        else:
-            trade_kelly_mult = 1.0
-        trade['kelly_multiplier'] = trade_kelly_mult
-
-        # Equity berechnen (Positionsgröße auf equity × leverage deckeln)
-        risk_amount = equity * (risk_per_trade_pct / 100.0) * trade_kelly_mult
-        sl_pct = trade['sl_pct']
-        if sl_pct > 0:
-            position_size = risk_amount / (sl_pct / 100.0)
-            max_position = equity * max(leverage, 1)
-            if position_size > max_position:
-                position_size = max_position
-                risk_amount = position_size * (sl_pct / 100.0)
-            if position_size > MAX_NOTIONAL_USDT:
-                position_size = MAX_NOTIONAL_USDT
-                risk_amount = position_size * (sl_pct / 100.0)
-            actual_pnl = position_size * (trade['pnl_pct'] / 100.0)
-            if fee_pct:
-                actual_pnl -= position_size * (fee_pct / 100.0) * 2.0  # Ein- + Ausstieg
-            equity += actual_pnl
-        else:
-            actual_pnl = 0.0
-
-        trade['equity_after'] = equity
-        trade['pnl_usdt'] = actual_pnl
-        trades.append(trade)
-
-        # Weiter nach Trade-Abschluss (verhindert doppelte Trades)
-        i = trade['exit_idx'] + 1
-        equity_curve.append(equity)
-
-    # Statistiken berechnen
-    stats = _compute_stats(trades, equity_curve, start_capital)
-    logger.info(
-        f"[Backtest] Abgeschlossen: {stats.get('total_trades', 0)} Trades | "
-        f"WR: {stats.get('win_rate', 0):.1%} | "
-        f"Total PnL: {stats.get('total_pnl_usdt', 0):+.2f} USDT | "
-        f"Max DD: {stats.get('max_drawdown_pct', 0):.1f}%"
-    )
-
-    return {"trades": trades, "stats": stats, "equity_curve": equity_curve}
 
 
 def _compute_stats(trades: list[dict], equity_curve: list[float], start_capital: float) -> dict:
@@ -673,7 +173,6 @@ def _compute_stats(trades: list[dict], equity_curve: list[float], start_capital:
         if losses and sum(t['pnl_usdt'] for t in losses) != 0 else float('inf')
     )
 
-    # Max Drawdown
     eq = equity_curve if equity_curve else [start_capital]
     peak = eq[0]
     max_dd = 0.0
@@ -703,18 +202,10 @@ def _compute_stats(trades: list[dict], equity_curve: list[float], start_capital:
 def simulate_trade_subset(trades: list[dict], start_capital: float,
                            risk_per_trade_pct: float, leverage: int = 1,
                            fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
-    """Re-simuliert eine TEILMENGE bereits generierter Trades (z.B. nur die
-    juengsten N Wochen fuer einen automatischen Out-of-Sample-Report) mit
-    FRISCHER Startequity. Die Trades selbst sind bereits point-in-time-sicher
-    (Genome-Auswahl via get_genome_as_of() im urspruenglichen run_backtest()-
-    Lauf, kein Hindsight-Bias) -- hier wird nur die Dollar-Verrechnung ab
-    neuem Startkapital wiederholt, weil die im Volllauf interleavte, von
-    frueheren Trades bereits gepraegte Equity-Kurve die eigenstaendige
-    Bewertung dieser Teilmenge sonst verzerren wuerde (gleiches Muster wie
-    analysis/alphabet_optimizer.py::_simulate_subset(), hier aber mit
-    Leverage-/MAX_NOTIONAL_USDT-Cap und Kelly-Multiplikator wie im
-    Original-Loop, statt einer vereinfachten Nachbildung).
-    """
+    """Simuliert eine Trade-Liste (chronologisch) mit fixer Positionsgroesse
+    (risk_per_trade_pct % der jeweils AKTUELLEN Equity) ab einer frischen
+    Startequity -- genutzt fuer volle Zeitraum- UND OOS-Teilmengen-Reports
+    (backtest_momentum_exit.py)."""
     equity = start_capital
     equity_curve = [equity]
     new_trades = []
@@ -765,7 +256,6 @@ def save_results(results: dict, market: str, timeframe: str):
 
 def print_backtest_summary(results: dict, market: str, timeframe: str, label: str = None):
     stats = results.get("stats", {})
-    trades = results.get("trades", [])
 
     header = f"BACKTEST: {market} ({timeframe})" + (f" — {label}" if label else "")
     print(f"\n{'=' * 60}")
@@ -781,22 +271,3 @@ def print_backtest_summary(results: dict, market: str, timeframe: str, label: st
     print(f"  Max Drawdown:    {stats.get('max_drawdown_pct', 0):.1f}%")
     print(f"  Final Equity:    {stats.get('final_equity', 0):.2f} USDT")
     print(f"{'=' * 60}\n")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
-
-    parser = argparse.ArgumentParser(description="dnabot Backtester")
-    parser.add_argument('--symbol', type=str, default='BTC/USDT:USDT')
-    parser.add_argument('--timeframe', type=str, default='4h')
-    parser.add_argument('--capital', type=float, default=1000.0)
-    parser.add_argument('--risk', type=float, default=1.0, help="Risiko pro Trade in %")
-    args = parser.parse_args()
-
-    with open(os.path.join(PROJECT_ROOT, 'settings.json'), 'r') as f:
-        settings = json.load(f)
-
-    # Für Backtest brauchen wir historische Daten — Einfacher Modus: aus DB lesen
-    # (In der Praxis: Exchange-Verbindung und historischen Download)
-    print(f"Backtest für {args.symbol} ({args.timeframe})")
-    print("Hinweis: Historische Daten werden benötigt. Nutze run_pipeline.sh für vollständigen Ablauf.")

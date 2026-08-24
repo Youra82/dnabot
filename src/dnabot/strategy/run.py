@@ -1,5 +1,5 @@
 # src/dnabot/strategy/run.py
-# Entry Point für eine einzelne dnabot-Strategie (Genome System)
+# Entry Point für eine einzelne dnabot-Strategie (momentum_exit-System)
 import os
 import sys
 import json
@@ -15,12 +15,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.utils.telegram import send_message
 from dnabot.utils.trade_manager import full_trade_cycle, get_tracker_file_path
 from dnabot.utils.guardian import guardian_decorator
-from dnabot.genome.scoring import breakeven_winrate
-from dnabot.genome.alphabet_store import resolve_alphabet, resolve_rr_ratio
 from dnabot.utils.strategy_overrides import find_strategy_overrides
-
-
-DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'genome.db')
 
 
 def setup_logging(symbol: str, timeframe: str) -> logging.Logger:
@@ -53,44 +48,24 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
     """
     Baut die Runtime-Config aus settings.json und Symbol/Timeframe.
 
-    Globale Werte aus risk_settings / genome_settings werden durch
-    per-Strategy-Overrides (risk_overrides / genome_overrides in
-    active_strategies) überschrieben.
+    Globale Werte aus risk_settings / momentum_exit_settings werden durch
+    per-Strategy-Overrides (risk_overrides / momentum_exit_overrides in
+    active_strategies) überschrieben. rr_ratio/trailing/risk_pct kommen zur
+    Laufzeit primaer aus dem aktiven Risiko-Gen der RiskGenomeDB (siehe
+    momentum_exit_logic.py) -- die Werte hier sind nur der Fallback, falls
+    (noch) kein aktives Gen fuer dieses Pair existiert.
     """
     global_risk = settings.get('risk_settings', {})
-    global_genome = settings.get('genome_settings', {})
-    # Order Block: experimentelles, regelbasiertes Feature ohne eigenes
-    # Signifikanz-Tracking wie die Genome (siehe genome/order_blocks.py) --
-    # nur globale Config, kein per-Strategie-Override wie risk/genome_overrides,
-    # solange unklar ist ob es ueberhaupt einen Edge hat (per Default aus).
-    global_ob = settings.get('order_block_settings', {})
     global_mom = settings.get('momentum_exit_settings', {})
     overrides = find_strategy_overrides(symbol, timeframe, settings)
     risk_ov = overrides['risk']
-    genome_ov = overrides['genome']
     mom_ov = overrides.get('momentum_exit', {})
-
-    # Prioritaet: manueller Strategie-Override (risk_overrides.rr_ratio in
-    # active_strategies) > vom Alphabet-Optimizer bestaetigte, pro Pair
-    # automatisch gefundene RR-Ratio > globaler Default. Explizite Config
-    # schlaegt automatisch Optimiertes, wie ueberall sonst in diesem Projekt.
-    _rr_ratio = risk_ov.get('rr_ratio', resolve_rr_ratio(symbol, timeframe, settings))
-    # min_winrate: explizit gesetzt (pro Strategie oder global) hat Vorrang,
-    # sonst aus der fuer DIESE Strategie geltenden rr_ratio abgeleitet
-    # (Breakeven-Winrate + Sicherheitspuffer statt pauschaler fester Zahl).
-    _min_winrate = (genome_ov.get('min_winrate')
-                    or global_genome.get('min_winrate')
-                    or breakeven_winrate(_rr_ratio))
 
     return {
         "market": {
             "symbol": symbol,
             "timeframe": timeframe,
         },
-        # 'genome' (Standard) oder 'momentum_exit' -- siehe
-        # strategy_overrides.py-Docstring und Fund AQ in
-        # research_dnabot_direction_calibration.md.
-        "strategy_type": overrides.get('strategy_type', 'genome'),
         "momentum_exit": {
             "enabled": mom_ov.get('enabled', global_mom.get('enabled', False)),
             "seq_len": mom_ov.get('seq_len', global_mom.get('seq_len', 5)),
@@ -102,63 +77,29 @@ def load_config(symbol: str, timeframe: str, settings: dict) -> dict:
                                    global_risk.get('leverage', 5)),
             "margin_mode":        risk_ov.get('margin_mode',
                                    global_risk.get('margin_mode', 'isolated')),
-            "rr_ratio":           _rr_ratio,
-            # Kelly-Positionsgroesse: standardmaessig AUS, aendert live nichts
-            # am bisherigen Verhalten, bis explizit aktiviert.
-            "use_kelly_sizing":   risk_ov.get('use_kelly_sizing',
-                                   global_risk.get('use_kelly_sizing', False)),
-            # Multiplikator auf risk_per_entry_pct, normiert auf 1.0x an der
-            # Aktivierungsschwelle (min_winrate) -- staerkere Genome bekommen
-            # proportional mehr, gedeckelt zwischen kelly_min_mult/kelly_max_mult.
-            "kelly_min_mult":     risk_ov.get('kelly_min_mult',
-                                   global_risk.get('kelly_min_mult', 0.5)),
-            "kelly_max_mult":     risk_ov.get('kelly_max_mult',
-                                   global_risk.get('kelly_max_mult', 3.0)),
-            # Daempft wie steil der Multiplikator oberhalb 1.0x mitwaechst
-            # (0=immer 1.0x, 1=voller ungedaempfter Kelly-Multiplikator).
-            "kelly_dampening":    risk_ov.get('kelly_dampening',
-                                   global_risk.get('kelly_dampening', 0.3)),
-        },
-        "genome": {
-            "min_score":       genome_ov.get('min_score',
-                                global_genome.get('min_score', 0.08)),
-            "min_winrate":     _min_winrate,
-            "sequence_lengths": genome_ov.get('sequence_lengths',
-                                 global_genome.get('sequence_lengths', [4, 5, 6])),
-            "allowed_regimes": genome_ov.get('allowed_regimes',
-                                global_genome.get('allowed_regimes',
-                                                  ['TREND', 'RANGE', 'NEUTRAL'])),
-            "use_daily_trend_filter": genome_ov.get('use_daily_trend_filter',
-                                       global_genome.get('use_daily_trend_filter', False)),
-            # Muss zum Alphabet passen, mit dem die Genome-DB fuer dieses Pair
-            # befuellt wurde (analysis/alphabet_optimizer.py) -- sonst matchen
-            # die hier live gebauten Sequenzen nichts in der DB.
-            "alphabet": resolve_alphabet(symbol, timeframe, settings),
+            "rr_ratio":           risk_ov.get('rr_ratio',
+                                   global_risk.get('rr_ratio', 2.0)),
+            "trailing_callback_rate_pct": risk_ov.get('trailing_callback_rate_pct',
+                                           global_risk.get('trailing_callback_rate_pct', 1.0)),
         },
         "behavior": {
             "use_longs":  risk_ov.get('use_longs', True),
             "use_shorts": risk_ov.get('use_shorts', True),
         },
-        "order_block": {
-            "enabled":            global_ob.get('enabled', False),
-            "impulse_length":     global_ob.get('impulse_length', 3),
-            "zone_max_age_candles": global_ob.get('zone_max_age_candles', 100),
-            "assumed_winrate":    global_ob.get('assumed_winrate', 0.5),
-        },
     }
 
 
 @guardian_decorator
-def run_for_account(account, telegram_config, params, db_path, logger):
+def run_for_account(account, telegram_config, params, logger):
     symbol = params['market']['symbol']
     timeframe = params['market']['timeframe']
     account_name = account.get('name', 'Standard-Account')
 
-    logger.info(f"--- Starte dnabot (Genome) für {symbol} ({timeframe}) auf Account '{account_name}' ---")
+    logger.info(f"--- Starte dnabot (momentum_exit) für {symbol} ({timeframe}) auf Account '{account_name}' ---")
 
     try:
         exchange = Exchange(account)
-        full_trade_cycle(exchange, params, telegram_config, db_path, logger)
+        full_trade_cycle(exchange, params, telegram_config, logger)
     except ccxt.AuthenticationError:
         logger.critical("Authentifizierungsfehler! API-Schlüssel prüfen!")
         raise
@@ -168,7 +109,7 @@ def run_for_account(account, telegram_config, params, db_path, logger):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="dnabot Genome Trading-Skript")
+    parser = argparse.ArgumentParser(description="dnabot momentum_exit Trading-Skript")
     parser.add_argument('--symbol', required=True, type=str, help="Handelspaar (z.B. BTC/USDT:USDT)")
     parser.add_argument('--timeframe', required=True, type=str, help="Zeitrahmen (z.B. 4h)")
     args = parser.parse_args()
@@ -203,7 +144,7 @@ def main():
 
     for account in accounts_to_run:
         try:
-            run_for_account(account, telegram_config, params, DB_PATH, logger)
+            run_for_account(account, telegram_config, params, logger)
         except Exception as e:
             logger.error(f"Schwerwiegender Fehler für Account {account.get('name', '?')}: {e}", exc_info=True)
             sys.exit(1)

@@ -27,8 +27,8 @@ logging.basicConfig(
 
 
 def _resolve_python_exe():
-    """Plattformuebergreifend wie run_pipeline.sh: Unix-Layout zuerst pruefen
-    (unveraendertes Verhalten auf dem Linux-VPS), Windows-Fallback fuer lokale Tests."""
+    """Plattformuebergreifend: Unix-Layout zuerst pruefen (unveraendertes
+    Verhalten auf dem Linux-VPS), Windows-Fallback fuer lokale Tests."""
     unix_python = os.path.join(SCRIPT_DIR, '.venv', 'bin', 'python3')
     if os.path.exists(unix_python):
         return unix_python
@@ -63,7 +63,7 @@ def main():
         return
 
     logging.info("=" * 55)
-    logging.info("  dnabot Master Runner — Genome + momentum_exit")
+    logging.info("  dnabot Master Runner — momentum_exit")
     logging.info("=" * 55)
 
     _run_auto_optimizer()

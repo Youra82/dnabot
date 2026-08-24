@@ -21,15 +21,6 @@ if [ -f "settings.json" ]; then
     echo "settings.json gesichert."
 fi
 
-# alphabet_overrides.json sichern -- gleicher Grund wie settings.json:
-# vom Alphabet-Optimizer bestaetigte alphabet_by_pair/rr_ratio_by_pair pro
-# Pair (siehe genome/alphabet_store.py) sind lokale Laufzeit-Optimierung,
-# kein im Repo committeter Stand.
-if [ -f "alphabet_overrides.json" ]; then
-    cp alphabet_overrides.json alphabet_overrides.json.bak
-    echo "alphabet_overrides.json gesichert."
-fi
-
 # Git update
 git fetch origin
 git reset --hard origin/main
@@ -46,13 +37,6 @@ if [ -f "settings.json.bak" ]; then
     cp settings.json.bak settings.json
     rm settings.json.bak
     echo "settings.json wiederhergestellt."
-fi
-
-# alphabet_overrides.json wiederherstellen
-if [ -f "alphabet_overrides.json.bak" ]; then
-    cp alphabet_overrides.json.bak alphabet_overrides.json
-    rm alphabet_overrides.json.bak
-    echo "alphabet_overrides.json wiederhergestellt."
 fi
 
 # Cache bereinigen

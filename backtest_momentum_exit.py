@@ -34,7 +34,7 @@ from dnabot.analysis.backtester import (
     simulate_trade, simulate_trade_subset, print_backtest_summary,
     save_results, FEE_PCT_PER_SIDE,
 )
-from scan_and_learn import HISTORY_DAYS_MAP, load_secrets
+from dnabot.utils.config_loader import HISTORY_DAYS_MAP, load_secrets
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)

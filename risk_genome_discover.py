@@ -36,7 +36,7 @@ from dnabot.utils.exchange import Exchange
 from dnabot.analysis.backtester import simulate_trade
 from dnabot.genome.risk_genome_db import RiskGenomeDB
 from dnabot.genome.risk_evolver import evolve_risk_genes
-from scan_and_learn import HISTORY_DAYS_MAP, load_settings, load_secrets
+from dnabot.utils.config_loader import HISTORY_DAYS_MAP, load_settings, load_secrets
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)

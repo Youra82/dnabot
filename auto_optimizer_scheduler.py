@@ -35,7 +35,14 @@ SCAN_SCRIPT      = os.path.join(PROJECT_ROOT, 'scan_and_learn.py')
 PORTFOLIO_SCRIPT = os.path.join(PROJECT_ROOT, 'run_portfolio_optimizer.py')
 ALPHABET_SCRIPT  = os.path.join(PROJECT_ROOT, 'analysis', 'alphabet_optimizer.py')
 BACKTEST_SCRIPT  = os.path.join(PROJECT_ROOT, 'run_backtest.py')
-PYTHON_EXE       = os.path.join(PROJECT_ROOT, '.venv', 'bin', 'python3')
+RISK_GENOME_SCRIPT = os.path.join(PROJECT_ROOT, 'risk_genome_discover.py')
+
+# Plattformuebergreifend wie run_pipeline.sh: Unix-Layout zuerst pruefen
+# (unveraendertes Verhalten auf dem Linux-VPS), Windows-Fallback fuer lokale
+# Entwicklung/Tests.
+_unix_python = os.path.join(PROJECT_ROOT, '.venv', 'bin', 'python3')
+_win_python = os.path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe')
+PYTHON_EXE = _unix_python if os.path.exists(_unix_python) else _win_python
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +275,25 @@ def _run_backtest_all(opt_settings: dict) -> int:
     return result.returncode
 
 
+def _run_risk_genome_discovery(opt_settings: dict) -> int:
+    """
+    Aktualisiert die Risiko-Gen-Datenbank (momentum_exit-Strategie, siehe
+    genome/risk_genome_db.py + Fund AQ/AR in research_dnabot_direction_
+    calibration.md) -- Pendant zu _run_scan() fuer das Kerzen-Genome-System.
+    Ohne regelmaessigen Re-Lauf wuerden die aktiven Risiko-Gene mit der Zeit
+    veralten, genau wie das Kerzen-System ohne scan_and_learn.py veralten
+    wuerde. Ohne --symbol/--timeframe verarbeitet das Skript automatisch
+    alle strategy_type='momentum_exit'-Eintraege aus active_strategies.
+    Kein Fehler wenn es KEINE momentum_exit-Strategien gibt (Skript beendet
+    sich dann sauber mit einer Meldung, kein Absturz der Gesamt-Pipeline).
+    """
+    cmd = [PYTHON_EXE, RISK_GENOME_SCRIPT]
+    _log(f"RISK_GENOME_START cmd={' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    _log(f"RISK_GENOME_EXIT rc={result.returncode}")
+    return result.returncode
+
+
 def _run_portfolio_optimizer(opt_settings: dict) -> int:
     """Führt run_portfolio_optimizer.py mit --auto-write aus."""
     capital = str(opt_settings.get('start_capital', 1000))
@@ -304,6 +330,12 @@ def _run_scan_standalone(opt_settings: dict):
     try:
         rc      = _run_scan(opt_settings)
         success = (rc == 0)
+        # Risiko-Gen-Discovery unabhaengig vom Genome-Scan-Ergebnis versuchen --
+        # eigene Datenbank, eigene Strategien (momentum_exit), soll nicht am
+        # Genome-Scan haengen. Fehler hier blockieren den Genome-Pfad nicht.
+        rc_risk = _run_risk_genome_discovery(opt_settings)
+        if rc_risk != 0:
+            _log(f"RISK_GENOME_FAILED rc={rc_risk}")
     except Exception as e:
         _log(f"SCAN_ONLY_ERROR {e}")
     finally:
@@ -317,7 +349,7 @@ def _run_scan_standalone(opt_settings: dict):
         _log(f"SCAN_ONLY_FINISH elapsed_s={elapsed}")
         if send_tg:
             _send_telegram(
-                f"🧬 dnabot Genome-Scan abgeschlossen\n"
+                f"🧬 dnabot Genome-Scan + Risiko-Gen-Discovery abgeschlossen\n"
                 f"Dauer: {_format_elapsed(elapsed)}\n"
                 f"Nur neue, noch nicht gesehene Kerzen wurden verarbeitet.\n"
                 f"Portfolio-Optimierung: deaktiviert (enabled=false)"
@@ -404,7 +436,15 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
         rc_scan = _run_scan(opt_settings)
         if rc_scan != 0:
             _log(f"SCAN_FAILED rc={rc_scan}")
-        else:
+
+        # Risiko-Gen-Discovery (momentum_exit) -- eigener Pfad, unabhaengig vom
+        # Genome-Scan-Erfolg, damit ein Genome-Scan-Fehler nicht auch die
+        # Risiko-Gene veralten laesst (und umgekehrt).
+        rc_risk = _run_risk_genome_discovery(opt_settings)
+        if rc_risk != 0:
+            _log(f"RISK_GENOME_FAILED rc={rc_risk}")
+
+        if rc_scan == 0:
             # Backtest ALLER DB-Pairs frisch generieren -- run_portfolio_
             # optimizer.py liest nur vorhandene backtest_*.json, generiert
             # selbst keine (siehe _run_backtest_all()-Docstring). Ohne

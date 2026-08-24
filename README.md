@@ -66,6 +66,8 @@ dnabot/
 ├── run_manual_portfolio.py        # Genome: manuelle Portfolio-Simulation (Pair-Auswahl)
 ├── backtest_momentum_exit.py      # momentum_exit: Backtest ueber die ECHTE Live-Signalfunktion
 │                                     gegen frische Bitget-Daten (kein Nachbau)
+├── risk_genome_discover.py        # momentum_exit: Discovery fuer Risiko-Gene (Pendant zu
+│                                     scan_and_learn.py), IS/OOS-getrennt, echte simulate_trade()
 ├── run_momentum_exit_pipeline.sh  # momentum_exit: liest active_strategies, backtestet + Fee-Report
 ├── install.sh                     # Erstinstallation auf VPS
 ├── update.sh                      # Git-Update (sichert secret.json UND settings.json --
@@ -80,29 +82,37 @@ dnabot/
     │   ├── discovery.py           # Pattern-Mining aus Historien-Daten
     │   └── evolver.py             # Scoring + Aktivierung/Deaktivierung
     │
+    ├── genome/ (Fortsetzung)
+    │   ├── risk_genome_db.py      # momentum_exit: SQLite-DB fuer Risiko-/Exit-Gene
+    │   │                            (artifacts/db/risk_genome.db), spiegelt database.py
+    │   └── risk_evolver.py        # momentum_exit: aktiviert bestes Gen nach Calmar-Ratio
+    │
     ├── strategy/
     │   ├── genome_logic.py        # Genome: aktuelle Kerzen vs. DB → Signal
-    │   ├── momentum_exit_logic.py # momentum_exit: Momentum-Einstieg, KEIN Regime-/Score-Filter
+    │   ├── momentum_exit_logic.py # momentum_exit: Momentum-Einstieg (kein Vorhersage-Anspruch),
+    │   │                            liest aktives Risiko-Gen live aus risk_genome_db
     │   │                            (siehe Fund AQ/AR in research_dnabot_direction_calibration.md)
     │   └── run.py                 # Entry Point -- strategy_type schaltet zwischen beiden um
     │
     ├── analysis/
     │   ├── backtester.py          # Genome: historische Simulation (simulate_trade() wird
-    │   │                            auch von backtest_momentum_exit.py wiederverwendet)
+    │   │                            auch von backtest_momentum_exit.py/risk_genome_discover.py
+    │   │                            wiederverwendet)
     │   ├── interactive_chart.py   # Plotly Candlestick + Trade-Marker + Equity
     │   └── show_results.py        # Report: Genome-Library + Backtest (zeigt BEIDE Strategien,
     │                                liest einfach alle artifacts/results/backtest_*.json)
     │
     └── utils/
         ├── exchange.py            # Bitget CCXT Wrapper
-        ├── trade_manager.py       # Entry/TP/SL + Self-Learning, strategy_type-Weiche
+        ├── trade_manager.py       # Entry/TP/SL + Self-Learning (beide DBs), strategy_type-Weiche
         ├── strategy_overrides.py  # Loest risk_overrides/genome_overrides/momentum_exit_overrides auf
         ├── telegram.py            # Telegram-Benachrichtigungen
         └── guardian.py            # Crash-Schutz Decorator
 
-analysis/                          # Wissenschaftliche Analysen (run_analysis.sh, Menü 1-20)
-├── fee_impact.py, monte_carlo.py, bootstrap_test.py, param_optimizer.py, ...  # Genome-spezifisch
+analysis/                          # Wissenschaftliche Analysen (run_analysis.sh, Menü 1-20 -- Genome-spezifisch)
+├── fee_impact.py, monte_carlo.py, bootstrap_test.py, param_optimizer.py, ...
 ├── fee_impact_momentum_exit.py    # momentum_exit: isolierte Gebuehren-Analyse (kein Pool mit Genome)
+├── show_risk_genes.py             # momentum_exit: Report aktive + Kandidaten-Gene (show_results.sh Mode 6)
 └── strategy_comparison.py         # Menü 20: WF Re-Opt vs. Alle Configs (Langzeit-Vergleich)
 ```
 
@@ -237,52 +247,99 @@ Einstieg (KEIN Vorhersage-Anspruch):
   Richtung = eigene Kerzenrichtung der letzten Kerze (Momentum-Fortsetzung)
   KEIN Score-Gate, KEIN Regime-Filter -- jede Kerze wird potenziell gehandelt
 
-Exit (HIER steckt der Edge):
-  SL = Low/High der letzten `seq_len` Kerzen (strukturell, eng: seq_len=5)
-  TP-Aktivierung = Entry + rr_ratio × SL-Distanz (moderat: rr_ratio=1.5)
-  Trailing Stop = eng nachgezogen (trailing_callback_rate_pct=0.5%, nativ
-                  über Bitget place_trailing_stop_order, wie beim Genome-System)
+Exit (HIER steckt der Edge -- Parameter kommen aus dem AKTIVEN Risiko-Gen,
+siehe "Risiko-Gen-Datenbank" unten, nicht aus einer festen Konfiguration):
+  SL = Low/High der letzten `seq_len` Kerzen (strukturell)
+  TP-Aktivierung = Entry + rr_ratio × SL-Distanz
+  Trailing Stop = trailing_pct nachgezogen, nativ über Bitget
+                  place_trailing_stop_order (wie beim Genome-System)
 ```
 
 Ergebnis-Profil (siehe R-Multiple-Diagnose in Fund AQ): **viele kleine
-Verluste, aber ein Schwanz seltener großer Gewinner** — der enge Trailing-
-Stop lässt eine Position weiterlaufen, solange der Trend hält, und gibt beim
-Umkehren nur wenig zurück. Klassisches Trendfolge-Payoff-Profil.
+Verluste, aber ein Schwanz seltener großer Gewinner** — ein eng nachgezogener
+Trailing-Stop lässt eine Position weiterlaufen, solange der Trend hält, und
+gibt beim Umkehren nur wenig zurück. Klassisches Trendfolge-Payoff-Profil.
 
-### Validierte Ergebnisse (echte Live-Signalfunktion, frische Bitget-Daten)
+### Risiko-Gen-Datenbank (`risk_genome.db`) — echtes, lebendes Genom-System
 
-`backtest_momentum_exit.py` simuliert **nicht nach** — es ruft dieselbe
-`get_momentum_exit_signal()`-Funktion auf, die auch live läuft, und dieselbe
-bereits validierte `simulate_trade()`-Ausführung wie das Genome-System
-(inkl. echter Bitget-Gebühren 0.06%/Seite):
+Anders als eine erste Version dieser Strategie (feste, hart einprogrammierte
+Parameter) ist momentum_exit jetzt **strukturell identisch zum Kerzen-Genome-
+System aufgebaut** — nur ist ein "Gen" hier eine Risiko-/Exit-Parameter-
+Kombination statt ein Kerzenmuster:
 
-| Paar (6h) | Trades (voll) | WR | PF | PnL (voll) | MaxDD | OOS (26W) PnL |
-|---|---|---|---|---|---|---|
-| BTC | 453 | 33.3% | 1.07 | +35.3% | 14.5% | +4.1% |
-| XRP | 445 | 32.6% | 1.30 | +74.8% | 15.5% | +10.1% |
-| ETH | 475 | 29.7% | 0.96 | -5.0% | 32.1% | +0.6% |
-| SOL | 414 | 30.0% | 1.08 | +37.3% | 28.4% | -14.6% |
-| ADA | 463 | 33.9% | 1.21 | +75.6% | 15.2% | +6.7% |
-| AAVE | 430 | 28.6% | 1.05 | +33.0% | 12.6% | +12.9% |
-| DOGE | 437 | 32.0% | 1.17 | +54.2% | 13.8% | -0.9% |
+```
+src/dnabot/genome/risk_genome_db.py   — SQLite-DB (artifacts/db/risk_genome.db)
+                                          Tabellen: risk_genes, risk_gene_occurrences
+                                          Spiegelt genome/database.py 1:1
+src/dnabot/genome/risk_evolver.py     — aktiviert das Gen mit dem hoechsten
+                                          Calmar (PnL/MaxDD) pro (Pair, Timeframe) --
+                                          Selektionskriterium ist Calmar statt
+                                          Winrate (siehe Fund AN: bei duennem
+                                          Edge entscheidet die Positionsgroesse/
+                                          der Drawdown ueber Profitabilitaet)
+risk_genome_discover.py               — Pendant zu scan_and_learn.py: erzeugt
+                                          Kandidaten-Gene aus einem festen
+                                          Parameter-Raster (seq_len x rr_ratio x
+                                          trailing_pct x risk_pct), backtestet
+                                          jede Kombination mit der ECHTEN
+                                          simulate_trade()-Funktion, waehlt via
+                                          Evolver das beste Gen NUR auf dem
+                                          IS-Anteil, prueft es DANACH einmalig
+                                          auf dem echten, nie gesehenen 26-
+                                          Wochen-OOS-Anteil -- nur bei
+                                          positivem OOS-Calmar bleibt es aktiv
+                                          (sonst deaktiviert es sich selbst)
+```
 
-**6/7 Paare positiv über den vollen Zeitraum, 5/7 positiv im ehrlichen
-26-Wochen-OOS-Fenster** (nur SOL klar negativ, DOGE/ETH marginal). Portfolio
-gepoolt (alle 7 Paare, eine gemeinsame Kapitalkurve, 1% Risiko/Trade):
-bei echter Bitget-Gebühr PnL=+833.9%, MaxDD=44.3%, Calmar=18.8,
-**Break-Even-Gebühr erst bei ~0.17%/Seite** (fast dreifache Sicherheitsmarge
-gegenüber der echten 0.06%-Gebühr).
+`get_momentum_exit_signal(df, params, db)` liest live das **aktive** Gen fuer
+das jeweilige Pair/Timeframe aus der DB und nutzt dessen `seq_len`/`rr_ratio`/
+`trailing_pct`/`risk_pct` fuer JEDEN Trade. Nach jedem geschlossenen Trade
+schreibt `trade_manager.py::self_learn_from_closed_trade()` das Ergebnis
+zurueck in `risk_gene_occurrences` (`source='live'`) -- das aktive Gen lernt
+laufend aus echten Ergebnissen, genau wie beim Kerzen-Genome-System.
 
-Der 6h-Champion (seq_len=5, rr_ratio=1.5, trailing=0.5%, risk=1%) wurde
-zusätzlich auf einem zweiten, um 26 Wochen zurückverschobenen, unabhängigen
-Fenster geprüft (Walk-Forward-Stil) — er reproduziert dort nicht nur, sondern
-verstärkt sich (siehe `research_dnabot_direction_calibration.md`, Fund AQ).
+**Kein aktives Gen fuer ein Pair/Timeframe → kein Signal, kein Trade**
+(konservativ: kein blindes Handeln mit Default-Werten ohne validierte
+Discovery).
 
-**Wichtig — nur 6h ist bisher validiert.** 4h/2h zeigten im ursprünglichen
-Research-Test leicht negative Ergebnisse, 1h explodierte, weil der genetische
-Algorithmus dort IS-optimal ein zu hohes Risiko wählte (klassisches Overfitting
-auf Positionsgröße, siehe Fund AN/AQ). Vor einer Aktivierung auf anderen
-Timeframes: erst mit `backtest_momentum_exit.py` neu validieren.
+### Discovery-Ergebnisse (2026-08-24, 7 Paare bei 6h, echte Bitget-Daten)
+
+```bash
+.venv/bin/python3 risk_genome_discover.py --symbol BTC/USDT:USDT --timeframe 6h
+# oder ohne Argumente: alle momentum_exit-Paare aus active_strategies
+.venv/bin/python3 risk_genome_discover.py
+```
+
+| Pair | Aktiviertes Gen | IS-Calmar | OOS n | OOS-Calmar | Status |
+|---|---|---|---|---|---|
+| BTC | seq5/rr3.0/trail0.5%/risk2.0% | 11.58 | 56 | 1.09 | ✅ Aktiv |
+| XRP | seq5/rr1.5/trail0.5%/risk2.0% | 22.35 | 67 | 0.03 | ⚠️ Aktiv (sehr knapp) |
+| ETH | seq5/rr1.5/trail0.5%/risk2.0% | 8.85 | 60 | 0.36 | ✅ Aktiv |
+| SOL | seq5/rr3.0/trail0.5%/risk2.0% | 11.75 | 61 | **-0.26** | ❌ **Selbst deaktiviert** |
+| ADA | seq5/rr1.5/trail0.5%/risk2.0% | 25.71 | 72 | 1.39 | ✅ Aktiv |
+| AAVE | seq10/rr2.0/trail0.5%/risk2.0% | 12.17 | 56 | 1.91 | ✅ Aktiv |
+| DOGE | seq10/rr3.0/trail0.5%/risk2.0% | 12.71 | 55 | 1.42 | ✅ Aktiv |
+
+SOL wurde vom Evolver **automatisch deaktiviert**, weil das IS-beste Gen im
+echten OOS-Test negativ war — deckt sich mit der urspruenglichen Recherche
+(Fund AQ zeigte SOL dort ebenfalls als einziges klar negatives Paar). Das ist
+ein starkes Konsistenz-Signal, dass der OOS-Gate-Mechanismus echt greift statt
+nur simuliert gut auszusehen.
+
+> **Offener Vorbehalt:** Alle 7 Paare wählten unabhängig voneinander das
+> höchste getestete Risiko (`risk_pct=2.0%`) — dasselbe Muster, das beim
+> ursprünglichen GA-Test bei 1h zur Explosion führte (Fund AN/AQ). Der OOS-
+> Check fängt grobe Fehlschläge ab (siehe SOL), aber XRPs Bestätigung
+> (Calmar 0.03) ist statistisch praktisch bedeutungslos. Vor einer laengeren
+> Live-Phase lohnt es, die Risiko-Obergrenze in `RISK_CHOICES`
+> (`risk_genome_discover.py`) probeweise niedriger anzusetzen und/oder die
+> OOS-Schwelle in `evolve_risk_genes()`/`discover_pair()` strenger als
+> "> 0" zu setzen.
+
+**Nur 6h ist bisher discovered.** Fuer andere Timeframes: erst
+`risk_genome_discover.py --symbol ... --timeframe ...` laufen lassen, bevor
+`strategy_type: "momentum_exit"` dafuer aktiviert wird -- sonst bleibt das
+Pair ohne aktives Gen und handelt schlicht nicht (sicherer Default).
 
 ### Konfiguration
 
@@ -292,9 +349,14 @@ das Genome-System wird für dieses Paar/Timeframe gar nicht mehr angefragt:
 
 ```json
 { "symbol": "BTC/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
-  "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
-  "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } }
+  "momentum_exit_overrides": { "enabled": true } }
 ```
+
+`risk_overrides`/`momentum_exit_overrides.seq_len` sind nur noch ein
+**Fallback** fuer den Fall, dass kein aktives Gen in der DB existiert
+(z.B. `backtest_momentum_exit.py` beim isolierten Testen neuer, noch nicht
+discovered Parameter, aufgerufen ohne DB) -- im Live-Betrieb (mit DB)
+ueberschreibt das aktive Gen diese Werte pro Trade.
 
 Globaler Schalter (Fallback, falls kein `momentum_exit_overrides.enabled`
 pro Strategie gesetzt ist) in `settings.json`:
@@ -306,21 +368,29 @@ pro Strategie gesetzt ist) in `settings.json`:
 ### Backtest & Reporting
 
 ```bash
-# Einzelnes Pair, eigene Parameter
+# Risiko-Gen-Discovery (neu/aktualisieren) -- Pendant zu scan_and_learn.py
+.venv/bin/python3 risk_genome_discover.py
+
+# Report: aktive + Kandidaten-Gene pro Pair (auch ueber show_results.sh -> Mode 6)
+.venv/bin/python3 analysis/show_risk_genes.py
+
+# Einzelnes Pair, eigene (noch nicht discovered) Parameter isoliert testen
 .venv/bin/python3 backtest_momentum_exit.py --symbol BTC/USDT:USDT --timeframe 6h \
     --capital 1000 --risk 1.0 --rr-ratio 1.5 --trailing-callback-pct 0.5 --seq-len 5 --oos-weeks 26
 
-# Alle momentum_exit-Strategien aus active_strategies, mit GENAU deren Parametern
+# Alle momentum_exit-Strategien aus active_strategies, mit GENAU deren statischen
+# Fallback-Parametern (NICHT den DB-Genen -- fuer DB-gesteuerte Zahlen: show_risk_genes.py)
 ./run_momentum_exit_pipeline.sh
 # -> backtestet jedes Pair + isolierte Gebuehren-Impact-Analyse am Ende
 #    (analysis/fee_impact_momentum_exit.py -- NICHT analysis/fee_impact.py,
 #    das poolt alle Strategien inkl. Genome zusammen und ist dadurch irrefuehrend)
 ```
 
-> **Selbstlernen:** momentum_exit-Trades schreiben NICHT in die Genome-DB
-> (kein Signifikanz-Tracking wie bei Order Blocks, siehe `is_momentum_exit`-
-> Flag in `trade_manager.py::self_learn_from_closed_trade()`) — der Edge
-> liegt in fest konfigurierten Parametern, nicht in einem lernenden Modell.
+> **Automatische Aktualisierung:** `auto_optimizer_scheduler.py` ruft bei
+> jedem Lauf (mit UND ohne `optimization_settings.enabled`) zusaetzlich zum
+> Kerzen-Genome-Scan auch `risk_genome_discover.py` auf -- die Risiko-Gene
+> bleiben damit auf demselben Zeitplan aktuell wie das Kerzen-System, ohne
+> eigenen Cronjob.
 
 ---
 
@@ -591,8 +661,14 @@ auto_optimizer_scheduler.py prüft: Ist Optimierung fällig?
     └── Ja →
            scan_and_learn.py           (neue Genome discovern + evolven)
                ↓
+           risk_genome_discover.py     (Risiko-Gene fuer momentum_exit
+                                         aktualisieren -- eigener Pfad,
+                                         unabhaengig vom Genome-Scan-Erfolg)
+               ↓
            run_portfolio_optimizer.py --auto-write
-               (bestes Team ermitteln → settings.json aktualisieren)
+               (bestes GENOME-Team ermitteln → settings.json aktualisieren --
+                momentum_exit-Eintraege bleiben dabei unangetastet, siehe
+                run_portfolio_optimizer.py::write_to_settings())
                ↓
            Telegram: Start + Ende Benachrichtigung
 ```
@@ -624,6 +700,14 @@ Manuell erzwingen:
 ---
 
 ## Wissenschaftliche Analysen
+
+> **Nur fuer das Genome-System.** Alle 20 Analysen unten pruefen Konzepte,
+> die spezifisch fuer Kerzen-Gen-Sequenzen sind (Sequenzlaengen, Alphabet-
+> Score, Regime-Filter, Genome-Decay) und auf momentum_exit nicht sinnvoll
+> uebertragbar sind (dort gibt es weder Sequenzlaengen noch Regime-Filter).
+> Bewusste Entscheidung, das NICHT pauschal zu erweitern -- fuer momentum_exit
+> siehe stattdessen `risk_genome_discover.py` (Discovery) und
+> `analysis/show_risk_genes.py` (Report) im Abschnitt oben.
 
 Alle 20 Analysen sind unter **einem einzigen interaktiven Befehl** zusammengefasst.
 Jede Analyse sendet automatisch einen **Chart + Zusammenfassung via Telegram**.
@@ -1121,15 +1205,20 @@ cd ~/dnabot && .venv/bin/python3 auto_optimizer_scheduler.py --force
 .venv/bin/python3 scan_and_learn.py --symbol BTC/USDT:USDT --timeframe 4h
 ```
 
-#### momentum_exit: Backtest & Gebühren-Check
+#### momentum_exit: Risiko-Gene aktualisieren, Backtest & Gebühren-Check
 
 ```bash
-# Alle konfigurierten momentum_exit-Strategien aus settings.json
-./run_momentum_exit_pipeline.sh
+# Risiko-Gen-Discovery (neu/aktualisieren) -- laeuft automatisch mit dem
+# Scheduler (siehe unten), hier fuer manuelles Anstossen/Testen
+.venv/bin/python3 risk_genome_discover.py                                    # alle momentum_exit-Paare
+.venv/bin/python3 risk_genome_discover.py --symbol ETH/USDT:USDT --timeframe 4h  # neuer Timeframe/Pair
 
-# Einzelnes Pair, andere Parameter testen (z.B. neuer Timeframe, noch nicht validiert)
-.venv/bin/python3 backtest_momentum_exit.py --symbol ETH/USDT:USDT --timeframe 4h \
-    --capital 1000 --risk 1.0 --rr-ratio 1.5 --trailing-callback-pct 0.5 --seq-len 5
+# Report: welches Gen ist aktiv, wie sehen die Top-Kandidaten aus
+.venv/bin/python3 analysis/show_risk_genes.py       # oder: ./show_results.sh -> Mode 6
+
+# Alle konfigurierten momentum_exit-Strategien backtesten (statische Fallback-Parameter,
+# nicht die DB-Gene -- fuer DB-gesteuerte Zahlen show_risk_genes.py nutzen)
+./run_momentum_exit_pipeline.sh
 
 # Isolierte Gebühren-Analyse (NICHT analysis/fee_impact.py -- das poolt mit Genome-Trades)
 .venv/bin/python3 analysis/fee_impact_momentum_exit.py --capital 1000 --risk 1.0

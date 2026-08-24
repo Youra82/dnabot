@@ -14,7 +14,7 @@ import os
 import sys
 import ccxt
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
@@ -24,6 +24,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, 'src'))
 from dnabot.utils.telegram import send_message, send_photo
 from dnabot.utils.exchange import Exchange
 from dnabot.genome.database import GenomeDB
+from dnabot.genome.risk_genome_db import RiskGenomeDB
 from dnabot.genome.scoring import kelly_risk_pct as _kelly_risk_pct
 from dnabot.strategy.genome_logic import get_genome_signal, update_genome_with_trade_result
 from dnabot.strategy.order_block_logic import get_order_block_signal
@@ -31,6 +32,7 @@ from dnabot.strategy.momentum_exit_logic import get_momentum_exit_signal
 
 MIN_NOTIONAL_USDT = 5.0
 MAX_NOTIONAL_USDT = 200_000.0   # Obergrenze Positionsgröße pro Trade
+RISK_DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'risk_genome.db')
 
 
 FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
@@ -848,6 +850,8 @@ def place_entry_orders(
         # muss das erkennen und den DB-Schreibversuch ueberspringen.
         "is_order_block": genome_signal.get('is_order_block', False),
         "is_momentum_exit": genome_signal.get('is_momentum_exit', False),
+        "risk_gene_id": genome_signal.get('risk_gene_id'),
+        "entry_time": datetime.now(timezone.utc).isoformat(),
     }
     _write_tracker(tracker_path, tracker)
 
@@ -892,29 +896,17 @@ def place_entry_orders(
 
 def self_learn_from_closed_trade(
     tracker_path: str, db: GenomeDB, outcome: str,
-    exit_price: float, logger: logging.Logger
+    exit_price: float, logger: logging.Logger, risk_db: RiskGenomeDB = None,
 ):
     """
-    Aktualisiert die Genome-DB nach einem abgeschlossenen Trade.
-    Wird aufgerufen wenn SL oder TP ausgelöst wurde.
+    Aktualisiert die Genome-DB (Kerzenmuster) ODER die RiskGenomeDB
+    (Risiko-/Exit-Gene, momentum_exit) nach einem abgeschlossenen Trade.
+    Wird aufgerufen wenn SL oder TP/Trailing-Stop ausgeloest wurde.
     """
     tracker = read_tracker(tracker_path)
     active_genome = tracker.get('active_genome')
 
     if not active_genome:
-        return
-
-    if active_genome.get('is_order_block') or active_genome.get('is_momentum_exit'):
-        # Order Blocks UND Momentum-Exit-Trades haben keine Genome-DB-Zeile
-        # und kein Signifikanz-Tracking (siehe genome/order_blocks.py bzw.
-        # strategy/momentum_exit_logic.py -- deren Edge steckt in der Exit-
-        # Mechanik, nicht in einer Gen-Vorhersage) -- ein Upsert mit dem
-        # Platzhalter-"sequence"-String wuerde nur bedeutungslose Einmal-
-        # Zeilen in der Genome-DB erzeugen. Tracker trotzdem aufraeumen.
-        kind = "Momentum-Exit" if active_genome.get('is_momentum_exit') else "OB"
-        logger.info(f"{kind}-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking).")
-        tracker['active_genome'] = None
-        _write_tracker(tracker_path, tracker)
         return
 
     entry_price = active_genome.get('entry_price', 0)
@@ -927,6 +919,43 @@ def self_learn_from_closed_trade(
             actual_move_pct = (entry_price - exit_price) / entry_price * 100
     else:
         actual_move_pct = 0.0
+
+    if active_genome.get('is_momentum_exit'):
+        # Echtes Self-Learning fuer Risiko-/Exit-Gene (siehe genome/
+        # risk_genome_db.py) -- Pendant zu update_genome_with_trade_result()
+        # fuer Kerzenmuster, nur mit Calmar-relevanten Feldern (pnl_pct/sl_pct)
+        # statt Winrate/avg_move.
+        risk_gene_id = active_genome.get('risk_gene_id')
+        sl_price = active_genome.get('sl_price', 0)
+        if risk_db is not None and risk_gene_id and entry_price > 0 and sl_price:
+            sl_pct = abs(entry_price - sl_price) / entry_price * 100.0
+            risk_db.record_trade(
+                risk_gene_id=risk_gene_id,
+                entry_time=active_genome.get('entry_time', datetime.now(timezone.utc).isoformat()),
+                exit_time=datetime.now(timezone.utc).isoformat(),
+                outcome=outcome,
+                pnl_pct=actual_move_pct,
+                sl_pct=sl_pct,
+                source='live',
+            )
+            logger.info(f"[RiskGenomeDB] Gen {risk_gene_id} aktualisiert: {outcome}, "
+                        f"pnl={actual_move_pct:+.2f}%")
+        else:
+            logger.warning("Momentum-Exit-Trade abgeschlossen, aber kein risk_gene_id/sl_price "
+                           "im Tracker -- kein Self-Learning fuer dieses Risiko-Gen.")
+        tracker['active_genome'] = None
+        _write_tracker(tracker_path, tracker)
+        return
+
+    if active_genome.get('is_order_block'):
+        # Order Blocks haben keine Genome-DB-Zeile und kein Signifikanz-
+        # Tracking (siehe genome/order_blocks.py-Docstring) -- ein Upsert mit
+        # dem Platzhalter-"sequence"-String wuerde nur bedeutungslose Einmal-
+        # Zeilen in der Genome-DB erzeugen. Tracker trotzdem aufraeumen.
+        logger.info("OB-Trade abgeschlossen (kein DB-Update, kein Signifikanz-Tracking).")
+        tracker['active_genome'] = None
+        _write_tracker(tracker_path, tracker)
+        return
 
     update_genome_with_trade_result(
         db=db,
@@ -947,6 +976,15 @@ def self_learn_from_closed_trade(
     # Genome aus Tracker löschen (Trade abgeschlossen)
     tracker['active_genome'] = None
     _write_tracker(tracker_path, tracker)
+
+
+def _close_dbs(db: GenomeDB, risk_db: RiskGenomeDB):
+    """Schliesst welche DB-Verbindung(en) auch immer in diesem Zyklus geoeffnet wurden --
+    genome-Strategien nutzen nur `db`, momentum_exit nur `risk_db` (siehe full_trade_cycle)."""
+    if db is not None:
+        db.close()
+    if risk_db is not None:
+        risk_db.close()
 
 
 # ─── Haupt-Trading-Zyklus ─────────────────────────────────────────────────────
@@ -986,17 +1024,31 @@ def full_trade_cycle(
 
     # 2. Signal -- 'momentum_exit'-Strategien (siehe Fund AQ in
     # research_dnabot_direction_calibration.md) nutzen NUR den nicht-
-    # praediktiven Momentum-Signal-Pfad, komplett getrennt vom Genome-System
-    # (kein Genome-DB-Zugriff noetig, kein Mischen zweier unterschiedlicher
-    # Handelslogiken fuer dasselbe Pair/Timeframe).
-    db = GenomeDB(db_path)
+    # praediktiven Momentum-Signal-Pfad, komplett getrennt vom Kerzen-Genome-
+    # System, aber mit einer EIGENEN, lebenden Risiko-Gen-Datenbank
+    # (siehe genome/risk_genome_db.py) -- kein Mischen zweier
+    # unterschiedlicher Handelslogiken fuer dasselbe Pair/Timeframe.
+    db = None
+    risk_db = None
     if params.get('strategy_type') == 'momentum_exit':
-        genome_signal = get_momentum_exit_signal(df, params)
+        risk_db = RiskGenomeDB(RISK_DB_PATH)
+        genome_signal = get_momentum_exit_signal(df, params, db=risk_db)
         if genome_signal:
-            logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()}")
+            # Aktives Risiko-Gen bestimmt live rr_ratio/trailing/risk -- ueberschreibt
+            # die statische settings.json-Konfiguration fuer DIESEN Zyklus (params
+            # wird pro Cronjob-Lauf frisch aus settings.json gebaut, kein Bleed-Over).
+            params = dict(params)
+            params['risk'] = {**params['risk'],
+                               'rr_ratio': genome_signal['gene_rr_ratio'],
+                               'trailing_callback_rate_pct': genome_signal['gene_trailing_pct'],
+                               'risk_per_entry_pct': genome_signal['gene_risk_pct']}
+            logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()} "
+                        f"(Gen {genome_signal['risk_gene_id']})")
         else:
-            logger.info("Kein Momentum-Exit-Signal (deaktiviert, zu wenig Kerzen, oder HIGH_VOL-Regime).")
+            logger.info("Kein Momentum-Exit-Signal (deaktiviert, zu wenig Kerzen, "
+                        "oder kein aktives Risiko-Gen fuer dieses Pair/Timeframe).")
     else:
+        db = GenomeDB(db_path)
         genome_signal = get_genome_signal(df, params, db)
 
         if genome_signal:
@@ -1144,7 +1196,7 @@ def full_trade_cycle(
                 record_trade_result(tracker_path, outcome, logger)
                 try:
                     price_for_learning = fill_price if fill_price else current_price
-                    self_learn_from_closed_trade(tracker_path, db, outcome_label, price_for_learning, logger)
+                    self_learn_from_closed_trade(tracker_path, db, outcome_label, price_for_learning, logger, risk_db=risk_db)
                 except Exception as e:
                     logger.error(f"Self-Learning Fehler: {e}")
                 emoji = "✅" if outcome == 'win' else "🛑"
@@ -1169,14 +1221,14 @@ def full_trade_cycle(
 
         if balance < MIN_NOTIONAL_USDT:
             logger.warning(f"Guthaben zu niedrig ({balance:.2f} USDT).")
-            db.close()
+            _close_dbs(db, risk_db)
             return
 
         if genome_signal is None:
-            logger.info("Kein Genome-Signal → kein Entry.")
-            db.close()
+            logger.info("Kein Signal → kein Entry.")
+            _close_dbs(db, risk_db)
             return
         place_entry_orders(exchange, genome_signal, params, balance, tracker_path, telegram_config, logger, df=df)
 
-    db.close()
+    _close_dbs(db, risk_db)
     logger.info(f"Trade-Zyklus abgeschlossen für {symbol} ({timeframe}).")

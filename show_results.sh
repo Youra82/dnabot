@@ -4,25 +4,40 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-VENV_PATH=".venv/bin/activate"
-
-if [ ! -f "$VENV_PATH" ]; then
+# Plattformuebergreifend (Windows .venv/Scripts UND Unix .venv/bin) --
+# gleiches Muster wie run_pipeline.sh, unveraendertes Verhalten auf Linux.
+if [ -f ".venv/bin/activate" ]; then
+    VENV_PATH=".venv/bin/activate"
+elif [ -f ".venv/Scripts/activate" ]; then
+    VENV_PATH=".venv/Scripts/activate"
+else
     echo -e "${RED}Fehler: .venv nicht gefunden. Erst install.sh ausführen.${NC}"
     exit 1
 fi
+export PYTHONIOENCODING=utf-8
 
 source "$VENV_PATH"
 
+# Windows-venvs liefern kein 'python3'-Kommando (nur 'python') -- nach der
+# Aktivierung pruefen, welches tatsaechlich verfuegbar ist, statt 'python3'
+# hart zu verdrahten (unveraendertes Verhalten auf Linux, wo beides existiert).
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON=python3
+else
+    PYTHON=python
+fi
+
 echo ""
 echo -e "${YELLOW}Wähle einen Analyse-Modus:${NC}"
-echo "  1) Einzel-Backtest               (jedes Pair wird simuliert)"
-echo "  2) Manuelle Portfolio-Simulation (du wählst die Pairs)"
-echo "  3) Automatische Portfolio-Opt.   (Bot wählt das beste Team)"
+echo "  1) Einzel-Backtest               (jedes Pair wird simuliert, Genome-System)"
+echo "  2) Manuelle Portfolio-Simulation (du wählst die Pairs, Genome-System)"
+echo "  3) Automatische Portfolio-Opt.   (Bot wählt das beste Team, Genome-System)"
 echo "  4) Genome Bibliothek             (Top-Patterns + Stats aus der DB)"
 echo "  5) Interaktive Charts            (Candlestick + Entry/Exit-Marker)"
-read -p "Auswahl (1-5) [Standard: 4]: " MODE
+echo "  6) Risiko-Gene (momentum_exit)   (aktive + Kandidaten-Gene pro Pair)"
+read -p "Auswahl (1-6) [Standard: 4]: " MODE
 
-if [[ ! "$MODE" =~ ^[1-5]?$ ]]; then
+if [[ ! "$MODE" =~ ^[1-6]?$ ]]; then
     echo -e "${RED}Ungültige Eingabe. Verwende Standard (4).${NC}"
     MODE=4
 fi
@@ -62,9 +77,9 @@ if [ "$MODE" == "1" ]; then
 
     echo ""
     if [ -z "$COINS_INPUT" ] && [ -z "$TF_INPUT" ]; then
-        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" --all-from-db $DATE_ARGS
+        $PYTHON run_backtest.py --capital "$CAPITAL" --risk "$RISK" --all-from-db $DATE_ARGS
     else
-        python3 run_backtest.py --capital "$CAPITAL" --risk "$RISK" $DATE_ARGS
+        $PYTHON run_backtest.py --capital "$CAPITAL" --risk "$RISK" $DATE_ARGS
     fi
 
     unset DNABOT_OVERRIDE_COINS DNABOT_OVERRIDE_TFS
@@ -95,7 +110,7 @@ elif [ "$MODE" == "2" ]; then
     [ -n "$END_DATE" ] && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
 
     echo ""
-    python3 run_manual_portfolio.py \
+    $PYTHON run_manual_portfolio.py \
         --capital "$CAPITAL" \
         --risk "$RISK" \
         $DATE_ARGS
@@ -110,7 +125,7 @@ elif [ "$MODE" == "3" ]; then
     if ! [[ "$MAX_DD" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then MAX_DD=30; fi
 
     # Default-Startdatum berechnen: backtest_lookback_weeks (rollend) bevorzugt, sonst backtest_start_date
-    DEFAULT_START=$(python3 -c "
+    DEFAULT_START=$($PYTHON -c "
 import json, sys
 from datetime import datetime, timedelta, timezone
 try:
@@ -153,7 +168,7 @@ except Exception:
     fi
 
     echo ""
-    python3 run_portfolio_optimizer.py \
+    $PYTHON run_portfolio_optimizer.py \
         --capital "$CAPITAL" \
         --risk "$RISK" \
         --max-dd "$MAX_DD" \
@@ -164,13 +179,20 @@ except Exception:
 # ─────────────────────────────────────────
 elif [ "$MODE" == "5" ]; then
     echo ""
-    python3 src/dnabot/analysis/show_results.py --mode 4
+    $PYTHON src/dnabot/analysis/show_results.py --mode 4
+
+# ─────────────────────────────────────────
+# Mode 6: Risiko-Gene (momentum_exit)
+# ─────────────────────────────────────────
+elif [ "$MODE" == "6" ]; then
+    echo ""
+    $PYTHON analysis/show_risk_genes.py
 
 # ─────────────────────────────────────────
 # Mode 4: Genome Bibliothek → --mode 1
 # ─────────────────────────────────────────
 else
-    python3 src/dnabot/analysis/show_results.py --mode 1
+    $PYTHON src/dnabot/analysis/show_results.py --mode 1
 fi
 
 deactivate

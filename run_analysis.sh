@@ -17,7 +17,19 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+# Plattformuebergreifend (Windows .venv/Scripts UND Unix .venv/bin) --
+# gleiches Muster wie run_pipeline.sh, unveraendertes Verhalten auf Linux.
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+    VENV_ACTIVATE="$SCRIPT_DIR/.venv/bin/activate"
+elif [ -f "$SCRIPT_DIR/.venv/Scripts/python.exe" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/Scripts/python.exe"
+    VENV_ACTIVATE="$SCRIPT_DIR/.venv/Scripts/activate"
+else
+    echo -e "${RED}FEHLER: .venv nicht gefunden. Erst install.sh ausführen!${NC}"
+    exit 1
+fi
+export PYTHONIOENCODING=utf-8
 NO_TELEGRAM=""
 
 # --no-telegram Flag auswerten
@@ -25,11 +37,7 @@ for arg in "$@"; do
     [[ "$arg" == "--no-telegram" ]] && NO_TELEGRAM="--no-telegram"
 done
 
-if [ ! -f "$PYTHON" ]; then
-    echo -e "${RED}FEHLER: .venv nicht gefunden. Erst install.sh ausführen!${NC}"
-    exit 1
-fi
-source "$SCRIPT_DIR/.venv/bin/activate"
+source "$VENV_ACTIVATE"
 
 # analysis/ im PYTHONPATH damit 'from analysis.utils import *' funktioniert
 export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH}"

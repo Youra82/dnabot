@@ -15,19 +15,20 @@
 # + engen Trailing-Stop, der Gewinner laufen laesst und Verlierer schnell
 # abschneidet -- NICHT in der Auswahl WELCHE Kerze gehandelt wird.
 #
-# Validierte Parameter (6h, siehe Fund AQ): seq_len=5, rr_ratio=1.5,
-# trailing_callback_rate_pct=0.5, risk_per_entry_pct=1.0. NUR 6h ist
-# bisher auf zwei unabhaengigen Fenstern bestaetigt -- 4h/2h/1h zeigten
-# das Muster NICHT (2h/4h leicht negativ, 1h explodierte bei zu hohem
-# Risiko). Deshalb: eigener, expliziter Signal-Pfad statt Erweiterung von
-# genome_logic.py, und standardmaessig deaktiviert (enabled=false) bis
-# der Nutzer es bewusst pro Pair/Timeframe aktiviert.
+# Parameter (seq_len, rr_ratio, trailing_pct, risk_pct) kommen jetzt aus
+# einer LEBENDEN Risiko-Gen-Datenbank (genome/risk_genome_db.py +
+# risk_genome_discover.py + genome/risk_evolver.py) -- Aufbau spiegelt das
+# Kerzen-Genome-System 1:1 (Kandidaten anlegen, per Calmar statt Winrate
+# bewerten, bestes Gen aktivieren, nach jedem Live-Trade weiterlernen), nur
+# ist ein "Gen" hier eine Risiko-/Exit-Parameter-Kombination statt ein
+# Kerzenmuster. NUR 6h ist bisher validiert (siehe Fund AQ) -- 4h/2h/1h
+# brauchen erst einen eigenen Discovery-Lauf, bevor sie ein aktives Gen haben.
 #
-# Kein eigenes Signifikanz-Tracking (wie order_block_logic.py) -- die
-# Strategie behauptet keinen Vorhersage-Edge pro Signal, deshalb kein
-# Score/Winrate-Gate wie bei echten Genomen. Signal-Dict in DERSELBEN Form
-# wie genome_logic.py::_build_signal(), damit es unveraendert durch
-# trade_manager.py::place_entry_orders() laeuft.
+# Kein eigenes Signifikanz-Tracking WIE BEIM KERZEN-System (kein Score/
+# Winrate-Gate pro Signal) -- die Strategie behauptet keinen Vorhersage-Edge
+# beim EINSTIEG, deshalb bleibt die Signal-Selektion selbst ungefiltert.
+# Signal-Dict in DERSELBEN Form wie genome_logic.py::_build_signal(), damit
+# es unveraendert durch trade_manager.py::place_entry_orders() laeuft.
 
 import logging
 
@@ -36,13 +37,20 @@ logger = logging.getLogger(__name__)
 MIN_CANDLES_REQUIRED = 35
 
 
-def get_momentum_exit_signal(df, params) -> dict | None:
+def get_momentum_exit_signal(df, params, db=None) -> dict | None:
     """
     Baut IMMER ein Signal (kein Score-Gate, KEIN Regime-Filter), wenn genug
     Kerzen vorhanden sind -- Richtung = eigene Kerzenrichtung der letzten
     Kerze (Momentum-Fortsetzung, kein Anspruch auf Vorhersage-Edge). Der Edge
     (Fund AQ) steckt in SL-Fenster (seq_len) + Trailing-Callback + RR, nicht
     in der Signal-Selektion selbst.
+
+    db: RiskGenomeDB-Instanz (live) -- das AKTIVE Risiko-Gen fuer dieses
+    Pair/Timeframe wird daraus gelesen (siehe risk_evolver.py). Ohne aktives
+    Gen: KEIN Signal (konservativ -- kein blindes Handeln mit Default-Werten
+    ohne validierte Discovery). db=None (z.B. backtest_momentum_exit.py beim
+    Testen neuer, noch nicht in der DB gespeicherter Parameter): faellt auf
+    die statischen momentum_exit/risk-Params in `params` zurueck.
 
     BEWUSST kein Regime-/HIGH_VOL-Filter hier: der validierte Research-Code
     (recherche/risk_exit_genetic_test.py::build_candidates()) hat JEDE Kerze
@@ -55,11 +63,30 @@ def get_momentum_exit_signal(df, params) -> dict | None:
     if not cfg.get('enabled', False):
         return None
 
-    seq_len = int(cfg.get('seq_len', 5))
+    market = params['market']['symbol']
+    timeframe = params['market']['timeframe']
+
+    risk_gene_id = None
+    if db is not None:
+        active_gene = db.get_active_gene(market, timeframe)
+        if not active_gene:
+            logger.info(f"[Momentum-Exit] Kein aktives Risiko-Gen fuer {market} ({timeframe}) "
+                        f"(noch keine Discovery gelaufen, oder kein Kandidat profitabel) -- kein Signal.")
+            return None
+        seq_len = int(active_gene['seq_len'])
+        rr_ratio = float(active_gene['rr_ratio'])
+        trailing_pct = float(active_gene['trailing_pct'])
+        risk_pct = float(active_gene['risk_pct'])
+        risk_gene_id = active_gene['risk_gene_id']
+    else:
+        seq_len = int(cfg.get('seq_len', 5))
+        rr_ratio = params.get('risk', {}).get('rr_ratio', 1.5)
+        trailing_pct = params.get('risk', {}).get('trailing_callback_rate_pct', 0.5)
+        risk_pct = params.get('risk', {}).get('risk_per_entry_pct', 1.0)
+
     if len(df) < max(seq_len, MIN_CANDLES_REQUIRED):
         return None
 
-    rr_ratio = params.get('risk', {}).get('rr_ratio', 1.5)
     last = df.iloc[-1]
     entry_price = float(last['close'])
     side = 'long' if float(last['close']) >= float(last['open']) else 'short'
@@ -98,16 +125,21 @@ def get_momentum_exit_signal(df, params) -> dict | None:
         "seq_length": seq_len,
         "avg_move_pct": abs(tp_price - entry_price) / entry_price * 100.0,
         "regime": None,
-        # Reuse des bestehenden Skip-Genome-DB-Update-Mechanismus (siehe
-        # trade_manager.py::self_learn_from_closed_trade) -- Momentum-Exit
-        # hat wie Order Blocks keine Genome-DB-Zeile.
+        # Momentum-Exit-Trades landen NICHT in der Kerzen-Genome-DB (kein
+        # Signifikanz-Tracking dort noetig, siehe order_block_logic.py-Analogie) --
+        # stattdessen in der RiskGenomeDB, gesteuert ueber risk_gene_id.
         "is_order_block": True,
         "is_momentum_exit": True,
+        "risk_gene_id": risk_gene_id,
+        "gene_rr_ratio": rr_ratio,
+        "gene_trailing_pct": trailing_pct,
+        "gene_risk_pct": risk_pct,
     }
 
     logger.info(
         f"[Momentum-Exit Signal] {side.upper()} | Entry: {entry_price:.4f} | "
         f"SL: {sl_price:.4f} ({sl_pct:.2f}%) | TP(Trail-Aktivierung): {tp_price:.4f} | "
-        f"seq_len={seq_len} | RR={rr_ratio}"
+        f"seq_len={seq_len} RR={rr_ratio} Trail={trailing_pct}% Risk={risk_pct}% "
+        f"Gen={risk_gene_id or 'statisch/kein DB-Zugriff'}"
     )
     return signal

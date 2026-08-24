@@ -13,41 +13,77 @@ gemeinsame Live-Infrastruktur.
 
 ## Grundidee
 
-Eine ausführliche Recherche-Session (2026-08-24, 44 Funde, dokumentiert in
-`research_dnabot_direction_calibration.md`) hat systematisch geprüft, ob sich
-aus reinem OHLCV-Preis-/Volumenverlauf ein robuster **Richtungs-Edge**
-gewinnen lässt — mit jeder methodisch sinnvollen Herangehensweise: exaktem
-Kerzen-Gen-Sequenz-Lookup (das ursprüngliche Konzept dieses Bots), kontinuier­
-lichen Feature-Modellen, genetischer Suche über den gesamten Feature-Raum,
-Bioinformatik-Motiverkennung und zusätzlichen Kontextachsen (BTC-Zustand,
-Handelssession). **Keiner dieser Ansätze fand einen Richtungs-Edge, der auf
-einem zweiten, unabhängigen Zeitfenster reproduzierte.**
+**Kurzfassung:** Der Bot versucht nicht mehr vorherzusagen, ob der Kurs
+steigt oder fällt. Er folgt einfach der Kerze. Der eigentliche Trick steckt
+komplett im Ausstieg: ein enges, cleveres Stop-Loss/Trailing-Setup, das
+Verlierer schnell abschneidet und Gewinner laufen lässt — und dieses Setup
+wird pro Coin/Timeframe automatisch getestet und laufend weiterlernt, genau
+wie bei einem lebenden Organismus, der Gene weitervererbt, die sich bewährt
+haben.
 
-Der einzige Ansatz, der reproduzierte — und zwar deutlich — dreht die Frage
-um: Statt "welche Kerzensequenz sagt die Richtung vorher?" lautet sie
-"welche Risiko-/Exit-Parameter erzeugen eine positive Kurve, **obwohl** der
-Einstieg selbst keinen Vorhersage-Anspruch hat?" Der Einstieg ist bewusst
-naiv (eigene Kerzenrichtung, reine Momentum-Fortsetzung) — der Edge steckt
-ausschließlich im **Risiko-/Exit-Gen**: einer Kombination aus struktureller
-SL-Fensterlänge, Risk/Reward-Ratio und Trailing-Stop-Callback.
+### Warum die alte Idee (Kerzenmuster erkennen) verworfen wurde
 
-Ein "Gen" ist hier also keine Kerzensequenz mehr, sondern eine Parameter-
-Kombination:
+Die ursprüngliche Idee dieses Bots war: bestimmte Abfolgen von Kerzen
+("Muster") kodieren, in einer Datenbank sammeln und darüber die *Richtung*
+des nächsten Kurses vorhersagen — ähnlich wie ein Fingerabdruck. Eine
+mehrwöchige Recherche-Session (2026-08-24, 44 einzelne Experimente,
+dokumentiert in `research_dnabot_direction_calibration.md`) hat diese Idee
+mit jeder Methode geprüft, die sinnvoll ist: exaktem Muster-Abgleich,
+statistischen Modellen, genetischen Algorithmen, sogar Methoden aus der
+Bioinformatik. Das Ergebnis war jedes Mal dasselbe: **Was auf den
+historischen Daten gut aussah, hat sich auf einem zweiten, bisher
+unberührten Zeitraum nicht bestätigt** — ein klares Zeichen dafür, dass der
+Bot nur Zufall in den alten Daten "gelernt" hatte, keinen echten,
+wiederkehrenden Zusammenhang.
 
-```
-seq_len=5 | rr_ratio=1.5 | trailing_pct=0.5% | risk_pct=1.0%
-   ↓
-Dieses Gen erzielte im In-Sample-Backtest einen Calmar (PnL/MaxDD) von 22.35.
-Auf einem nie zuvor gesehenen Out-of-Sample-Fenster (26 Wochen) bestätigte
-es sich mit Calmar 0.03 (schwach, aber positiv) → bleibt aktiv.
-```
+Ein einziger Ansatz hat sich anders verhalten — und zwar deutlich: er dreht
+die Frage um.
 
-Die Architektur ist bewusst dieselbe wie beim ursprünglichen Kerzen-Genome-
-System (Kandidaten-Datenbank, Evolver, der das beste Gen aktiviert,
-Self-Learning aus echten Live-Ergebnissen) — nur die **Definition** dessen,
-was ein Gen ist, hat sich geändert: von einem Kerzenmuster zu einer
-Risiko-/Exit-Parameter-Kombination. Der Bot handelt jede Kerze, aber nur mit
-den Parametern, die sich für dieses Pair/Timeframe echt bewährt haben.
+![Alter vs. neuer Ansatz](docs/concept_old_vs_new.png)
+
+### Der neue Ansatz: der Edge steckt im Ausstieg, nicht im Einstieg
+
+Statt "welche Kerzenfolge sagt die Richtung vorher?" lautet die Frage jetzt:
+"welche Kombination aus Stop-Loss, Ziel und Trailing-Stop macht eine
+Positionsführung profitabel, *obwohl* der Einstieg selbst keinerlei
+Vorhersage-Anspruch hat?" Der Bot steigt schlicht in Richtung der letzten
+Kerze ein (steigt sie, geht er long; fällt sie, geht er short) — ohne jeden
+Anspruch, damit "richtig" zu liegen. Der ganze Vorteil steckt danach in drei
+Stellschrauben:
+
+- **SL-Fenster:** wie viele der letzten Kerzen bestimmen den Stop-Loss
+- **Risk/Reward-Ratio:** wie weit der Kurs laufen muss, bevor der Trailing-Stop aktiviert wird
+- **Trailing-Callback:** wie eng der Gewinn nachgezogen wird
+
+So sieht das an einem einzelnen Trade aus:
+
+![Trade-Mechanik](docs/concept_trade_mechanics.png)
+
+### Ein "Gen" ist jetzt eine Risiko-Einstellung, kein Kerzenmuster mehr
+
+Die Architektur ist bewusst dieselbe geblieben wie beim ursprünglichen
+Kerzenmuster-System — eine Datenbank mit Kandidaten, ein "Evolver", der den
+besten Kandidaten aktiviert, und laufendes Weiterlernen aus echten
+Live-Ergebnissen. Nur die **Definition** dessen, was ein "Gen" überhaupt ist,
+hat sich geändert:
+
+| | Altes Gen (verworfen) | Neues Gen (aktiv) |
+|---|---|---|
+| Was es ist | Eine Kerzenfolge (z.B. `B3H-UH\|S1L-DL`) | Eine Risiko-Kombination (`seq_len`, `rr_ratio`, `trailing_pct`, `risk_pct`) |
+| Wofür es steht | "Diese Kerzenfolge sagt LONG voraus" | "Dieses SL/Trailing-Setup ist für dieses Pair profitabel" |
+| Wie es bewertet wird | Trefferquote (Winrate) | Calmar-Ratio (PnL im Verhältnis zum Drawdown) |
+
+Damit ein Gen überhaupt live gehandelt wird, muss es zwei Hürden nehmen:
+zuerst gegen 100+ andere Kandidaten auf historischen Daten gewinnen, dann
+sich auf einem Zeitraum bestätigen, den es beim Auswählen noch nie gesehen
+hat. Erst danach gilt es als "aktiv":
+
+![In-Sample / Out-of-Sample Discovery-Prozess](docs/concept_is_oos.png)
+
+Der Bot handelt also jede Kerze — aber immer nur mit den Risiko-Parametern,
+die sich für genau dieses Pair und diesen Timeframe echt bewährt haben. Kein
+aktives Gen für ein Pair → kein Trade, statt mit ungetesteten
+Default-Werten zu raten.
 
 ---
 

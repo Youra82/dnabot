@@ -1,10 +1,20 @@
 # dnabot — Adaptive Market Genome System
 
-Ein selbstlernender Trading-Bot, der Marktbewegungen wie genetische Sequenzen analysiert.
-Keine neuronalen Netze, keine Black-Box — deterministisches statistisches Pattern Discovery.
+Ein selbstlernender Trading-Bot mit **zwei parallelen Strategien**, die dieselbe
+Live-Infrastruktur (Trade-Management, Trailing-Stop, Self-Learning, Telegram)
+teilen, aber auf grundverschiedenen Prinzipien beruhen:
+
+| Strategie | Prinzip | Live-Status (2026-08-24) |
+|---|---|---|
+| **Genome-System** (`genome_logic.py`) | Kerzen als Gen-Sequenzen kodieren, Muster-Datenbank, Richtungsvorhersage | Nach 44 unabhängigen Recherche-Funden (siehe `research_dnabot_direction_calibration.md`) **kein robuster, filterbarer Richtungs-Edge in reinem OHLCV nachweisbar** — Architektur bleibt erhalten (Forschungswert, Self-Learning-Infrastruktur), aber ohne belastbare Live-Erwartung |
+| **momentum_exit** (`momentum_exit_logic.py`) | **Kein** Vorhersage-Anspruch beim Einstieg (einfache Kerzen-Momentum-Fortsetzung) — der Edge steckt gezielt in Risiko-/Exit-Parametern (enges SL-Fenster + enger Trailing-Stop) | **Aktiv** für 7 Paare bei 6h (BTC/XRP/ETH/SOL/ADA/AAVE/DOGE), auf echten Bitget-Daten über die Live-Signalfunktion validiert (siehe unten) |
+
+Keine neuronalen Netze, keine Black-Box — beide Strategien sind deterministisch
+und vollständig nachvollziehbar.
 
 > **Disclaimer:** Diese Software ist experimentell und dient ausschließlich Forschungszwecken.
 > Der Handel mit Kryptowährungen birgt erhebliche finanzielle Risiken. Nutzung auf eigene Gefahr.
+> Backtest-Ergebnisse (auch die unten gezeigten) sind keine Garantie für zukünftige Performance.
 
 ---
 
@@ -42,18 +52,25 @@ Der Bot handelt nur, wenn ein solches Genome im Live-Markt erkannt wird.
 
 ```
 dnabot/
-├── scan_and_learn.py              # Haupt-Lernprozess (Discovery + Evolver)
-├── master_runner.py               # Cronjob-Orchestrator für Live-Trading
-├── run_pipeline.sh                # Vollständige Pipeline (Discovery → Report)
-├── show_results.sh                # Interaktive Analyse & Backtest-Menü
-├── run_analysis.sh                # 20 wissenschaftliche Analysen (Menü, siehe unten)
-├── auto_optimizer_scheduler.py    # Automatischer Wochentimer: Discovery + Portfolio-Opt.
-├── run_backtest.py                # Einzel-Backtest pro Pair
-├── run_portfolio_optimizer.py     # Automatische Portfolio-Optimierung (exhaustive)
-├── run_manual_portfolio.py        # Manuelle Portfolio-Simulation (Pair-Auswahl)
+├── scan_and_learn.py              # Genome: Haupt-Lernprozess (Discovery + Evolver)
+├── master_runner.py               # Cronjob-Orchestrator für Live-Trading (beide Strategien)
+├── run_pipeline.sh                # Genome: Vollständige Pipeline (Discovery → Report)
+│                                     Plattformübergreifend (Windows .venv/Scripts UND Unix .venv/bin)
+├── show_results.sh                # Interaktive Analyse & Backtest-Menü (Genome)
+├── run_analysis.sh                # 20 wissenschaftliche Analysen (Genome-spezifisch, siehe unten)
+├── auto_optimizer_scheduler.py    # Automatischer Wochentimer: Discovery + Portfolio-Opt. (Genome)
+├── run_backtest.py                # Genome: Einzel-Backtest pro Pair
+├── run_portfolio_optimizer.py     # Genome: automatische Portfolio-Optimierung (exhaustive)
+│                                     WICHTIG: bewahrt momentum_exit-Eintraege in active_strategies
+│                                     unveraendert (write_to_settings() greift nur in Genome-Slots ein)
+├── run_manual_portfolio.py        # Genome: manuelle Portfolio-Simulation (Pair-Auswahl)
+├── backtest_momentum_exit.py      # momentum_exit: Backtest ueber die ECHTE Live-Signalfunktion
+│                                     gegen frische Bitget-Daten (kein Nachbau)
+├── run_momentum_exit_pipeline.sh  # momentum_exit: liest active_strategies, backtestet + Fee-Report
 ├── install.sh                     # Erstinstallation auf VPS
-├── update.sh                      # Git-Update (sichert secret.json)
-├── settings.json                  # Konfiguration
+├── update.sh                      # Git-Update (sichert secret.json UND settings.json --
+│                                     Live-Config wird NICHT durch Git ueberschrieben, siehe unten)
+├── settings.json                  # Konfiguration (beide Strategien)
 ├── secret.json                    # API-Keys (nicht in Git)
 │
 └── src/dnabot/
@@ -64,22 +81,28 @@ dnabot/
     │   └── evolver.py             # Scoring + Aktivierung/Deaktivierung
     │
     ├── strategy/
-    │   ├── genome_logic.py        # Aktuelle Kerzen vs. DB → Signal
-    │   └── run.py                 # Entry Point für eine Strategie
+    │   ├── genome_logic.py        # Genome: aktuelle Kerzen vs. DB → Signal
+    │   ├── momentum_exit_logic.py # momentum_exit: Momentum-Einstieg, KEIN Regime-/Score-Filter
+    │   │                            (siehe Fund AQ/AR in research_dnabot_direction_calibration.md)
+    │   └── run.py                 # Entry Point -- strategy_type schaltet zwischen beiden um
     │
     ├── analysis/
-    │   ├── backtester.py          # Historische Simulation
+    │   ├── backtester.py          # Genome: historische Simulation (simulate_trade() wird
+    │   │                            auch von backtest_momentum_exit.py wiederverwendet)
     │   ├── interactive_chart.py   # Plotly Candlestick + Trade-Marker + Equity
-    │   └── show_results.py        # Report: Genome-Library + Backtest
+    │   └── show_results.py        # Report: Genome-Library + Backtest (zeigt BEIDE Strategien,
+    │                                liest einfach alle artifacts/results/backtest_*.json)
     │
     └── utils/
         ├── exchange.py            # Bitget CCXT Wrapper
-        ├── trade_manager.py       # Entry/TP/SL + Self-Learning
+        ├── trade_manager.py       # Entry/TP/SL + Self-Learning, strategy_type-Weiche
+        ├── strategy_overrides.py  # Loest risk_overrides/genome_overrides/momentum_exit_overrides auf
         ├── telegram.py            # Telegram-Benachrichtigungen
         └── guardian.py            # Crash-Schutz Decorator
 
 analysis/                          # Wissenschaftliche Analysen (run_analysis.sh, Menü 1-20)
-├── fee_impact.py, monte_carlo.py, bootstrap_test.py, param_optimizer.py, ...
+├── fee_impact.py, monte_carlo.py, bootstrap_test.py, param_optimizer.py, ...  # Genome-spezifisch
+├── fee_impact_momentum_exit.py    # momentum_exit: isolierte Gebuehren-Analyse (kein Pool mit Genome)
 └── strategy_comparison.py         # Menü 20: WF Re-Opt vs. Alle Configs (Langzeit-Vergleich)
 ```
 
@@ -181,7 +204,131 @@ Nach Trade-Abschluss:
 
 ---
 
+## momentum_exit-Strategie (Risiko-/Exit-Engineering)
+
+### Warum diese Strategie existiert
+
+Eine ausführliche Recherche-Session (2026-08-24, 44 Funde, dokumentiert in
+`research_dnabot_direction_calibration.md`) hat systematisch geprüft, ob sich
+aus reinem OHLCV-Preis-/Volumenverlauf ein robuster **Richtungs-Edge**
+gewinnen lässt — mit jeder methodisch unterschiedlichen Herangehensweise, die
+sinnvoll ist: exakter Gen-Sequenz-Lookup (das Original-Genome-System),
+kontinuierliche Feature-Modelle (logistische Regression, Gradient Boosting),
+Domänen-Ensembles, ein genetischer Algorithmus mit voller Freiheit über den
+gesamten Feature-Raum, echte Bioinformatik-Motiverkennung (Markov-Ketten mit
+Backoff, wie bei der Suche nach Transkriptionsfaktor-Bindestellen), sowie
+zusätzliche unabhängige Informationsachsen (Zustand von BTC als Marktsignal,
+Handelssession/Uhrzeit). **Keiner dieser Ansätze fand einen Richtungs-Edge,
+der auf einem zweiten, unabhängigen Zeitfenster reproduzierte.**
+
+Der einzige Ansatz, der reproduzierte — und zwar deutlich — kehrt die Frage
+um: Statt "welche Kerzensequenz sagt die Richtung vorher?" lautet sie
+"welche Risiko-/Exit-Parameter erzeugen eine positive Kurve, **obwohl** der
+Einstieg selbst keinen Vorhersage-Anspruch hat?" Das ist eine echte
+Parallele zur Gentechnik: nicht länger nach Genen suchen, die zufällig
+Richtung vorhersagen (das hat der genetische Algorithmus bereits erschöpfend
+versucht), sondern gezielt Gene für eine Funktion entwerfen, für die es
+bereits Evidenz gibt.
+
+### Mechanik
+
+```
+Einstieg (KEIN Vorhersage-Anspruch):
+  Richtung = eigene Kerzenrichtung der letzten Kerze (Momentum-Fortsetzung)
+  KEIN Score-Gate, KEIN Regime-Filter -- jede Kerze wird potenziell gehandelt
+
+Exit (HIER steckt der Edge):
+  SL = Low/High der letzten `seq_len` Kerzen (strukturell, eng: seq_len=5)
+  TP-Aktivierung = Entry + rr_ratio × SL-Distanz (moderat: rr_ratio=1.5)
+  Trailing Stop = eng nachgezogen (trailing_callback_rate_pct=0.5%, nativ
+                  über Bitget place_trailing_stop_order, wie beim Genome-System)
+```
+
+Ergebnis-Profil (siehe R-Multiple-Diagnose in Fund AQ): **viele kleine
+Verluste, aber ein Schwanz seltener großer Gewinner** — der enge Trailing-
+Stop lässt eine Position weiterlaufen, solange der Trend hält, und gibt beim
+Umkehren nur wenig zurück. Klassisches Trendfolge-Payoff-Profil.
+
+### Validierte Ergebnisse (echte Live-Signalfunktion, frische Bitget-Daten)
+
+`backtest_momentum_exit.py` simuliert **nicht nach** — es ruft dieselbe
+`get_momentum_exit_signal()`-Funktion auf, die auch live läuft, und dieselbe
+bereits validierte `simulate_trade()`-Ausführung wie das Genome-System
+(inkl. echter Bitget-Gebühren 0.06%/Seite):
+
+| Paar (6h) | Trades (voll) | WR | PF | PnL (voll) | MaxDD | OOS (26W) PnL |
+|---|---|---|---|---|---|---|
+| BTC | 453 | 33.3% | 1.07 | +35.3% | 14.5% | +4.1% |
+| XRP | 445 | 32.6% | 1.30 | +74.8% | 15.5% | +10.1% |
+| ETH | 475 | 29.7% | 0.96 | -5.0% | 32.1% | +0.6% |
+| SOL | 414 | 30.0% | 1.08 | +37.3% | 28.4% | -14.6% |
+| ADA | 463 | 33.9% | 1.21 | +75.6% | 15.2% | +6.7% |
+| AAVE | 430 | 28.6% | 1.05 | +33.0% | 12.6% | +12.9% |
+| DOGE | 437 | 32.0% | 1.17 | +54.2% | 13.8% | -0.9% |
+
+**6/7 Paare positiv über den vollen Zeitraum, 5/7 positiv im ehrlichen
+26-Wochen-OOS-Fenster** (nur SOL klar negativ, DOGE/ETH marginal). Portfolio
+gepoolt (alle 7 Paare, eine gemeinsame Kapitalkurve, 1% Risiko/Trade):
+bei echter Bitget-Gebühr PnL=+833.9%, MaxDD=44.3%, Calmar=18.8,
+**Break-Even-Gebühr erst bei ~0.17%/Seite** (fast dreifache Sicherheitsmarge
+gegenüber der echten 0.06%-Gebühr).
+
+Der 6h-Champion (seq_len=5, rr_ratio=1.5, trailing=0.5%, risk=1%) wurde
+zusätzlich auf einem zweiten, um 26 Wochen zurückverschobenen, unabhängigen
+Fenster geprüft (Walk-Forward-Stil) — er reproduziert dort nicht nur, sondern
+verstärkt sich (siehe `research_dnabot_direction_calibration.md`, Fund AQ).
+
+**Wichtig — nur 6h ist bisher validiert.** 4h/2h zeigten im ursprünglichen
+Research-Test leicht negative Ergebnisse, 1h explodierte, weil der genetische
+Algorithmus dort IS-optimal ein zu hohes Risiko wählte (klassisches Overfitting
+auf Positionsgröße, siehe Fund AN/AQ). Vor einer Aktivierung auf anderen
+Timeframes: erst mit `backtest_momentum_exit.py` neu validieren.
+
+### Konfiguration
+
+`strategy_type: "momentum_exit"` in einem `active_strategies`-Eintrag
+schaltet `trade_manager.py` komplett auf den momentum_exit-Signalpfad um --
+das Genome-System wird für dieses Paar/Timeframe gar nicht mehr angefragt:
+
+```json
+{ "symbol": "BTC/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+  "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+  "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } }
+```
+
+Globaler Schalter (Fallback, falls kein `momentum_exit_overrides.enabled`
+pro Strategie gesetzt ist) in `settings.json`:
+
+```json
+"momentum_exit_settings": { "enabled": false, "seq_len": 5 }
+```
+
+### Backtest & Reporting
+
+```bash
+# Einzelnes Pair, eigene Parameter
+.venv/bin/python3 backtest_momentum_exit.py --symbol BTC/USDT:USDT --timeframe 6h \
+    --capital 1000 --risk 1.0 --rr-ratio 1.5 --trailing-callback-pct 0.5 --seq-len 5 --oos-weeks 26
+
+# Alle momentum_exit-Strategien aus active_strategies, mit GENAU deren Parametern
+./run_momentum_exit_pipeline.sh
+# -> backtestet jedes Pair + isolierte Gebuehren-Impact-Analyse am Ende
+#    (analysis/fee_impact_momentum_exit.py -- NICHT analysis/fee_impact.py,
+#    das poolt alle Strategien inkl. Genome zusammen und ist dadurch irrefuehrend)
+```
+
+> **Selbstlernen:** momentum_exit-Trades schreiben NICHT in die Genome-DB
+> (kein Signifikanz-Tracking wie bei Order Blocks, siehe `is_momentum_exit`-
+> Flag in `trade_manager.py::self_learn_from_closed_trade()`) — der Edge
+> liegt in fest konfigurierten Parametern, nicht in einem lernenden Modell.
+
+---
+
 ## Markt-Regime
+
+> Gilt nur für das **Genome-System**. `momentum_exit` verwendet bewusst
+> keinen Regime-Filter (der validierte Research-Code hatte auch keinen --
+> siehe momentum_exit-Abschnitt oben).
 
 Das System erkennt vier Marktphasen und handelt nur in den erlaubten:
 
@@ -229,7 +376,11 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
     "live_trading_settings": {
         "active_strategies": [
             { "symbol": "BTC/USDT:USDT", "timeframe": "4h", "active": false },
-            { "symbol": "ETH/USDT:USDT", "timeframe": "1h", "active": false }
+            { "symbol": "ETH/USDT:USDT", "timeframe": "1h", "active": false },
+
+            { "symbol": "SOL/USDT:USDT", "timeframe": "6h", "strategy_type": "momentum_exit",
+              "risk_overrides": { "rr_ratio": 1.5, "risk_per_entry_pct": 1.0, "trailing_callback_rate_pct": 0.5 },
+              "momentum_exit_overrides": { "enabled": true, "seq_len": 5 } }
         ]
     },
     "scan_settings": {
@@ -242,6 +393,10 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
         "min_score": 0.08,
         "min_winrate": 0.45,
         "half_life_days": 180
+    },
+    "momentum_exit_settings": {
+        "enabled": false,
+        "seq_len": 5
     },
     "risk_settings": {
         "risk_per_entry_pct": 1.0,
@@ -265,6 +420,12 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
     }
 }
 ```
+
+> `strategy_type` fehlt oder `"genome"` → normales Genome-System.
+> `strategy_type: "momentum_exit"` → siehe eigener Abschnitt oben. Der
+> Auto-Optimizer (`run_portfolio_optimizer.py`) bewahrt momentum_exit-
+> Einträge beim automatischen Neuschreiben von `active_strategies`
+> unverändert -- er wählt nur unter Genome-Strategien.
 
 > **Automatische Ableitung:** `scan_settings`-Felder werden automatisch nach Timeframe gewählt — nichts muss gesetzt werden:
 >
@@ -292,6 +453,8 @@ Eine Zeile pro Genome (eindeutig durch Sequenz + Markt + Timeframe + Richtung):
 | `optimization_settings.enabled` | Automatische wöchentliche Neu-Optimierung ein/aus. |
 | `optimization_settings.schedule` | Wochentag + Uhrzeit + Intervall für den Auto-Optimizer. |
 | `optimization_settings.max_drawdown_pct` | Maximaler erlaubter Drawdown für Portfolio-Auswahl. |
+| `momentum_exit_settings.enabled` | Globaler Fallback für `strategy_type: "momentum_exit"`-Strategien ohne eigenes `momentum_exit_overrides.enabled`. Standard: `false`. |
+| `momentum_exit_settings.seq_len` | Struktureller SL-Rueckblick in Kerzen (Fund AQ 6h-Default: 5). Ueberschreibbar pro Strategie via `momentum_exit_overrides.seq_len`. |
 
 ---
 
@@ -958,6 +1121,20 @@ cd ~/dnabot && .venv/bin/python3 auto_optimizer_scheduler.py --force
 .venv/bin/python3 scan_and_learn.py --symbol BTC/USDT:USDT --timeframe 4h
 ```
 
+#### momentum_exit: Backtest & Gebühren-Check
+
+```bash
+# Alle konfigurierten momentum_exit-Strategien aus settings.json
+./run_momentum_exit_pipeline.sh
+
+# Einzelnes Pair, andere Parameter testen (z.B. neuer Timeframe, noch nicht validiert)
+.venv/bin/python3 backtest_momentum_exit.py --symbol ETH/USDT:USDT --timeframe 4h \
+    --capital 1000 --risk 1.0 --rr-ratio 1.5 --trailing-callback-pct 0.5 --seq-len 5
+
+# Isolierte Gebühren-Analyse (NICHT analysis/fee_impact.py -- das poolt mit Genome-Trades)
+.venv/bin/python3 analysis/fee_impact_momentum_exit.py --capital 1000 --risk 1.0
+```
+
 #### Tests ausführen
 
 ```bash
@@ -1005,11 +1182,19 @@ Danach beim nächsten `./show_results.sh` → Modus 3 findet kein aktives Portfo
 ## Wichtige Regeln
 
 - `secret.json` ist **nicht in Git** — wird von `update.sh` gesichert
+- `settings.json` ist **in Git getrackt, wird aber von `update.sh` NICHT überschrieben**
+  — vor `git reset --hard` gesichert und danach wiederhergestellt (siehe `update.sh`).
+  Das heißt: eine `active_strategies`-Änderung im Repo (z.B. neue momentum_exit-Paare)
+  erreicht den VPS **nicht automatisch** über `./update.sh` — muss dort manuell in
+  die lokale `settings.json` übernommen werden.
 - `artifacts/db/genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
 - `artifacts/tracker/` ist **nicht in Git** — enthält den offenen Trade-Status pro Symbol
-- Immer erst `./run_pipeline.sh` bevor Live-Trading aktiviert wird
+- Immer erst `./run_pipeline.sh` bzw. `./run_momentum_exit_pipeline.sh` bevor Live-Trading aktiviert wird
 - Genome-Discovery wird automatisch wöchentlich wiederholt (Auto-Optimizer)
 - Genome mit weniger als 5 Samples (4h) werden grundsätzlich nicht gehandelt
+- `run_portfolio_optimizer.py` schreibt `active_strategies` neu, lässt dabei aber
+  `strategy_type != "genome"`-Einträge (also `momentum_exit`) unangetastet — sonst
+  würde der wöchentliche Auto-Optimizer sie stillschweigend löschen
 
 ---
 
@@ -1031,57 +1216,27 @@ DNABot ist eine **Genome-basierte Pattern-Strategie** — er kodiert Kerzen als 
 
 Auf 15m/30m sind 4-6 Kerzen nur 1-3 Stunden — zu kurz für statistisch bedeutsame wiederkehrende Muster. Ab 2h deckt eine Sequenz komplette Handelssessions ab. Die Genome-Datenbank braucht außerdem ausreichend historische Kerzen für die Discovery-Phase.
 
-### Coin-Eignung
-
-| Coin | Kerzenmuster-Qualität | Wiederholbarkeit | DB-Datenbasis | Bewertung |
-|---|---|---|---|---|
-| **BTC** | Exzellent — institutionelle Muster | Sehr hoch durch globale Beobachtung | Längste Historie, beste Basis | ✅✅ Beste Wahl |
-| **ETH** | Exzellent — klare, strukturierte Kerzen | Sehr hoch | Sehr gute Datenbasis | ✅✅ Sehr gut |
-| **SOL** | Sehr gut — klare Richtungskerzen | Hoch | Gute Datenbasis ab 2020 | ✅ Gut |
-| **BNB** | Gut — stabile, wiederholende Muster | Gut | Lange Datenbasis | ✅ Gut |
-| **XRP** | Gut — klare Kerzenstruktur | Gut, besonders in Range-Phasen | Sehr lange Datenbasis | ✅ Gut |
-| **AVAX** | Gut — ordentliche Kerzenformen | Mittel-hoch | Ausreichend ab 2020 | ✅ Gut |
-| **LTC** | Gut — BTC-korreliert | Gut | Lange Datenbasis | ✅ Gut |
-| **ATOM** | Gut — sauberes institutionelles Verhalten | Gut | Ausreichend ab 2019 | ✅ Gut |
-| **ETC** | Gut — BTC/ETH-korreliert, diszipliniert | Gut | Lange Datenbasis ab 2016 | ✅ Gut |
-| **BCH** | Gut — BTC-Fork, ähnliche Struktur wie LTC | Gut | Lange Datenbasis ab 2017 | ✅ Gut |
-| **XLM** | Gut — ruhige, wiederholbare Muster | Gut | Sehr lange Datenbasis ab 2014 | ✅ Gut |
-| **ADA** | Mittel — wenig Körper in Seitwärts | Mittel | Gute Datenbasis | ⚠️ Mittel |
-| **ARB** | Mittel — junge Datenbasis | Noch aufbauend | Kurze Datenbasis (ab 2023) | ⚠️ Mittel |
-| **DOT** | Mittel — oft indifferente Kerzen | Gering | Ausreichend | ⚠️ Mittel |
-| **LINK** | Mittel — explosiv in Bull, träge sonst | Ungleichmäßig | Ausreichend | ⚠️ Mittel |
-| **UNI** | Mittel — solide DeFi-Blue-Chip-Struktur | Mittel-hoch | Ausreichend ab 2020 | ⚠️ Mittel |
-| **FIL** | Mittel — brauchbare, wiederkehrende Struktur | Mittel | Ausreichend ab 2020 | ⚠️ Mittel |
-| **NEAR** | Mittel — gute Trendphasen | Mittel-hoch | Ausreichend ab 2020 | ⚠️ Mittel |
-| **HBAR** | Mittel — ruhige institutionelle Muster | Mittel | Ausreichend ab 2019 | ⚠️ Mittel |
-| **VET** | Mittel — oft range-gebunden, gut für Reversal-Genome | Mittel | Ausreichend ab 2018 | ⚠️ Mittel |
-| **ALGO** | Mittel — diszipliniert, technisch sauber | Mittel | Ausreichend ab 2019 | ⚠️ Mittel |
-| **DOGE** | Schlecht — sentiment-getriebene Muster | Niedrig, nicht statistisch | Vorhanden aber unbrauchbar | ❌ Schlecht |
-| **SHIB/PEPE** | Nicht lernbar — Pump-Candles | Keine Wiederholbarkeit | Zu kurze Datenbasis | ❌❌ Nicht geeignet |
-
-> **Hinweis:** `BNB, LTC, ATOM, ETC, XLM, LINK, DOT, UNI, FIL, NEAR, HBAR, VET, ALGO` sind bereits über den Auto-Optimizer in `active_strategies` live — der Optimizer hat unabhängig von dieser Tabelle sehr ähnliche Coins gewählt (bestätigt die Einschätzung). `BTC, ETH, SOL, XRP, ADA, BCH` sind aktuell **nicht** aktiv und lohnen einen expliziten Discovery-Lauf (`scan_and_learn.py --symbol ... --timeframe ...`), da sie noch nicht in der Genome-DB stehen.
-
-### Empfohlene Kombinationen (Ranking)
-
-| Rang | Kombination | Begründung |
-|---|---|---|
-| 🥇 1 | **BTC 4h / 6h** | Beste institutionelle Kerzenmuster, längste Datenbasis für DB |
-| 🥇 1 | **ETH 4h / 6h** | Ähnlich BTC, exzellente Sequenz-Qualität |
-| 🥈 2 | **BTC 2h / ETH 2h** | Mehr Sequenzen für schnelleres DB-Befüllen |
-| 🥉 3 | **SOL 4h** | Klare Directional-Candles, gute Sequenzabdeckung |
-| 4 | **BNB 4h** | Stabile, wiederholende Muster |
-| 4 | **XRP 4h** | Gute Sequenzen in Range- und Trendphasen |
-| 4 | **LTC 4h** | BTC-Muster, gute Datenbasis |
-| 5 | **AVAX 4h** | Gute Bullmarkt-Sequenzen |
-| 6 | **ATOM 4h / 6h** | Sauberes institutionelles Verhalten, live bestätigt |
-| 6 | **ETC 4h / 6h** | Alte, disziplinierte BTC/ETH-korrelierte Struktur |
-| 6 | **BCH 4h** | BTC-Fork, ähnlich robust wie LTC/ETC |
-| 6 | **XLM 2h / 6h** | Ruhige, sehr lange Datenbasis, live bestätigt |
-| 7 | **LINK / DOT / UNI / FIL / NEAR / HBAR / VET / ALGO (2h–6h)** | Solide Zweitwahl, alle bereits live über Auto-Optimizer bestätigt |
-| ❌ | **Alles auf 15m / 30m** | Sequenzen zu kurz, kein statistischer Wert |
-| ❌ | **DOGE / SHIB** | Muster nicht wiederholbar, kein Lerneffekt |
-
-> **Hinweis:** Das Self-Learning greift nach jedem Trade. Je mehr Trades auf einem Coin/TF-Paar, desto besser wird die Genome-DB. BTC 4h liefert die schnellste und zuverlässigste DB-Reife.
+> **Wichtiger Vorbehalt (2026-08-24):** Die obige Tabelle beschreibt nur die
+> *strukturelle* Eignung der Zeitfenster (wie lang eine Sequenz real dauert).
+> Eine frühere Version dieses READMEs enthielt hier zusätzlich eine
+> "Coin-Eignung"-Tabelle mit qualitativen Einschätzungen wie "BTC: exzellente
+> institutionelle Muster" oder "DOGE: sentiment-getrieben, ungeeignet" — diese
+> Einschätzungen waren **nie durch einen Backtest oder eine Signifikanzprüfung
+> belegt**, sondern Plausibilitätsannahmen. Die 44-Funde-Recherche (siehe
+> `research_dnabot_direction_calibration.md`) hat inzwischen systematisch
+> geprüft, ob sich aus Kerzenmustern überhaupt ein Richtungs-Edge gewinnen
+> lässt — **für keinen der getesteten Coins, mit keiner der getesteten
+> Methoden, wurde ein auf einem zweiten Fenster reproduzierender Edge
+> gefunden.** Die Tabelle wurde deshalb entfernt statt mit unbelegten
+> Behauptungen stehen gelassen.
+>
+> Was stattdessen tatsächlich validiert ist: die **momentum_exit-Strategie**
+> (siehe eigener Abschnitt oben) auf 6h für BTC/XRP/ETH/SOL/ADA/AAVE/DOGE —
+> dort mit echten Backtest-Zahlen über die Live-Signalfunktion, nicht mit
+> Plausibilitätsprosa. Wer das Genome-System für einen neuen Coin/Timeframe
+> einsetzen will: erst `./run_pipeline.sh` + `./show_results.sh` → Mode 4
+> laufen lassen und die tatsächlichen Backtest-Zahlen prüfen, statt sich auf
+> eine Tabelle zu verlassen.
 
 
 ---

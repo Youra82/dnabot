@@ -184,7 +184,7 @@ except Exception:
 # ─────────────────────────────────────────
 elif [ "$MODE" == "5" ]; then
     echo ""
-    echo -e "${YELLOW}Noch nicht verfügbar für momentum_exit — kommt in einem separaten Schritt.${NC}"
+    "$PYTHON" analysis/interactive_chart_momentum_exit.py
 
 # ─────────────────────────────────────────
 # Mode 4: Risiko-Gene Bibliothek

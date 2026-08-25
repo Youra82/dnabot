@@ -35,6 +35,10 @@ import json
 import argparse
 from datetime import datetime, timedelta, timezone
 
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from momentum_exit_utils import (
     load_trades, get_telegram, send_photo, load_settings,

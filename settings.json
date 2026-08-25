@@ -3,77 +3,11 @@
     "_note": "active_strategies: welche Coins live getradet werden (momentum_exit). risk_genome_discover.py liest daraus automatisch alle Eintraege mit strategy_type='momentum_exit'.",
     "active_strategies": [
       {
-        "symbol": "BTC/USDT:USDT",
-        "timeframe": "6h",
-        "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
-        "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
-        },
-        "active": true
-      },
-      {
-        "symbol": "XRP/USDT:USDT",
-        "timeframe": "6h",
-        "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
-        "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
-        },
-        "active": true
-      },
-      {
-        "symbol": "ETH/USDT:USDT",
-        "timeframe": "6h",
-        "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
-        "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
-        },
-        "active": true
-      },
-      {
-        "symbol": "SOL/USDT:USDT",
-        "timeframe": "6h",
-        "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
-        "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
-        },
-        "active": true
-      },
-      {
         "symbol": "ADA/USDT:USDT",
-        "timeframe": "6h",
+        "timeframe": "4h",
         "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
         "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
+          "enabled": true
         },
         "active": true
       },
@@ -81,31 +15,16 @@
         "symbol": "AAVE/USDT:USDT",
         "timeframe": "6h",
         "strategy_type": "momentum_exit",
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        },
         "momentum_exit_overrides": {
           "enabled": true,
           "seq_len": 5
         },
-        "active": true
-      },
-      {
-        "symbol": "DOGE/USDT:USDT",
-        "timeframe": "6h",
-        "strategy_type": "momentum_exit",
+        "active": true,
         "risk_overrides": {
           "rr_ratio": 1.5,
           "risk_per_entry_pct": 1.0,
           "trailing_callback_rate_pct": 0.5
-        },
-        "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
-        },
-        "active": true
+        }
       }
     ],
     "_active_strategies_source": "2026-08-24: momentum_exit-Strategie (Fund AQ/AR, siehe Memory research_dnabot_direction_calibration.md) fuer alle 7 recherchierten Pairs bei 6h -- validiert per backtest_momentum_exit.py gegen echte Bitget-Daten ueber die echte Live-Signalfunktion: 6/7 Pairs positiv voller Zeitraum, 5/7 positiv im 26W-OOS-Fenster (SOL OOS -14.6%, DOGE/ETH OOS marginal). User hat explizit alle 7 wie getestet aktiviert."
@@ -116,7 +35,7 @@
     "_note": "Nicht-praediktiver Risiko-/Exit-Signal-Pfad (Fund AQ, 2026-08-24, siehe Memory research_dnabot_direction_calibration.md) -- Richtung = eigene Kerzenrichtung (Momentum-Fortsetzung, kein Vorhersage-Anspruch), Edge steckt in engem SL-Fenster + engem Trailing-Stop statt in Richtungs-Auswahl. NUR 6h auf zwei unabhaengigen Fenstern validiert: seq_len=5, rr_ratio=1.5, risk_per_entry_pct=1.0, trailing_callback_rate_pct=0.5 (per risk_overrides pro Pair/Timeframe in active_strategies setzen, siehe strategy_overrides.py-Docstring-Beispiel). 4h/2h/1h NICHT validiert (4h/2h leicht negativ im Backtest, 1h explodierte bei zu hoher Positionsgroesse -- siehe Fund AQ). Global 'enabled': false -- erst PER PAIR/TIMEFRAME ueber active_strategies[].strategy_type='momentum_exit' bewusst aktivieren, und vorher mit backtest_momentum_exit.py auf frischen Daten pruefen."
   },
   "risk_settings": {
-    "risk_per_entry_pct": 5.0,
+    "risk_per_entry_pct": 2.5,
     "leverage": 5,
     "margin_mode": "isolated",
     "rr_ratio": 2.0,
@@ -124,7 +43,7 @@
   },
   "optimization_settings": {
     "schedule": {
-      "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format). Steuert wie oft auto_optimizer_scheduler.py die Risiko-Gen-Discovery (risk_genome_discover.py) erneut anstoesst.",
+      "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format). Steuert wie oft auto_optimizer_scheduler.py die volle Pipeline anstoesst: Risiko-Gen-Discovery -> Backtest aller discovered Paare -> Portfolio-Optimierung (--auto-write).",
       "day_of_week": 6,
       "hour": 3,
       "minute": 0,
@@ -135,7 +54,10 @@
       }
     },
     "backtest_lookback_weeks": 26,
-    "_backtest_lookback_note": "Dokumentiert die im Projekt etablierte OOS-Fensterkonvention (siehe risk_genome_discover.py::OOS_WEEKS, dort als Konstante hartkodiert, nicht aus dieser Datei gelesen). 26W gewaehlt statt kuerzerer Fenster: kuerzere Fenster hatten mehr Leerwochen (kein Trade) und dadurch kuenstlich hohen Calmar.",
+    "_backtest_lookback_note": "Wird von run_portfolio_optimizer_momentum_exit.py gelesen, um --start-date herzuleiten (rollend: heute - N Wochen), falls nicht explizit per CLI gesetzt. Dokumentiert ausserdem die im Projekt etablierte OOS-Fensterkonvention (risk_genome_discover.py::OOS_WEEKS ist dort separat hartkodiert). 26W statt kuerzerer Fenster: kuerzere Fenster hatten mehr Leerwochen (kein Trade) und dadurch kuenstlich hohen Calmar.",
+    "start_capital": 1000,
+    "max_drawdown_pct": 30,
+    "_max_drawdown_pct_note": "Obergrenze fuer die Team-Auswahl im Portfolio-Optimizer -- er fuegt so lange weitere Coins hinzu, wie das gemeinsame Calmar-Ergebnis steigt UND dieses Limit nicht gerissen wird.",
     "send_telegram_on_completion": true
   }
 }

@@ -2,9 +2,29 @@
 """
 auto_optimizer_scheduler.py
 
-Prüft bei jedem Aufruf ob eine Risiko-Gen-Discovery faellig ist (siehe
-risk_genome_discover.py + genome/risk_genome_db.py, momentum_exit-Strategie)
-und fuehrt sie aus. Sendet Telegram-Benachrichtigungen bei Start und Ende.
+Prüft bei jedem Aufruf ob eine Optimierung faellig ist und fuehrt dann die
+volle momentum_exit-Pipeline aus:
+  1. risk_genome_discover.py       -- Risiko-Gene fuer den VOLLEN Pool
+                                       (POOL_COINS x POOL_TIMEFRAMES = 6h/
+                                       4h/2h/1h, 1d ausgeschlossen) neu
+                                       bewerten (IS/OOS-gated, aktuelles
+                                       26-Wochen-Fenster) -- nicht nur die
+                                       aktuell in active_strategies
+                                       konfigurierten Paare
+  2. backtest_momentum_exit.py     -- JEDES Paar mit einem aktiven Risiko-
+                                       Gen in der DB backtesten (nicht nur
+                                       die aktuell aktiven -- der Optimizer
+                                       braucht den vollen entdeckten Pool,
+                                       um ueberhaupt eine bessere Teilmenge
+                                       finden zu koennen)
+  3. run_portfolio_optimizer_momentum_exit.py --auto-write
+                                    -- waehlt per Greedy-Calmar-Suche (Max-
+                                       Drawdown-limitiert) die beste Teil-
+                                       menge, schreibt active_strategies NUR
+                                       bei echter Verbesserung neu, schickt
+                                       Excel + HTML-Equity-Chart per Telegram
+
+Sendet Telegram-Benachrichtigungen bei Start und Ende.
 
 Aufruf:
   python3 auto_optimizer_scheduler.py           # normale Prüfung
@@ -30,7 +50,19 @@ LAST_RUN_FILE     = os.path.join(CACHE_DIR, '.last_optimization_run')
 IN_PROGRESS_FILE  = os.path.join(CACHE_DIR, '.optimization_in_progress')
 TRIGGER_LOG       = os.path.join(LOG_DIR, 'auto_optimizer_trigger.log')
 
-RISK_GENOME_SCRIPT = os.path.join(PROJECT_ROOT, 'risk_genome_discover.py')
+RISK_GENOME_SCRIPT      = os.path.join(PROJECT_ROOT, 'risk_genome_discover.py')
+BACKTEST_SCRIPT         = os.path.join(PROJECT_ROOT, 'backtest_momentum_exit.py')
+PORTFOLIO_OPTIMIZER_SCRIPT = os.path.join(PROJECT_ROOT, 'run_portfolio_optimizer_momentum_exit.py')
+
+# Voller Coin/Timeframe-Pool fuer die automatisierte Pipeline. 1d bewusst
+# ausgeschlossen (User-Entscheidung 2026-08-25: zu wenige Kerzen im 26-Wochen-
+# Rolling-Fenster fuer eine belastbare Calmar-Schaetzung -- hatte den frueheren
+# Auto-Write-Vorfall ausgeloest, der das etablierte 7x6h-Portfolio durch ein
+# duennes 2x1d-Portfolio ersetzte). 6h/4h/2h/1h duerfen dagegen frei gegen-
+# einander antreten -- der User will bewusst dem aktuellen 26-Wochen-Trend
+# folgen statt einer zusaetzlichen Zwei-Fenster-Bestaetigungs-Huerde.
+POOL_COINS       = ['BTC', 'XRP', 'ETH', 'SOL', 'ADA', 'AAVE', 'DOGE']
+POOL_TIMEFRAMES  = ['6h', '4h', '2h', '1h']
 
 # Plattformuebergreifend wie run_momentum_exit_pipeline.sh: Unix-Layout zuerst
 # pruefen (unveraendertes Verhalten auf dem Linux-VPS), Windows-Fallback fuer
@@ -159,16 +191,114 @@ def _run_risk_genome_discovery() -> int:
     """
     Aktualisiert die Risiko-Gen-Datenbank (momentum_exit-Strategie, siehe
     genome/risk_genome_db.py + Fund AQ/AR in research_dnabot_direction_
-    calibration.md): baut Kandidaten-Risiko-Gene, bewertet sie per Calmar auf
-    einem In-Sample-Fenster, aktiviert das beste per risk_evolver.py und
-    prueft es einmalig auf einem Out-of-Sample-Fenster. Ohne --symbol/
-    --timeframe verarbeitet das Skript automatisch alle momentum_exit-
-    Eintraege aus active_strategies. Kein Fehler wenn es keine gibt.
+    calibration.md) fuer den VOLLEN Pool (POOL_COINS x POOL_TIMEFRAMES, 1d
+    ausgeschlossen) -- nicht nur die aktuell in active_strategies konfigurierten
+    Paare. Jedes Paar bekommt so bei jedem Lauf ein frisches, auf dem aktuellen
+    26-Wochen-Fenster (backtest_lookback_weeks) bewertetes Risiko-Gen, damit
+    der Portfolio-Optimizer wirklich aus dem aktuellen Trend ueber alle vier
+    Timeframes waehlen kann statt aus veralteten/nie neu bewerteten Genen.
     """
-    cmd = [PYTHON_EXE, RISK_GENOME_SCRIPT]
-    _log(f"RISK_GENOME_START cmd={' '.join(cmd)}")
+    failures = 0
+    total = len(POOL_COINS) * len(POOL_TIMEFRAMES)
+    _log(f"RISK_GENOME_START n_pairs={total}")
+    for coin in POOL_COINS:
+        for timeframe in POOL_TIMEFRAMES:
+            market = f"{coin}/USDT:USDT"
+            cmd = [PYTHON_EXE, RISK_GENOME_SCRIPT, '--symbol', market, '--timeframe', timeframe]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                failures += 1
+                _log(f"RISK_GENOME_PAIR_FAILED {market} ({timeframe}) rc={result.returncode}")
+    _log(f"RISK_GENOME_EXIT n_pairs={total} failures={failures}")
+    return 0 if failures < total else 1
+
+
+def _discovered_pairs_with_active_gene():
+    """Alle (market, timeframe)-Paare in risk_genome.db, die gerade ein
+    aktives Risiko-Gen haben -- der volle Pool, aus dem der Portfolio-
+    Optimizer waehlen kann (nicht nur die aktuell in active_strategies
+    konfigurierten). 1d wird hier defensiv rausgefiltert, auch falls die DB
+    noch aeltere 1d-Eintraege enthaelt (siehe POOL_TIMEFRAMES-Kommentar) --
+    ohne dieses Filter koennte ein einzelner, duenner 1d-Ausreisser wieder
+    das ganze Portfolio kippen."""
+    from dnabot.genome.risk_genome_db import RiskGenomeDB
+    db_path = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'risk_genome.db')
+    if not os.path.exists(db_path):
+        return []
+    db = RiskGenomeDB(db_path)
+    try:
+        pairs = []
+        for market, timeframe in db.get_all_market_pairs():
+            if timeframe == '1d':
+                continue
+            gene = db.get_active_gene(market, timeframe)
+            if gene:
+                pairs.append((market, timeframe, gene))
+        return pairs
+    finally:
+        db.close()
+
+
+def _run_backtest_all_discovered(opt_settings: dict) -> int:
+    """
+    Backtestet JEDES Paar mit einem aktiven Risiko-Gen (nicht nur die aktuell
+    in active_strategies konfigurierten) ueber die ECHTE Live-Signalfunktion,
+    jeweils mit dessen EIGENEN Gen-Parametern. run_portfolio_optimizer_
+    momentum_exit.py liest nur vorhandene backtest_*_momentum_exit.json --
+    ohne diesen Schritt haette die Discovery keinerlei Einfluss auf die
+    Portfolio-Auswahl, die wuerde nur mit zufaellig noch vorhandenen, evtl.
+    laengst veralteten Dateien weiterarbeiten.
+    """
+    pairs = _discovered_pairs_with_active_gene()
+    if not pairs:
+        _log("BACKTEST_ALL_SKIP keine Paare mit aktivem Gen")
+        return 0
+
+    capital = str(opt_settings.get('start_capital', 1000))
+    _log(f"BACKTEST_ALL_START n_pairs={len(pairs)} capital={capital}")
+    failures = 0
+    for market, timeframe, gene in pairs:
+        cmd = [
+            PYTHON_EXE, BACKTEST_SCRIPT,
+            '--symbol', market, '--timeframe', timeframe,
+            '--capital', capital,
+            '--risk', str(gene['risk_pct']),
+            '--rr-ratio', str(gene['rr_ratio']),
+            '--trailing-callback-pct', str(gene['trailing_pct']),
+            '--seq-len', str(gene['seq_len']),
+            '--oos-weeks', '26',
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            failures += 1
+            _log(f"BACKTEST_ALL_PAIR_FAILED {market} ({timeframe}) rc={result.returncode}")
+    _log(f"BACKTEST_ALL_EXIT n_pairs={len(pairs)} failures={failures}")
+    return 0 if failures < len(pairs) else 1
+
+
+def _run_portfolio_optimizer(opt_settings: dict) -> int:
+    """
+    Waehlt per Greedy-Calmar-Suche (Max-Drawdown-limitiert) die beste
+    Teilmenge aus allen gerade frisch gebacktesteten Paaren -- pooled NICHT
+    blind alles, sondern stoppt sobald ein weiterer Coin das gemeinsame
+    Ergebnis nicht mehr verbessert oder das Max-Drawdown-Limit reissen wuerde.
+    --auto-write schreibt active_strategies NUR neu, wenn das Ergebnis
+    nachweislich besser ist als das aktuell konfigurierte Portfolio, und
+    erstellt danach automatisch Excel-Trade-Log + HTML-Equity-Chart
+    (per Telegram verschickt, siehe generate_portfolio_equity_chart()/
+    generate_trades_excel() dort).
+    """
+    capital = str(opt_settings.get('start_capital', 1000))
+    max_dd  = str(opt_settings.get('max_drawdown_pct', 30))
+    cmd = [
+        PYTHON_EXE, PORTFOLIO_OPTIMIZER_SCRIPT,
+        '--capital', capital,
+        '--max-dd', max_dd,
+        '--auto-write',
+    ]
+    _log(f"PORTFOLIO_OPTIMIZER_START capital={capital} max_dd={max_dd}")
     result = subprocess.run(cmd)
-    _log(f"RISK_GENOME_EXIT rc={result.returncode}")
+    _log(f"PORTFOLIO_OPTIMIZER_EXIT rc={result.returncode}")
     return result.returncode
 
 
@@ -184,16 +314,27 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
 
     if send_tg:
         _send_telegram(
-            f"🚀 dnabot Risiko-Gen-Discovery GESTARTET\n"
-            f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"🚀 dnabot Auto-Optimizer GESTARTET\n"
+            f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"1. Risiko-Gen-Discovery\n"
+            f"2. Backtest aller discovered Paare\n"
+            f"3. Portfolio-Optimierung (Max-Drawdown-limitiert)"
         )
 
     start_perf = time.time()
     success    = False
 
     try:
-        rc = _run_risk_genome_discovery()
-        success = (rc == 0)
+        rc_discover = _run_risk_genome_discovery()
+        if rc_discover != 0:
+            _log(f"RISK_GENOME_FAILED rc={rc_discover} -- fahre trotzdem mit Backtest/Optimizer fort")
+
+        rc_backtest = _run_backtest_all_discovered(opt_settings)
+        if rc_backtest != 0:
+            _log(f"BACKTEST_ALL_FAILED rc={rc_backtest} -- Portfolio-Optimierung nutzt evtl. unvollstaendige Daten")
+
+        rc_optimize = _run_portfolio_optimizer(opt_settings)
+        success = (rc_optimize == 0)
     except Exception as e:
         _log(f"ERROR {e}")
     finally:
@@ -207,14 +348,16 @@ def run_optimization(schedule: dict, opt_settings: dict, reason: str):
         _log(f"FINISH result=success elapsed_s={elapsed}")
         if send_tg:
             _send_telegram(
-                f"✅ dnabot Risiko-Gen-Discovery abgeschlossen\n"
-                f"Dauer: {_format_elapsed(elapsed)}"
+                f"✅ dnabot Auto-Optimizer abgeschlossen\n"
+                f"Dauer: {_format_elapsed(elapsed)}\n"
+                f"Risiko-Gene aktualisiert, Portfolio geprueft -- "
+                f"settings.json nur bei echter Verbesserung geaendert."
             )
     else:
         _log(f"FINISH result=failed elapsed_s={elapsed}")
         if send_tg:
             _send_telegram(
-                f"❌ dnabot Risiko-Gen-Discovery FEHLGESCHLAGEN\n"
+                f"❌ dnabot Auto-Optimizer FEHLGESCHLAGEN\n"
                 f"Dauer: {_format_elapsed(elapsed)}\n"
                 f"Logs prüfen: {TRIGGER_LOG}"
             )

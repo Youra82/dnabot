@@ -12,6 +12,10 @@ import sys
 import argparse
 from collections import defaultdict
 
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from momentum_exit_utils import all_trades_flat, style_axes, save_send, G, Y, R, NC
 

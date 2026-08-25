@@ -28,6 +28,10 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
@@ -51,22 +55,38 @@ FEE_PCT_PER_SIDE  = 0.06   # Bitget-Taker
 # mit z.B. nur 1-2 Gewinn-Trades sieht dadurch "unendlich gut" aus). Linear
 # interpoliert zwischen kurzen und langen Lookback-Fenstern statt einer
 # festen Schwelle, die niedrigfrequente Pairs bei kurzen Fenstern strukturell
-# ausschliessen wuerde.
+# ausschliessen wuerde. MIN_TRADES_CEIL gilt fuer die 6h-Baseline -- fuer
+# kuerzere Timeframes wird die Schwelle verhaeltnismaessig zur Kerzendichte
+# hochskaliert (siehe TIMEFRAME_HOURS/_timeframe_scale unten): ein 1h-Paar hat
+# im selben 26-Wochen-Fenster ~6x mehr Kerzen als ein 6h-Paar, "10 Trades"
+# waeren dort keine statistisch relevante, sondern eine viel zu laxe Schwelle.
 MIN_TRADES_FLOOR       = 1
 MIN_TRADES_FLOOR_WEEKS = 4.0
 MIN_TRADES_CEIL        = 10
 MIN_TRADES_CEIL_WEEKS  = 26.0
 
+TIMEFRAME_HOURS   = {'1h': 1, '2h': 2, '4h': 4, '6h': 6, '1d': 24}
+BASELINE_TIMEFRAME = '6h'
 
-def scaled_min_trades(lookback_weeks) -> int:
+
+def _timeframe_scale(timeframe) -> float:
+    """Verhaeltnis der Kerzendichte von `timeframe` zur 6h-Baseline (z.B.
+    1h -> 6.0, 2h -> 3.0, 4h -> 1.5, 6h -> 1.0)."""
+    hours = TIMEFRAME_HOURS.get(timeframe, TIMEFRAME_HOURS[BASELINE_TIMEFRAME])
+    return TIMEFRAME_HOURS[BASELINE_TIMEFRAME] / hours
+
+
+def scaled_min_trades(lookback_weeks, timeframe=None) -> int:
     if lookback_weeks is None:
-        return MIN_TRADES_CEIL
-    if lookback_weeks <= MIN_TRADES_FLOOR_WEEKS:
-        return MIN_TRADES_FLOOR
-    if lookback_weeks >= MIN_TRADES_CEIL_WEEKS:
-        return MIN_TRADES_CEIL
-    frac = (lookback_weeks - MIN_TRADES_FLOOR_WEEKS) / (MIN_TRADES_CEIL_WEEKS - MIN_TRADES_FLOOR_WEEKS)
-    return round(MIN_TRADES_FLOOR + frac * (MIN_TRADES_CEIL - MIN_TRADES_FLOOR))
+        base = MIN_TRADES_CEIL
+    elif lookback_weeks <= MIN_TRADES_FLOOR_WEEKS:
+        base = MIN_TRADES_FLOOR
+    elif lookback_weeks >= MIN_TRADES_CEIL_WEEKS:
+        base = MIN_TRADES_CEIL
+    else:
+        frac = (lookback_weeks - MIN_TRADES_FLOOR_WEEKS) / (MIN_TRADES_CEIL_WEEKS - MIN_TRADES_FLOOR_WEEKS)
+        base = MIN_TRADES_FLOOR + frac * (MIN_TRADES_CEIL - MIN_TRADES_FLOOR)
+    return round(base * _timeframe_scale(timeframe))
 
 
 def _get_telegram_credentials():
@@ -149,6 +169,16 @@ def load_all_results(start_date=None, end_date=None):
             trades = filtered
 
         tf = _clean_timeframe(data['timeframe'])
+        if tf == '1d':
+            # 1d strukturell ausgeschlossen (User-Entscheidung 2026-08-25):
+            # zu wenige Kerzen im 26W-Rolling-Fenster fuer eine belastbare
+            # Calmar-Schaetzung -- hatte den frueheren Auto-Write-Vorfall
+            # ausgeloest, der das etablierte 7x6h-Portfolio durch ein duennes
+            # 2x1d-Portfolio ersetzte. Gilt hier statt nur beim Aufrufer
+            # (auto_optimizer_scheduler.py), damit auch alte/manuell erzeugte
+            # backtest_*_1d_momentum_exit.json-Reste nie in die Auswahl
+            # einfliessen koennen.
+            continue
         results.append({
             'market':    data['market'],
             'timeframe': tf,
@@ -253,7 +283,6 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     unterscheiden, zwei aufeinanderfolgende gute Perioden filtern reine
     Glueckstreffer eher raus.
     """
-    min_trades = scaled_min_trades(lookback_weeks)
     prev_results_by_pair = prev_results_by_pair or {}
 
     for r in candidates:
@@ -262,6 +291,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     coin_best: dict = {}
     for r in candidates:
         st = r['filtered_stats']
+        min_trades = scaled_min_trades(lookback_weeks, r.get('timeframe'))
         if st['total_pnl_pct'] <= 0 or st['max_dd'] > max_dd_limit or st['n_trades'] < min_trades:
             continue
         if require_persistence:
@@ -806,7 +836,10 @@ def main():
     print(f"  Ziel: Maximaler Profit bei maximal {args.max_dd:.1f}% Drawdown.{date_range}")
     print(f"  Modell: Gemeinsamer Kapital-Pool — alle Trades kompoundieren zusammen")
     print(f"  Constraint: max. 1 Timeframe pro Coin (Bitget-Regel)")
-    print(f"  Min. Trades/Kandidat: {scaled_min_trades(lookback_weeks)}"
+    _min_trades_tf = ', '.join(
+        f"{tf}={scaled_min_trades(lookback_weeks, tf)}" for tf in ('6h', '4h', '2h', '1h')
+    )
+    print(f"  Min. Trades/Kandidat (Timeframe-proportional): {_min_trades_tf}"
           + (f" (bei {lookback_weeks:.1f} Wochen Lookback)" if lookback_weeks is not None else " (volle Historie)"))
     print(f"  Persistenz:   {'ja -- 2 aufeinanderfolgende gute Perioden verlangt' if args.persistence else 'nein'}")
     print(f"  Gebühr/Seite: {args.fee_pct}% (Ein+Ausstieg pro Trade)")

@@ -178,6 +178,57 @@ class RiskGenomeDB:
         """, (total, wins, total_pnl_pct, max_dd, new_peak, new_equity, calmar, now, now, risk_gene_id))
         self._commit()
 
+    def reset_backtest_occurrences(self, risk_gene_id: str):
+        """Loescht alle 'backtest'-Occurrences eines Gens und baut die Aggregat-
+        Statistik (total_trades/wins/total_pnl_pct/max_dd_pct/peak_equity/equity/
+        calmar) ausschliesslich aus den verbleibenden Occurrences (source='live')
+        neu auf. Echte Live-Trade-Historie bleibt unangetastet.
+
+        Muss vor jedem discover_pair()-Lauf pro Kandidat aufgerufen werden --
+        ohne das haengt ein erneuter Discovery-Lauf fuer dasselbe Pair dieselben
+        historischen Backtest-Trades einfach ERNEUT an (record_trade() haengt
+        immer nur an, dedupliziert nicht) und kompoundiert die Equity auf die
+        bereits kompoundierte Equity des vorherigen Laufs weiter -- macht
+        wiederholte Discovery-Laeufe nicht-idempotent (siehe Memory
+        bugfix_dnabot_risk_gene_discovery_duplication.md: BTC/6h zeigte nach
+        3 Discovery-Laeufen in derselben Session PnL von +59164%%, Calmar 2518).
+        """
+        self._conn.execute(
+            "DELETE FROM risk_gene_occurrences WHERE risk_gene_id = ? AND source = 'backtest'",
+            (risk_gene_id,)
+        )
+        remaining = self._conn.execute(
+            "SELECT outcome, pnl_pct, sl_pct FROM risk_gene_occurrences "
+            "WHERE risk_gene_id = ? ORDER BY entry_time", (risk_gene_id,)
+        ).fetchall()
+        gene_row = self._conn.execute(
+            "SELECT risk_pct FROM risk_genes WHERE risk_gene_id = ?", (risk_gene_id,)
+        ).fetchone()
+        risk_pct = gene_row['risk_pct'] if gene_row else 1.0
+
+        equity, peak, max_dd, total, wins = 100.0, 100.0, 0.0, 0, 0
+        for occ in remaining:
+            sl_pct_safe = max(occ['sl_pct'], 0.01)
+            risk_amount = equity * (risk_pct / 100.0)
+            equity += risk_amount * (occ['pnl_pct'] / sl_pct_safe)
+            peak = max(peak, equity)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - equity) / peak * 100.0)
+            total += 1
+            if occ['outcome'] == 'WIN':
+                wins += 1
+        total_pnl_pct = equity - 100.0
+        calmar = (total_pnl_pct / max_dd) if max_dd > 0 else total_pnl_pct
+        now = datetime.now(timezone.utc).isoformat()
+
+        self._conn.execute("""
+            UPDATE risk_genes
+            SET total_trades = ?, wins = ?, total_pnl_pct = ?, max_dd_pct = ?,
+                peak_equity = ?, equity = ?, calmar = ?, last_updated = ?
+            WHERE risk_gene_id = ?
+        """, (total, wins, total_pnl_pct, max_dd, peak, equity, calmar, now, risk_gene_id))
+        self._commit()
+
     def set_active(self, risk_gene_id: str, active: bool):
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(

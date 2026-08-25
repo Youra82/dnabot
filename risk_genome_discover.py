@@ -119,6 +119,15 @@ def discover_pair(exchange, db: RiskGenomeDB, market: str, timeframe: str, histo
                     trail_frac = trail / 100.0
                     gene_ids = {rp: db.upsert_candidate(market, timeframe, seq_len, rr, trail, rp)
                                 for rp in RISK_CHOICES}
+                    # Bestehende 'backtest'-Occurrences JEDES Kandidaten zuerst
+                    # loeschen -- sonst haengt ein erneuter Discovery-Lauf fuer
+                    # dasselbe Pair dieselben historischen IS-Trades ERNEUT an
+                    # (record_trade() dedupliziert nicht) und die Equity
+                    # kompoundiert auf sich selbst weiter, statt bei jedem
+                    # frischen Discovery-Lauf neutral bei 100 zu starten. Echte
+                    # Live-Trade-Occurrences (source='live') bleiben unangetastet.
+                    for gid in gene_ids.values():
+                        db.reset_backtest_occurrences(gid)
 
                     # NUR IS-Trades fliessen in die Bewertung/Gen-Auswahl ein.
                     is_trades = _run_config(df, seq_len, rr, trail_frac, is_range)

@@ -18,6 +18,9 @@ plotly
 # Excel-Trade-Export (run_manual_portfolio_momentum_exit.py)
 openpyxl
 
+# ADX/ATR fuer die Regime-Analyse (analysis/regime_analysis_momentum_exit.py)
+ta
+
 # SQLite ist in Python built-in — kein Paket nötig
 
 # Testing

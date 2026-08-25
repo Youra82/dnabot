@@ -132,8 +132,52 @@ elif [ "$MODE" == "2" ]; then
 # ─────────────────────────────────────────
 elif [ "$MODE" == "3" ]; then
     echo ""
-    echo -e "${YELLOW}Noch nicht verfügbar für momentum_exit — kommt in einem separaten Schritt.${NC}"
-    echo "Bis dahin: Mode 2 (Manuelle Portfolio-Simulation) für Pair-Auswahl per Hand nutzen."
+    read -p "Gewünschter maximaler Drawdown in % [Standard: 30]: " MAX_DD
+    MAX_DD="${MAX_DD//[$'\r\n ']/}"
+    if ! [[ "$MAX_DD" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then MAX_DD=30; fi
+
+    DEFAULT_START=$("$PYTHON" -c "
+import json
+from datetime import datetime, timedelta, timezone
+try:
+    s = json.load(open('settings.json', encoding='utf-8'))
+    opt = s.get('optimization_settings', {})
+    weeks = opt.get('backtest_lookback_weeks')
+    if weeks:
+        print((datetime.now(timezone.utc) - timedelta(weeks=int(weeks))).strftime('%Y-%m-%d'))
+    else:
+        print('')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+
+    echo ""
+    read -p "Startdatum (JJJJ-MM-TT) [Standard: ${DEFAULT_START:-volle Historie}]: " START_DATE
+    START_DATE="${START_DATE//[$'\r\n ']/}"
+    START_DATE="${START_DATE:-$DEFAULT_START}"
+
+    read -p "Enddatum (JJJJ-MM-TT) [Standard: heute]: " END_DATE
+    END_DATE="${END_DATE//[$'\r\n ']/}"
+
+    read -p "Startkapital in USDT [Standard: 1000]: " CAPITAL
+    CAPITAL="${CAPITAL//[$'\r\n ']/}"
+    if ! [[ "$CAPITAL" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then CAPITAL=1000; fi
+
+    read -p "Persistenz verlangen (2 aufeinanderfolgende gute Perioden statt nur 1)? (j/n) [Standard: aus settings.json]: " PERSIST_INPUT
+    PERSIST_INPUT="${PERSIST_INPUT//[$'\r\n ']/}"
+
+    DATE_ARGS=""
+    [ -n "$START_DATE" ] && DATE_ARGS="$DATE_ARGS --start-date $START_DATE"
+    [ -n "$END_DATE" ]   && DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+    if [[ "$PERSIST_INPUT" == "j" || "$PERSIST_INPUT" == "J" || "$PERSIST_INPUT" == "y" || "$PERSIST_INPUT" == "Y" ]]; then
+        DATE_ARGS="$DATE_ARGS --persistence"
+    fi
+
+    echo ""
+    "$PYTHON" run_portfolio_optimizer_momentum_exit.py \
+        --capital "$CAPITAL" \
+        --max-dd "$MAX_DD" \
+        $DATE_ARGS
 
 # ─────────────────────────────────────────
 # Mode 5: Interaktive Charts

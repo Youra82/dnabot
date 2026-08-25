@@ -498,6 +498,28 @@ Führt alle Pytest-Tests aus (Sicherheitscheck vor dem Live-Betrieb).
 
 Sichert automatisch `secret.json` und `settings.json` vor dem `git reset --hard`.
 
+> **Nach dem allerersten Update auf einem VPS (oder wenn `active_strategies`
+> im Repo geändert wurde):** `./update.sh` bringt zwar neuen Code, aber
+> **nicht** die neuen `active_strategies` — die lokale `settings.json` bleibt
+> unangetastet (siehe "Wichtige Regeln" unten). `./run_pipeline.sh` meldet in
+> diesem Fall `"Keine momentum_exit-Strategien in active_strategies"`. Fix:
+> nur die `active_strategies`-Liste aus dem Repo übernehmen, ohne den Rest
+> der lokalen `settings.json` anzurühren:
+> ```bash
+> cd ~/dnabot
+> git show origin/main:settings.json > /tmp/repo_settings.json
+> .venv/bin/python3 -c "
+> import json
+> local = json.load(open('settings.json', encoding='utf-8'))
+> repo = json.load(open('/tmp/repo_settings.json', encoding='utf-8'))
+> local['live_trading_settings']['active_strategies'] = repo['live_trading_settings']['active_strategies']
+> json.dump(local, open('settings.json', 'w', encoding='utf-8'), indent=2, ensure_ascii=False)
+> "
+> ```
+> Die übernommenen Einträge haben ggf. `"active": true` — vor dem nächsten
+> Cronjob-Lauf prüfen, ob wirklich schon live gehandelt werden soll, sonst
+> vorher auf `"active": false` setzen.
+
 #### Risiko-Gen-Datenbank zurücksetzen
 
 ```bash
@@ -526,7 +548,7 @@ json.dump(s, open('settings.json', 'w', encoding='utf-8'), indent=2, ensure_asci
   — vor `git reset --hard` gesichert und danach wiederhergestellt (siehe `update.sh`).
   Das heißt: eine `active_strategies`-Änderung im Repo (z.B. neue momentum_exit-Paare)
   erreicht den VPS **nicht automatisch** über `./update.sh` — muss dort manuell in
-  die lokale `settings.json` übernommen werden.
+  die lokale `settings.json` übernommen werden (Befehl siehe "Bot aktualisieren" oben).
 - `artifacts/db/risk_genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
   und enthält das gesamte gelernte Wissen (aktive Gene + Trade-Historie)
 - `artifacts/tracker/` ist **nicht in Git** — enthält den offenen Trade-Status pro Symbol

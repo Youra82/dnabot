@@ -91,11 +91,14 @@ Default-Werten zu raten.
 
 ```
 dnabot/
+├── run_pipeline.sh                # Interaktive Pipeline: Discovery → Backtest → Report
+│                                     Plattformübergreifend (Windows .venv/Scripts UND Unix .venv/bin)
 ├── risk_genome_discover.py        # Discovery: Kandidaten-Gene erzeugen, IS/OOS-getrennt
 │                                     bewerten, bestes Gen aktivieren (echte simulate_trade())
 ├── backtest_momentum_exit.py      # Backtest ueber die ECHTE Live-Signalfunktion gegen
 │                                     frische Bitget-Daten (kein Nachbau)
 ├── run_momentum_exit_pipeline.sh  # Liest active_strategies, backtestet jedes Pair + Fee-Report
+├── show_results.sh                # Zeigt den Risiko-Gen-Report (Wrapper um show_risk_genes.py)
 ├── master_runner.py               # Cronjob-Orchestrator fuer Live-Trading
 ├── auto_optimizer_scheduler.py    # Automatischer Wochentimer: stoesst risk_genome_discover.py an
 ├── install.sh                     # Erstinstallation auf VPS
@@ -337,39 +340,35 @@ nano settings.json
 Neuen Eintrag in `active_strategies` anlegen (siehe Konfigurationsbeispiel
 oben) — zunaechst mit `"active": false`, bis die Discovery gelaufen ist.
 
-#### 2. Risiko-Gen-Discovery starten
+#### 2. Pipeline starten
 
 ```bash
-.venv/bin/python3 risk_genome_discover.py
-# oder gezielt fuer ein neues Pair/Timeframe:
+./run_pipeline.sh
+```
+
+Interaktiv: fragt optional Coins/Timeframes ab (leer = alle
+`momentum_exit`-Paare aus `active_strategies`), lässt bei Bedarf die
+Risiko-Gen-Datenbank für einen Neustart löschen, und führt dann aus:
+
+1. **Risiko-Gen-Discovery** (`risk_genome_discover.py`) — lädt historische
+   Daten, testet das Parameter-Raster, wählt per Calmar das beste Gen im
+   In-Sample-Zeitraum und bestätigt es einmalig Out-of-Sample. Nur ein Pair
+   mit einem aktiven Gen wird später tatsächlich gehandelt.
+2. **Backtest & Gebühren-Check** (`run_momentum_exit_pipeline.sh`, optional)
+   — backtestet jedes konfigurierte `momentum_exit`-Pair über die echte
+   Live-Signalfunktion gegen frische Bitget-Daten und hängt eine isolierte
+   Gebühren-/Slippage-Impact-Analyse an.
+3. **Ergebnisse** (`analysis/show_risk_genes.py`) — zeigt pro Pair das
+   aktive Gen (falls vorhanden) und die Top-Kandidaten.
+
+Einzeln aufrufbar, z.B. für ein einzelnes neues Pair/Timeframe:
+
+```bash
 .venv/bin/python3 risk_genome_discover.py --symbol BTC/USDT:USDT --timeframe 6h
+./show_results.sh   # nur der Risiko-Gen-Report
 ```
 
-Laedt historische Daten, testet das Parameter-Raster, waehlt per Calmar das
-beste Gen im In-Sample-Zeitraum und bestaetigt es einmalig Out-of-Sample.
-Nur ein Pair mit einem aktiven Gen wird spaeter tatsaechlich gehandelt.
-
-#### 3. Ergebnisse prüfen
-
-```bash
-.venv/bin/python3 analysis/show_risk_genes.py
-# oder ueber den Wrapper:
-./show_results.sh
-```
-
-Zeigt pro Pair das aktive Gen (falls vorhanden) und die Top-Kandidaten.
-
-#### 4. Backtest & Gebühren-Check
-
-```bash
-./run_momentum_exit_pipeline.sh
-```
-
-Backtestet jedes konfigurierte `momentum_exit`-Pair über die echte
-Live-Signalfunktion gegen frische Bitget-Daten und hängt eine isolierte
-Gebühren-/Slippage-Impact-Analyse an.
-
-#### 5. Strategie live schalten
+#### 3. Strategie live schalten
 
 ```bash
 nano settings.json
@@ -379,7 +378,7 @@ nano settings.json
 { "symbol": "BTC/USDT:USDT", "timeframe": "6h", "active": true }
 ```
 
-#### 6. Cronjob einrichten
+#### 4. Cronjob einrichten
 
 ```bash
 crontab -e
@@ -461,8 +460,11 @@ cd ~/dnabot && .venv/bin/python3 auto_optimizer_scheduler.py --force
 #### Risiko-Gene aktualisieren, Backtest & Gebühren-Check
 
 ```bash
-# Risiko-Gen-Discovery (neu/aktualisieren) -- laeuft automatisch mit dem
-# Scheduler (siehe oben), hier fuer manuelles Anstossen/Testen
+# Interaktive Pipeline (Discovery -> Backtest -> Report), siehe Workflow oben
+./run_pipeline.sh
+
+# Risiko-Gen-Discovery einzeln (neu/aktualisieren) -- laeuft automatisch mit
+# dem Scheduler (siehe oben), hier fuer manuelles Anstossen/Testen
 .venv/bin/python3 risk_genome_discover.py                                        # alle momentum_exit-Paare
 .venv/bin/python3 risk_genome_discover.py --symbol ETH/USDT:USDT --timeframe 4h  # neuer Timeframe/Pair
 
@@ -528,8 +530,8 @@ json.dump(s, open('settings.json', 'w', encoding='utf-8'), indent=2, ensure_asci
 - `artifacts/db/risk_genome.db` ist **nicht in Git** — bleibt nach Updates erhalten
   und enthält das gesamte gelernte Wissen (aktive Gene + Trade-Historie)
 - `artifacts/tracker/` ist **nicht in Git** — enthält den offenen Trade-Status pro Symbol
-- Immer erst `risk_genome_discover.py` + `run_momentum_exit_pipeline.sh` laufen
-  lassen, bevor ein Pair live geschaltet wird
+- Immer erst `./run_pipeline.sh` (Discovery + Backtest + Gebühren-Check)
+  laufen lassen, bevor ein Pair live geschaltet wird
 - Ohne aktives Risiko-Gen für ein Pair/Timeframe wird schlicht nicht gehandelt
   (kein blindes Handeln mit ungetesteten Default-Werten)
 

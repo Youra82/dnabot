@@ -12,6 +12,12 @@ requests==2.31.0
 # Plotting (Entry-Charts, Fee-Impact-Charts)
 matplotlib
 
+# Interaktive Portfolio-Equity-Charts (run_manual_portfolio_momentum_exit.py)
+plotly
+
+# Excel-Trade-Export (run_manual_portfolio_momentum_exit.py)
+openpyxl
+
 # SQLite ist in Python built-in — kein Paket nötig
 
 # Testing

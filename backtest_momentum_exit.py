@@ -11,7 +11,7 @@
 # (siehe feedback_live_backtest_must_match.md).
 #
 # Nutzung:
-#   .venv/Scripts/python.exe backtest_momentum_exit.py --symbol BTC/USDT:USDT --timeframe 6h
+#   .venv/bin/python3 backtest_momentum_exit.py --symbol BTC/USDT:USDT --timeframe 6h
 #
 # Default-Parameter = Fund AQ's validierter 6h-Champion (seq_len=5, rr=1.5,
 # trailing=0.5%, risk=1.0%) -- per CLI ueberschreibbar zum Testen anderer

@@ -6,7 +6,17 @@
 set -e
 export PYTHONIOENCODING=utf-8
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$SCRIPT_DIR/.venv/Scripts/python.exe"
+
+# Plattformuebergreifend (Windows .venv/Scripts UND Unix .venv/bin) --
+# gleiches Muster wie run_pipeline.sh, unveraendertes Verhalten auf Linux.
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+elif [ -f "$SCRIPT_DIR/.venv/Scripts/python.exe" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/Scripts/python.exe"
+else
+    echo "FEHLER: .venv nicht gefunden. Erst install.sh ausführen!"
+    exit 1
+fi
 cd "$SCRIPT_DIR"
 
 STRATS=$("$PYTHON" - << 'PYEOF'

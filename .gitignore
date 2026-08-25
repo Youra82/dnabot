@@ -9,6 +9,7 @@ artifacts/tracker/
 artifacts/results/
 artifacts/db/
 artifacts/tmp/
+artifacts/cache/
 *.log
 .DS_Store
 recherche/

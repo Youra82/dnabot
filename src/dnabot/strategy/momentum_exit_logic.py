@@ -136,6 +136,12 @@ def get_momentum_exit_signal(df, params, db=None) -> dict | None:
         "sl_price": sl_price,
         "sl_pct": sl_pct,
         "tp_price": tp_price,
+        # Zeitstempel der Signal-Kerze (letzte ABGESCHLOSSENE Kerze nach dem
+        # Trim oben) -- trade_manager.py::place_entry_orders() vergleicht das
+        # gegen den zuletzt gehandelten Kerzen-Zeitstempel im Tracker, damit
+        # pro Timeframe-Kerze nur EIN Entry stattfindet (frueher implizit durch
+        # den jetzt entfernten SL-Cooldown sichergestellt, siehe Commit c2bfd2f).
+        "candle_time": df.index[-1].isoformat(),
         "genome_id": f"MOM:{side.upper()}:{df.index[-1].isoformat()}",
         "sequence": f"MOM:{side.upper()}:seq{seq_len}",
         # Kein Signifikanz-Tracking -- Score/Winrate sind neutrale Platzhalter,

@@ -639,6 +639,18 @@ def place_entry_orders(
         logger.info("Kein Signal → kein Trade.")
         return
 
+    # Nur EIN Entry pro Timeframe-Kerze: das Signal bleibt fuer die gesamte
+    # Kerzendauer identisch (Richtung = Kerzen-eigene Richtung), ohne dieses
+    # Gate wuerde jeder Cronjob-Durchlauf innerhalb derselben Kerze erneut
+    # einsteigen -- fruehers durch den inzwischen entfernten SL-Cooldown
+    # (Commit c2bfd2f) implizit verhindert.
+    candle_time = genome_signal.get('candle_time')
+    if candle_time:
+        tracker_pre = read_tracker(tracker_path)
+        if tracker_pre.get('last_entry_candle_time') == candle_time:
+            logger.info(f"Bereits in dieser Kerze gehandelt ({candle_time}) — kein zweiter Entry.")
+            return
+
     if side == 'long' and not params.get('behavior', {}).get('use_longs', True):
         logger.info("Longs deaktiviert.")
         return
@@ -776,6 +788,7 @@ def place_entry_orders(
     tracker['status'] = 'ok_to_trade'
     tracker['last_notified_entry_price'] = actual_entry
     tracker['last_notified_side'] = side
+    tracker['last_entry_candle_time'] = genome_signal.get('candle_time')
     tracker['active_genome'] = {
         "direction": side.upper(),
         "seq_length": genome_signal['seq_length'],
@@ -1078,6 +1091,21 @@ def full_trade_cycle(
             tracker.pop('last_notified_entry_price', None)
             tracker.pop('last_notified_side', None)
             _write_tracker(tracker_path, tracker)
+
+            # Kein Sofort-Reentry im selben Zyklus: housekeeper_routine() hat
+            # gerade erst Cancel-Requests fuer die alten SL/Trailing-Orders
+            # abgeschickt (kein garantiertes sofortiges Settlement auf Bitget-
+            # Seite). Ein place_entry_orders()-Aufruf in DERSELBEN Sekunde kann
+            # dadurch auf einen Exchange-Zustand treffen, in dem die alte
+            # Position/Trigger-Orders noch nicht vollständig abgewickelt sind --
+            # neue Position landet dann faktisch ungeschuetzt bzw. mit stale
+            # Trigger-Preisen (siehe Live-Vorfall AAVE/USDT 2026-08-25). Der
+            # naechste Cronjob-Lauf (wenige Minuten spaeter) prueft ganz normal
+            # erneut auf ein Signal, dann mit garantiert sauberem, abgeschlossenem
+            # Exchange-Zustand.
+            logger.info(f"Trade-Abschluss verarbeitet ({symbol}) — Reentry erst im naechsten Zyklus.")
+            _close_dbs(risk_db)
+            return
 
         balance = exchange.fetch_balance_usdt()
         logger.info(f"Guthaben: {balance:.2f} USDT")

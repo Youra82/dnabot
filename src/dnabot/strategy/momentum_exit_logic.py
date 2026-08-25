@@ -32,6 +32,8 @@
 
 import logging
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 MIN_CANDLES_REQUIRED = 35
@@ -62,6 +64,25 @@ def get_momentum_exit_signal(df, params, db=None) -> dict | None:
     cfg = params.get('momentum_exit', {})
     if not cfg.get('enabled', False):
         return None
+
+    # Letzte Kerze verwerfen, falls sie noch nicht abgeschlossen ist. Live
+    # laeuft der Cronjob alle 15 Min, nicht exakt an Timeframe-Grenzen --
+    # fetch_recent_ohlcv() liefert dann als letzte Zeile oft die gerade erst
+    # laufende, sich noch bewegende Kerze zurueck (Bitget-Verhalten, siehe
+    # exchange.py-Kommentar zu Fehler 40017). risk_genome_discover.py hat das
+    # aktive Gen NIE auf Basis dieser letzten, potenziell unfertigen Kerze
+    # validiert (dortiges IS/OOS-Splitting schliesst sie per range(..., n-1)
+    # explizit aus) -- ohne diesen Trim wuerde live auf einem Datenpunkt
+    # entschieden, den die Discovery nie gesehen hat (feedback_live_backtest_
+    # must_match). Kerzendauer wird aus dem Abstand der letzten zwei Zeilen
+    # abgeleitet statt aus dem Timeframe-String, damit es unabhaengig vom
+    # Aufrufer (live UND Backtest-Fenster) funktioniert. Bei historischen
+    # Backtest-Fenstern ist die "Schlusszeit" laengst in der Vergangenheit --
+    # der Trim greift dort nicht.
+    if len(df) >= 2:
+        candle_interval = df.index[-1] - df.index[-2]
+        if pd.Timestamp.now(tz='UTC') < df.index[-1] + candle_interval:
+            df = df.iloc[:-1]
 
     market = params['market']['symbol']
     timeframe = params['market']['timeframe']

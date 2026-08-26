@@ -39,6 +39,13 @@ def test_setup():
     symbol    = 'PEPE/USDT:USDT'
     timeframe = '4h'
 
+    # Tracker-Datei zuruecksetzen -- sonst blockiert der reentry_lock_until
+    # aus einem vorherigen Testlauf (trade_manager.py::place_entry_orders())
+    # einen erneuten Testlauf innerhalb der Cooldown-Zeit.
+    test_tracker_path = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker', 'test_PEPEUSDTUSDT_4h.json')
+    if os.path.exists(test_tracker_path):
+        os.remove(test_tracker_path)
+
     params = {
         'market': {'symbol': symbol, 'timeframe': timeframe},
         'risk': {

@@ -17,7 +17,7 @@ import os
 import sys
 import ccxt
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
@@ -35,6 +35,21 @@ RISK_DB_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'risk_genome.db')
 
 
 FETCH_LIMIT = 200   # Kerzen für Signal-Berechnung (ATR + Sequenz)
+
+# Timeframe in Minuten -- Basis fuer den Wall-Clock-Reentry-Lock unten.
+_TIMEFRAME_MINUTES = {'1m': 1, '5m': 5, '15m': 15, '30m': 30,
+                       '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720, '1d': 1440}
+
+
+def _reentry_lock_minutes(timeframe: str) -> int:
+    """Sperrdauer nach jedem Entry, unabhaengig von Kerzengrenzen -- gleiches
+    Prinzip wie stbot::set_trade_lock() (dort fix 60 Min, hier proportional
+    zur Timeframe-Laenge: 1/4 der Kerze, min. 15 Min). Faengt Race-Conditions
+    beim schnellen Reentry ab (siehe Live-Vorfall AAVE/USDT 2026-08-25), ohne
+    den naechsten, LEGITIMEN Kerzen-Entry zu blockieren -- die Sperre laeuft
+    immer deutlich vor der naechsten Kerze ab."""
+    candle_minutes = _TIMEFRAME_MINUTES.get(timeframe, 60)
+    return max(15, candle_minutes // 4)
 
 
 # ─── Tracker File Handling ────────────────────────────────────────────────────
@@ -645,11 +660,27 @@ def place_entry_orders(
     # einsteigen -- fruehers durch den inzwischen entfernten SL-Cooldown
     # (Commit c2bfd2f) implizit verhindert.
     candle_time = genome_signal.get('candle_time')
+    tracker_pre = read_tracker(tracker_path)
     if candle_time:
-        tracker_pre = read_tracker(tracker_path)
         if tracker_pre.get('last_entry_candle_time') == candle_time:
             logger.info(f"Bereits in dieser Kerze gehandelt ({candle_time}) — kein zweiter Entry.")
             return
+
+    # Zusaetzlicher Wall-Clock-Reentry-Lock (gleiches Prinzip wie stbot::
+    # is_trade_locked()/set_trade_lock()) -- unabhaengig vom candle_time-Gate
+    # oben: faengt auch Faelle ab, in denen sich der Kerzen-Zeitstempel aus
+    # irgendeinem Grund unterscheidet (z.B. Timeframe-Wechsel, Datenluecke),
+    # aber der letzte Entry erst Sekunden/Minuten her ist.
+    timeframe = params['market']['timeframe']
+    lock_until_str = tracker_pre.get('reentry_lock_until')
+    if lock_until_str:
+        try:
+            lock_until = datetime.fromisoformat(lock_until_str)
+            if datetime.now(timezone.utc) < lock_until:
+                logger.info(f"Reentry-Lock aktiv bis {lock_until_str} — kein Entry.")
+                return
+        except ValueError:
+            pass
 
     if side == 'long' and not params.get('behavior', {}).get('use_longs', True):
         logger.info("Longs deaktiviert.")
@@ -789,6 +820,9 @@ def place_entry_orders(
     tracker['last_notified_entry_price'] = actual_entry
     tracker['last_notified_side'] = side
     tracker['last_entry_candle_time'] = genome_signal.get('candle_time')
+    tracker['reentry_lock_until'] = (
+        datetime.now(timezone.utc) + timedelta(minutes=_reentry_lock_minutes(timeframe))
+    ).isoformat()
     tracker['active_genome'] = {
         "direction": side.upper(),
         "seq_length": genome_signal['seq_length'],

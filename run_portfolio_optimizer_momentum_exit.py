@@ -35,8 +35,11 @@ if sys.platform == 'win32':
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
+from dnabot.genome.risk_genome_db import RiskGenomeDB
+
 RESULTS_DIR   = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, 'settings.json')
+RISK_DB_PATH  = os.path.join(PROJECT_ROOT, 'artifacts', 'db', 'risk_genome.db')
 
 G   = '\033[0;32m'
 Y   = '\033[1;33m'
@@ -48,6 +51,7 @@ NC  = '\033[0m'
 N_WORKERS         = min(os.cpu_count() or 4, 8)
 MAX_NOTIONAL_USDT = 200_000.0
 FEE_PCT_PER_SIDE  = 0.06   # Bitget-Taker
+DEFAULT_RISK_PCT  = 1.0   # Fallback nur falls ausnahmsweise kein aktives Gen fuer ein Paar gefunden wird
 
 # Mindest-Trade-Zahl im Lookback-Fenster, damit ein Kandidat ueberhaupt als
 # Portfolio-Kandidat zaehlt -- unter dieser Zahl ist Calmar nicht belastbar
@@ -130,13 +134,20 @@ def _clean_timeframe(tf: str) -> str:
     return tf[:-len('_momentum_exit')] if tf.endswith('_momentum_exit') else tf
 
 
-def load_all_results(start_date=None, end_date=None):
+def load_all_results(start_date=None, end_date=None, default_risk_pct=DEFAULT_RISK_PCT):
+    """Laedt alle momentum_exit-Backtest-Ergebnisse UND haengt jedem Paar sein
+    EIGENES, aktives Risiko-Gen-Risiko (risk_pct aus RiskGenomeDB) an -- die
+    Portfolio-Simulation nutzt das statt eines einheitlichen Sweep-Werts, damit
+    Backtest und Live-Betrieb (der IMMER das gen-eigene risk_pct verwendet,
+    siehe trade_manager.py::full_trade_cycle()) exakt uebereinstimmen."""
     results = []
     if not os.path.isdir(RESULTS_DIR):
         return results
 
     sd = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc) if start_date else None
     ed = datetime.fromisoformat(end_date + 'T23:59:59').replace(tzinfo=timezone.utc) if end_date else None
+
+    db = RiskGenomeDB(RISK_DB_PATH) if os.path.exists(RISK_DB_PATH) else None
 
     for fname in sorted(os.listdir(RESULTS_DIR)):
         if not fname.startswith('backtest_') or not fname.endswith('_momentum_exit.json'):
@@ -179,22 +190,34 @@ def load_all_results(start_date=None, end_date=None):
             # backtest_*_1d_momentum_exit.json-Reste nie in die Auswahl
             # einfliessen koennen.
             continue
+
+        risk_pct = default_risk_pct
+        if db is not None:
+            gene = db.get_active_gene(data['market'], tf)
+            if gene and gene.get('risk_pct'):
+                risk_pct = float(gene['risk_pct'])
+
         results.append({
             'market':    data['market'],
             'timeframe': tf,
             'coin':      coin_from_symbol(data['market']),
             'trades':    trades,
             'stats':     data.get('stats', {}),
+            'risk_pct':  risk_pct,
         })
 
+    if db is not None:
+        db.close()
     return results
 
 
-def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
+def simulate_portfolio(pair_results: list, capital: float,
                         fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
     """Simuliert ein Portfolio mit GEMEINSAMEM Kapital-Pool -- alle Trades aller
-    Pairs chronologisch zusammengefuehrt, jeder Trade riskiert risk_pct% der
-    AKTUELLEN Equity (Kompoundierung)."""
+    Pairs chronologisch zusammengefuehrt, jeder Trade riskiert das EIGENE
+    risk_pct seines Paares (aus dem aktiven Risiko-Gen, siehe load_all_results())
+    der AKTUELLEN Equity (Kompoundierung) -- kein einheitlicher Sweep-Wert mehr,
+    damit die Simulation exakt dem Live-Verhalten entspricht."""
     if not pair_results:
         return {
             'total_pnl_pct': 0.0, 'final_equity': capital,
@@ -203,6 +226,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
 
     all_trades = []
     for pr in pair_results:
+        pr_risk_pct = pr.get('risk_pct', DEFAULT_RISK_PCT)
         for t in pr['trades']:
             all_trades.append({
                 'market':    pr['market'],
@@ -210,6 +234,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
                 'outcome':   t.get('outcome', 'LOSS'),
                 'pnl_pct':   t.get('pnl_pct', 0.0),
                 'sl_pct':    t.get('sl_pct', 1.0),
+                'risk_pct':  pr_risk_pct,
                 'entry_time': str(t.get('entry_time', '')),
             })
 
@@ -222,7 +247,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
 
     for t in all_trades:
         sl_pct      = max(t['sl_pct'], 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount = min(equity * (t['risk_pct'] / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome     = t['outcome']
 
         if outcome == 'LOSS':
@@ -255,12 +280,9 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
     }
 
 
-def compute_filtered_stats(trades: list, capital: float, risk_pct: float,
+def compute_filtered_stats(pair_result: dict, capital: float,
                             fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
-    return simulate_portfolio(
-        [{'market': '', 'timeframe': '', 'trades': trades}],
-        capital, risk_pct, fee_pct=fee_pct
-    )
+    return simulate_portfolio([pair_result], capital, fee_pct=fee_pct)
 
 
 def _calmar(metrics: dict) -> float:
@@ -270,12 +292,13 @@ def _calmar(metrics: dict) -> float:
     return metrics['total_pnl_pct']
 
 
-def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
+def optimize_portfolio(candidates: list, capital: float,
                         max_dd_limit: float, lookback_weeks=None,
                         require_persistence: bool = False,
                         prev_results_by_pair: dict = None,
                         fee_pct: float = FEE_PCT_PER_SIDE) -> tuple:
     """Greedy-Algorithmus mit Calmar-Ratio-Score. Constraint: max. 1 TF pro Coin.
+    Jedes Paar nutzt sein eigenes, aktives Gen-Risiko (siehe load_all_results()).
 
     require_persistence/prev_results_by_pair: verlangt zusaetzlich, dass ein
     Kandidat auch schon im VORHERIGEN Fenster derselben Laenge profitabel war
@@ -286,7 +309,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     prev_results_by_pair = prev_results_by_pair or {}
 
     for r in candidates:
-        r['filtered_stats'] = compute_filtered_stats(r['trades'], capital, risk_pct, fee_pct=fee_pct)
+        r['filtered_stats'] = compute_filtered_stats(r, capital, fee_pct=fee_pct)
 
     coin_best: dict = {}
     for r in candidates:
@@ -298,7 +321,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
             prev = prev_results_by_pair.get((r['market'], r['timeframe']))
             if not prev or len(prev['trades']) < min_trades:
                 continue
-            prev_stats = compute_filtered_stats(prev['trades'], capital, risk_pct, fee_pct=fee_pct)
+            prev_stats = compute_filtered_stats(prev, capital, fee_pct=fee_pct)
             if prev_stats['total_pnl_pct'] <= 0:
                 continue
         coin  = r['coin']
@@ -313,7 +336,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     eligible.sort(key=lambda r: _calmar(r['filtered_stats']), reverse=True)
 
     best_team    = [eligible[0]]
-    best_metrics = simulate_portfolio(best_team, capital, risk_pct, fee_pct=fee_pct)
+    best_metrics = simulate_portfolio(best_team, capital, fee_pct=fee_pct)
     best_score   = _calmar(best_metrics)
     candidate_pool = eligible[1:]
 
@@ -330,7 +353,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
         current_team = list(best_team)
 
         def _eval(cand, _team=current_team):
-            m = simulate_portfolio(_team + [cand], capital, risk_pct, fee_pct=fee_pct)
+            m = simulate_portfolio(_team + [cand], capital, fee_pct=fee_pct)
             if m['max_dd'] <= max_dd_limit:
                 return cand, m, _calmar(m)
             return cand, None, -1.0
@@ -358,7 +381,7 @@ def optimize_portfolio(candidates: list, capital: float, risk_pct: float,
     return best_metrics, best_team
 
 
-def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
+def print_result(selected: list, pm: dict, capital: float,
                  max_dd_limit: float):
     w = 72
     print(f"\n{'=' * w}")
@@ -372,8 +395,8 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
         return
 
     print(f"\n  {G}Optimales Portfolio — {len(selected)} Coin(s){NC}")
-    print(f"  Kapital: {capital:.0f} USDT | Risiko/Trade: {risk_pct}% (gemeinsamer Pool)")
-    print(f"\n  {'Markt':<24} {'TF':<6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
+    print(f"  Kapital: {capital:.0f} USDT | Risiko: gen-eigen pro Paar (gemeinsamer Kapital-Pool)")
+    print(f"\n  {'Markt':<24} {'TF':<6} {'Risk%':>6} {'Trades':>7} {'WR':>7} {'PnL%':>9} {'MaxDD':>8}")
     print(f"  {'-' * (w - 2)}")
 
     for pr in sorted(selected, key=lambda x: x['filtered_stats']['total_pnl_pct'], reverse=True):
@@ -382,7 +405,7 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
         wr_col  = G if st['win_rate'] >= 0.50 else (Y if st['win_rate'] >= 0.43 else R)
         sign = '+' if st['total_pnl_pct'] >= 0 else ''
         print(
-            f"  {pr['market']:<24} {pr['timeframe']:<6} {st['n_trades']:>7} "
+            f"  {pr['market']:<24} {pr['timeframe']:<6} {pr.get('risk_pct', DEFAULT_RISK_PCT):>5.2f}% {st['n_trades']:>7} "
             f"{wr_col}{st['win_rate']:>6.1%}{NC} "
             f"{pnl_col}{sign}{st['total_pnl_pct']:>7.1f}%{NC} "
             f"{st['max_dd']:>7.1f}%"
@@ -403,7 +426,7 @@ def print_result(selected: list, pm: dict, capital: float, risk_pct: float,
 
 def generate_portfolio_equity_chart(selected: list, pm: dict,
                                      start_date: str, end_date: str,
-                                     capital: float, risk_pct: float,
+                                     capital: float,
                                      fee_pct: float = FEE_PCT_PER_SIDE):
     try:
         import plotly.graph_objects as go
@@ -416,6 +439,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
 
     all_trades = []
     for pr in selected:
+        pr_risk_pct = pr.get('risk_pct', DEFAULT_RISK_PCT)
         for t in pr['trades']:
             all_trades.append({
                 'market':     pr['market'],
@@ -423,6 +447,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
                 'outcome':    t.get('outcome', 'LOSS'),
                 'pnl_pct':    t.get('pnl_pct', 0.0),
                 'sl_pct':     t.get('sl_pct', 1.0),
+                'risk_pct':   pr_risk_pct,
                 'entry_time': str(t.get('entry_time', '')),
             })
     all_trades.sort(key=lambda t: t['entry_time'])
@@ -440,7 +465,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
 
     for t in all_trades:
         sl_pct      = max(t['sl_pct'], 0.01)
-        risk_amount = min(equity * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount = min(equity * (t['risk_pct'] / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         if t['outcome'] == 'WIN':
             wins += 1
         if t['outcome'] == 'LOSS':
@@ -467,13 +492,14 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
     ]
     pair_equity_traces = []
     for idx, pr in enumerate(selected):
+        pr_risk_pct = pr.get('risk_pct', DEFAULT_RISK_PCT)
         pair_trades = sorted(pr['trades'], key=lambda t: str(t.get('entry_time', '')))
         peq    = capital
         ptimes = [str(pair_trades[0].get('entry_time', ''))] if pair_trades else []
         pvals  = [peq]
         for t in pair_trades:
             slp = max(t.get('sl_pct', 1.0), 0.01)
-            ra  = min(peq * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (slp / 100.0))
+            ra  = min(peq * (pr_risk_pct / 100.0), MAX_NOTIONAL_USDT * (slp / 100.0))
             out = t.get('outcome', 'LOSS')
             if out == 'LOSS':
                 p = -ra
@@ -596,7 +622,7 @@ def generate_portfolio_equity_chart(selected: list, pm: dict,
         print(f"  {Y}Telegram nicht konfiguriert — Chart nur lokal gespeichert.{NC}")
 
 
-def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: float,
+def generate_trades_excel(selected: list, pm: dict, capital: float,
                           leverage: int = 1, fee_pct: float = FEE_PCT_PER_SIDE):
     try:
         import openpyxl
@@ -608,6 +634,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
 
     all_trades = []
     for pr in selected:
+        pr_risk_pct = pr.get('risk_pct', DEFAULT_RISK_PCT)
         for t in pr['trades']:
             all_trades.append({
                 'market':     pr['market'],
@@ -617,6 +644,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
                 'outcome':    t.get('outcome', 'LOSS'),
                 'pnl_pct':    t.get('pnl_pct', 0.0),
                 'sl_pct':     t.get('sl_pct', 1.0),
+                'risk_pct':   pr_risk_pct,
                 'entry_time': str(t.get('entry_time', '')),
                 'exit_time':  str(t.get('exit_time', '')),
             })
@@ -627,7 +655,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     for i, t in enumerate(all_trades):
         equity_before = equity
         sl_pct        = max(t['sl_pct'], 0.01)
-        risk_amount   = min(equity_before * (risk_pct / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
+        risk_amount   = min(equity_before * (t['risk_pct'] / 100.0), MAX_NOTIONAL_USDT * (sl_pct / 100.0))
         outcome       = t['outcome']
         if outcome == 'LOSS':
             pnl = -risk_amount
@@ -652,6 +680,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
             'Richtung':              t['direction'],
             'Ergebnis':              ergebnis,
             'Reale Bewegung (%)':    round(t.get('pnl_pct', 0.0), 4),
+            'Risiko (%)':            t['risk_pct'],
             'Riskiert (USDT)':       round(risk_amount, 4),
             'Marge (USDT)':          round(margin, 4),
             'Gebühr (USDT)':         round(fee_cost, 4),
@@ -679,7 +708,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     col_widths = {
         'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12,
         'Richtung': 10, 'Ergebnis': 18, 'Reale Bewegung (%)': 20,
-        'Riskiert (USDT)': 16, 'Marge (USDT)': 14, 'Gebühr (USDT)': 14,
+        'Risiko (%)': 12, 'Riskiert (USDT)': 16, 'Marge (USDT)': 14, 'Gebühr (USDT)': 14,
         'PnL (USDT)': 14, 'Gesamtkapital': 16,
     }
 
@@ -719,7 +748,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
         ('PnL', f"+{pm['total_pnl_pct']:.1f}%"),
         ('Final Equity', f"{pm['final_equity']:.2f} USDT"),
         ('Max Drawdown', f"{pm['max_dd']:.1f}%"),
-        ('Risiko/Trade', f"{risk_pct}%"),
+        ('Risiko/Trade', 'gen-eigen pro Paar, siehe Spalte "Risiko (%)"'),
     ]:
         ws.cell(row=summary_row, column=1, value=label).font = Font(bold=True)
         ws.cell(row=summary_row, column=2, value=value)
@@ -733,7 +762,7 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     return output_file
 
 
-def write_to_settings(selected: list, risk_pct: float = None):
+def write_to_settings(selected: list):
     try:
         with open(SETTINGS_PATH, encoding='utf-8') as f:
             settings = json.load(f)
@@ -765,14 +794,11 @@ def write_to_settings(selected: list, risk_pct: float = None):
 
     settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies
 
-    if risk_pct is not None:
-        settings.setdefault('risk_settings', {})['risk_per_entry_pct'] = risk_pct
-
     try:
         with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
-        risk_info = f" | Risiko/Trade: {risk_pct}%" if risk_pct is not None else ""
-        print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen{risk_info}.{NC}\n")
+        print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen "
+              f"(Risiko: gen-eigen pro Paar).{NC}\n")
         return True
     except Exception as e:
         print(f"{R}Fehler beim Schreiben von settings.json: {e}{NC}")
@@ -846,7 +872,7 @@ def main():
     print(f"{'─' * 72}\n")
 
     print("  Lade momentum_exit-Backtest-Ergebnisse ...", end='', flush=True)
-    all_results = load_all_results(args.start_date, args.end_date)
+    all_results = load_all_results(args.start_date, args.end_date, default_risk_pct=args.risk)
     if not all_results:
         print(f"\n{R}  Keine momentum_exit-Backtest-Ergebnisse gefunden.{NC}")
         print("  Zuerst ./run_momentum_exit_pipeline.sh (oder show_results.sh -> Mode 1) ausführen!\n")
@@ -860,44 +886,33 @@ def main():
     if args.persistence and args.start_date and lookback_weeks:
         sd = datetime.fromisoformat(args.start_date).replace(tzinfo=timezone.utc)
         prev_start = (sd - timedelta(weeks=lookback_weeks)).strftime('%Y-%m-%d')
-        prev_all = load_all_results(prev_start, args.start_date)
+        prev_all = load_all_results(prev_start, args.start_date, default_risk_pct=args.risk)
         prev_results_by_pair = {(r['market'], r['timeframe']): r for r in prev_all}
 
-    risk_levels = [r / 10 for r in range(10, 55, 5)]  # 1.0, 1.5, 2.0, ... 5.0
-    print(f"\n  Suche optimales Risiko ({risk_levels[0]}%–{risk_levels[-1]}%, MaxDD ≤ {args.max_dd:.0f}%)...\n")
+    print(f"\n  Team-Auswahl (Risiko: gen-eigen pro Paar, MaxDD ≤ {args.max_dd:.0f}%)...\n")
 
-    best_metrics = None
-    best_combo   = None
-    best_risk    = args.risk
-    best_equity  = 0.0
-    best_calmar  = -999.0
-
-    for risk_pct in risk_levels:
-        m, combo = optimize_portfolio(with_trades, args.capital, risk_pct, args.max_dd,
-                                       lookback_weeks=lookback_weeks,
-                                       require_persistence=args.persistence,
-                                       prev_results_by_pair=prev_results_by_pair,
-                                       fee_pct=args.fee_pct)
-        if combo and m and m['max_dd'] <= args.max_dd:
-            score = _calmar(m)
-            if score > best_calmar:
-                best_metrics = m
-                best_combo   = combo
-                best_risk    = risk_pct
-                best_equity  = m['final_equity']
-                best_calmar  = score
+    best_metrics, best_combo = optimize_portfolio(
+        with_trades, args.capital, args.max_dd,
+        lookback_weeks=lookback_weeks,
+        require_persistence=args.persistence,
+        prev_results_by_pair=prev_results_by_pair,
+        fee_pct=args.fee_pct,
+    )
 
     if not best_combo:
         best_metrics = {'total_pnl_pct': 0, 'final_equity': args.capital,
                         'max_dd': 0, 'n_trades': 0, 'win_rate': 0}
         best_combo = []
+        best_equity = args.capital
+        best_calmar = -999.0
     else:
         for r in best_combo:
-            r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk,
-                                                           fee_pct=args.fee_pct)
+            r['filtered_stats'] = compute_filtered_stats(r, args.capital, fee_pct=args.fee_pct)
+        best_equity = best_metrics['final_equity']
+        best_calmar = _calmar(best_metrics)
 
-    print(f"\n  {G}Bestes Risiko: {best_risk}% → Calmar: {best_calmar:.2f} | Final Equity: {best_equity:.2f} USDT{NC}\n")
-    print_result(best_combo, best_metrics, args.capital, best_risk, args.max_dd)
+    print(f"\n  {G}Team gefunden: Calmar: {best_calmar:.2f} | Final Equity: {best_equity:.2f} USDT{NC}\n")
+    print_result(best_combo, best_metrics, args.capital, args.max_dd)
 
     if not best_combo:
         sys.exit(0)
@@ -919,9 +934,8 @@ def main():
                     current_pairs.append(match)
             if current_pairs:
                 for r in current_pairs:
-                    r['filtered_stats'] = compute_filtered_stats(r['trades'], args.capital, best_risk,
-                                                                   fee_pct=args.fee_pct)
-                sim = simulate_portfolio(current_pairs, args.capital, best_risk, fee_pct=args.fee_pct)
+                    r['filtered_stats'] = compute_filtered_stats(r, args.capital, fee_pct=args.fee_pct)
+                sim = simulate_portfolio(current_pairs, args.capital, fee_pct=args.fee_pct)
                 current_equity = sim['final_equity']
     except Exception:
         pass
@@ -932,13 +946,13 @@ def main():
 
     settings_updated = False
     if current_equity > 0 and not args.force:
-        print(f"  Aktuelles Portfolio @ {best_risk}%: {current_equity:.2f} USDT")
+        print(f"  Aktuelles Portfolio (gen-eigenes Risiko pro Paar): {current_equity:.2f} USDT")
         if best_equity <= current_equity:
             print(f"  {Y}Neues Ergebnis ({best_equity:.2f} USDT) ist nicht besser → settings.json bleibt unverändert.{NC}\n")
         else:
             print(f"  {G}Verbesserung: {current_equity:.2f} → {best_equity:.2f} USDT → überschreibe settings.json{NC}\n")
             if args.auto_write:
-                write_to_settings(best_combo, best_risk)
+                write_to_settings(best_combo)
                 settings_updated = True
             else:
                 try:
@@ -946,7 +960,7 @@ def main():
                 except (EOFError, KeyboardInterrupt):
                     ans = 'n'
                 if ans in ('j', 'ja', 'y', 'yes'):
-                    write_to_settings(best_combo, best_risk)
+                    write_to_settings(best_combo)
                     settings_updated = True
                 else:
                     print(f"\n{Y}  settings.json wurde NICHT geändert.{NC}\n")
@@ -954,7 +968,7 @@ def main():
         if args.force and current_equity > 0:
             print(f"  {Y}--force: überschreibe settings.json unabhängig vom Vergleich "
                   f"(aktuell {current_equity:.2f} USDT vs. neu {best_equity:.2f} USDT).{NC}\n")
-        write_to_settings(best_combo, best_risk)
+        write_to_settings(best_combo)
         settings_updated = True
 
     if args.auto_write:
@@ -962,14 +976,14 @@ def main():
             _send_telegram(
                 f"dnabot Auto-Optimizer (momentum_exit) — Portfolio aktualisiert\n"
                 f"Equity: {current_equity:.2f} → {best_equity:.2f} USDT (+{((best_equity/max(current_equity,0.01))-1)*100:.1f}%)\n"
-                f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}% | WR: {best_metrics['win_rate']:.1%}\n"
+                f"Risiko: gen-eigen pro Paar | MaxDD: {best_metrics['max_dd']:.1f}% | WR: {best_metrics['win_rate']:.1%}\n"
                 f"Neue Coins:\n{new_pairs_str}"
             )
         else:
             _send_telegram(
                 f"dnabot Auto-Optimizer (momentum_exit) — Keine Änderung\n"
                 f"Neues Portfolio ({best_equity:.2f} USDT) ist nicht besser als aktuelles ({current_equity:.2f} USDT).\n"
-                f"Risiko: {best_risk}% | MaxDD: {best_metrics['max_dd']:.1f}%\n"
+                f"Risiko: gen-eigen pro Paar | MaxDD: {best_metrics['max_dd']:.1f}%\n"
                 f"settings.json bleibt unverändert."
             )
 
@@ -983,10 +997,10 @@ def main():
 
     if do_charts:
         generate_portfolio_equity_chart(
-            best_combo, best_metrics, args.start_date, args.end_date, args.capital, best_risk,
+            best_combo, best_metrics, args.start_date, args.end_date, args.capital,
             fee_pct=args.fee_pct
         )
-        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, best_risk, leverage,
+        excel_file = generate_trades_excel(best_combo, best_metrics, args.capital, leverage,
                                             fee_pct=args.fee_pct)
         if excel_file:
             bot_token, chat_id = _get_telegram_credentials()
@@ -995,7 +1009,7 @@ def main():
                 send_document(
                     bot_token, chat_id, excel_file,
                     caption=f"dnabot momentum_exit Trades-Tabelle | {len(best_combo)} Coins | "
-                            f"Risiko: {best_risk}% | {best_metrics['n_trades']} Trades | "
+                            f"Risiko: gen-eigen pro Paar | {best_metrics['n_trades']} Trades | "
                             f"WR: {best_metrics['win_rate']:.1%} | Final: {best_metrics['final_equity']:.2f} USDT"
                 )
                 print(f"  {G}✓ Excel via Telegram gesendet.{NC}")

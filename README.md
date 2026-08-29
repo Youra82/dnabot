@@ -40,6 +40,11 @@ Ein "Gen" ist hier eine Risiko-Kombination (`seq_len`, `rr_ratio`,
 `trailing_pct`, `risk_pct`) — sie steht dafür, dass dieses SL/Trailing-Setup
 für genau dieses Pair/Timeframe profitabel ist. Bewertet wird per
 Calmar-Ratio (PnL im Verhältnis zum Drawdown), nicht per Trefferquote.
+`risk_pct` ist dabei Teil der internen Bewertung (siehe Discovery-Raster
+unten), bestimmt aber **nicht** die tatsächliche Positionsgröße live — die
+kommt zentral aus `settings.json` und gilt einheitlich für alle Strategien
+(siehe Abschnitt "Konfiguration" weiter unten). Nur `seq_len`, `rr_ratio`
+und `trailing_pct` (die SL/TP-Mechanik) werden live vom Gen übernommen.
 
 Damit ein Gen überhaupt live gehandelt wird, muss es zwei Hürden nehmen:
 zuerst gegen 100+ andere Kandidaten auf historischen Daten gewinnen, dann
@@ -167,10 +172,16 @@ risk_genome_discover.py               — erzeugt Kandidaten-Gene aus einem fest
 
 `get_momentum_exit_signal(df, params, db)` liest live das **aktive** Gen fuer
 das jeweilige Pair/Timeframe aus der DB und nutzt dessen `seq_len`/`rr_ratio`/
-`trailing_pct`/`risk_pct` fuer JEDEN Trade. Nach jedem geschlossenen Trade
-schreibt `trade_manager.py::self_learn_from_closed_trade()` das Ergebnis
-zurueck in `risk_gene_occurrences` (`source='live'`) -- das aktive Gen lernt
-laufend aus echten Ergebnissen.
+`trailing_pct` fuer JEDEN Trade (SL/TP-Mechanik). `risk_pct` aus dem Gen wird
+NICHT fuer die Positionsgroesse verwendet -- die kommt zentral aus
+`settings.json` (`risk_settings`/`risk_overrides`, siehe unten), einheitlich
+fuer alle Strategien. Grund: die einzelne Gen-Discovery hat kein Drawdown-
+Limit und waehlt empirisch immer den Rand des getesteten `RISK_CHOICES`-
+Rasters -- kein echtes inneres Optimum. Der Portfolio-Optimizer hat durch
+das teamweite `max_dd_limit` dagegen eine echte, sinnvolle Grenze. Nach
+jedem geschlossenen Trade schreibt `trade_manager.py::self_learn_from_
+closed_trade()` das Ergebnis zurueck in `risk_gene_occurrences`
+(`source='live'`) -- das aktive Gen lernt laufend aus echten Ergebnissen.
 
 **Kein aktives Gen fuer ein Pair/Timeframe → kein Signal, kein Trade**
 (konservativ: kein blindes Handeln mit Default-Werten ohne validierte
@@ -239,11 +250,11 @@ schlicht nicht gehandelt, statt mit ungetesteten Default-Werten zu raten.
 | Parameter | Erklärung |
 |---|---|
 | `active_strategies[].active` | Muss `true` sein, sonst überspringt `master_runner.py` das Pair stillschweigend. |
-| `active_strategies[].risk_overrides` | Fallback-Werte, falls (noch) kein aktives Risiko-Gen in der DB existiert. Im Live-Betrieb überschreibt das aktive Gen diese Werte pro Trade. |
+| `active_strategies[].risk_overrides` | Pro-Strategie-Override. `rr_ratio`/`trailing_callback_rate_pct` sind reine Fallback-Werte (das aktive Gen überschreibt sie live pro Trade, sobald eins existiert). `risk_per_entry_pct` wird dagegen **nicht** vom Gen überschrieben — es bestimmt live tatsächlich die Positionsgröße, siehe unten. |
 | `active_strategies[].momentum_exit_overrides.enabled` | Pro-Strategie-Schalter, überschreibt den globalen `momentum_exit_settings.enabled`-Fallback. |
-| `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade (Fallback, siehe oben). |
-| `rr_ratio` | Risk-Reward-Ratio — bestimmt Aktivierungspreis des Trailing Stops (Fallback). |
-| `trailing_callback_rate_pct` | Trailing Stop Callback in % (Fallback). |
+| `risk_per_entry_pct` | % des Guthabens als Risiko pro Trade — global (`risk_settings`) oder pro Pair (`risk_overrides`). Wird vom Portfolio-Optimizer zentral gesetzt (`run_portfolio_optimizer_momentum_exit.py`, 1.0–5.0%-Sweep unter dem `max_dd_limit`) und gilt einheitlich für alle Strategien, unabhängig vom jeweiligen Risiko-Gen. |
+| `rr_ratio` | Risk-Reward-Ratio — bestimmt Aktivierungspreis des Trailing Stops (Fallback, siehe oben). |
+| `trailing_callback_rate_pct` | Trailing Stop Callback in % (Fallback, siehe oben). |
 | `optimization_settings.schedule` | Wochentag + Uhrzeit + Intervall für den Auto-Optimizer. |
 | `optimization_settings.backtest_lookback_weeks` | Dokumentiert die OOS-Fensterkonvention (26W) — `risk_genome_discover.py::OOS_WEEKS` ist der tatsächliche, hartkodierte Wert. Wird zusätzlich von `run_portfolio_optimizer_momentum_exit.py` gelesen, um `--start-date` herzuleiten. |
 | `optimization_settings.start_capital` / `max_drawdown_pct` | Kapitalbasis und Drawdown-Obergrenze für die automatische Portfolio-Auswahl. |

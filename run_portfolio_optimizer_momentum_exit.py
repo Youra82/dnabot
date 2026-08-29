@@ -759,8 +759,16 @@ def write_to_settings(selected: list, risk_pct: float = None):
             "momentum_exit_overrides": old.get('momentum_exit_overrides', {"enabled": True}),
             "active": True,
         }
-        if old.get('risk_overrides'):
-            entry['risk_overrides'] = old['risk_overrides']
+        # risk_per_entry_pct NIE aus alten risk_overrides uebernehmen -- das
+        # zentral vom Optimizer gefundene Risiko (risk_settings.risk_per_
+        # entry_pct unten) soll fuer ALLE Strategien einheitlich gelten,
+        # sonst wuerde ein frueher manuell gesetztes Pair-Override das
+        # weiterhin blockieren. Andere Overrides (margin_mode, use_longs/
+        # use_shorts) bleiben erhalten.
+        old_risk_ov = {k: v for k, v in (old.get('risk_overrides') or {}).items()
+                        if k != 'risk_per_entry_pct'}
+        if old_risk_ov:
+            entry['risk_overrides'] = old_risk_ov
         new_strategies.append(entry)
 
     settings.setdefault('live_trading_settings', {})['active_strategies'] = new_strategies

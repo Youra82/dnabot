@@ -952,14 +952,23 @@ def full_trade_cycle(
     risk_db = RiskGenomeDB(RISK_DB_PATH)
     genome_signal = get_momentum_exit_signal(df, params, db=risk_db)
     if genome_signal:
-        # Aktives Risiko-Gen bestimmt live rr_ratio/trailing/risk -- ueberschreibt
-        # die statische settings.json-Konfiguration fuer DIESEN Zyklus (params
-        # wird pro Cronjob-Lauf frisch aus settings.json gebaut, kein Bleed-Over).
+        # Aktives Risiko-Gen bestimmt live rr_ratio/trailing (SL/TP-Mechanik,
+        # strukturell an das jeweilige Gen gebunden) -- ueberschreibt die
+        # statische settings.json-Konfiguration fuer DIESEN Zyklus (params wird
+        # pro Cronjob-Lauf frisch aus settings.json gebaut, kein Bleed-Over).
+        # risk_per_entry_pct kommt bewusst NICHT vom Gen: die einzelne Gen-
+        # Discovery hat kein Drawdown-Limit und waehlt strukturell immer den
+        # Rand des getesteten RISK_CHOICES-Rasters (empirisch belegt: Calmar
+        # steigt bei jeder Parameter-Kombination monoton mit risk_pct, kein
+        # echtes inneres Optimum im getesteten Bereich). Die Positionsgroesse
+        # wird stattdessen zentral vom Portfolio-Optimizer bestimmt (echter
+        # max_dd_limit-Constraint auf Team-Ebene) und via risk_settings/
+        # risk_overrides in settings.json vorgegeben -- gilt einheitlich fuer
+        # alle Strategien, siehe run_portfolio_optimizer_momentum_exit.py.
         params = dict(params)
         params['risk'] = {**params['risk'],
                            'rr_ratio': genome_signal['gene_rr_ratio'],
-                           'trailing_callback_rate_pct': genome_signal['gene_trailing_pct'],
-                           'risk_per_entry_pct': genome_signal['gene_risk_pct']}
+                           'trailing_callback_rate_pct': genome_signal['gene_trailing_pct']}
         logger.info(f"Momentum-Exit Signal: {genome_signal['side'].upper()} "
                     f"(Gen {genome_signal['risk_gene_id']})")
     else:

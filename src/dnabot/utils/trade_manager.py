@@ -749,6 +749,28 @@ def place_entry_orders(
     actual_entry = float(pos_info.get('entryPrice') or entry_price)
     logger.info(f"Position bestätigt: {side.upper()} {actual_contracts:.6f} Kontr. @ {actual_entry:.4f}")
 
+    # Trailing-Aktivierungspreis an den ECHTEN Fill-Preis anpassen: sl_price ist
+    # strukturell (Low/High des seq_len-Fensters, unabhaengig vom Entry) und bleibt
+    # unveraendert, aber tp_price wurde relativ zum THEORETISCHEN Signal-Entry
+    # (Kerzenschluss zum Signalzeitpunkt) berechnet. Weicht der echte Market-Order-
+    # Fill davon ab (Slippage/Zeitverzug bis zur Ausfuehrung), verschiebt sich sonst
+    # das tatsaechlich realisierte R:R relativ zum Gen-Wert -- Neuberechnung mit dem
+    # echten Entry haelt das Ziel-R:R korrekt (siehe Live-Vorfall XRP/USDT 2026-08-26:
+    # Entry driftete von 1.4114 auf 1.3716, reales R:R fiel von 1:1.5 auf 1:0.83).
+    rr_ratio = risk.get('rr_ratio', 2.0)
+    sl_distance_actual = abs(actual_entry - sl_price)
+    if side == 'long':
+        tp_price = actual_entry + rr_ratio * sl_distance_actual
+    else:
+        tp_price = actual_entry - rr_ratio * sl_distance_actual
+
+    # genome_signal synchron halten -- Entry-Chart und Tracker lesen direkt aus
+    # dem Dict, nicht aus den lokalen Variablen. Ohne das wuerde der Chart
+    # weiterhin den theoretischen (nicht den echten) Entry- und Trail-Preis
+    # zeigen (siehe Live-Chart XRP/USDT 2026-08-26, wo genau das auffiel).
+    genome_signal['entry_price'] = actual_entry
+    genome_signal['tp_price'] = tp_price
+
     # 3. SL und Trailing Stop mit echten Kontrakten platzieren
     try:
         sl_order = exchange.place_trigger_market_order(symbol, sl_side, actual_contracts, sl_price, reduce=True)

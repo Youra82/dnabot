@@ -650,6 +650,18 @@ def place_entry_orders(
         if tracker_pre.get('last_entry_candle_time') == candle_time:
             logger.info(f"Bereits in dieser Kerze gehandelt ({candle_time}) — kein zweiter Entry.")
             return
+        # Backtest-Paritaet (backtest_momentum_exit.py: `if i <= busy_until_idx:
+        # continue`): eine Signalkerze, die bereits VOR/WAEHREND des letzten
+        # Trade-Exits geoeffnet hat, wird dort nie gehandelt -- Entry nur bei
+        # Kerzen, die nach dem Exit beginnen. Ohne dieses Gate stieg live
+        # stundenlang verspaetet auf ein altes Signal ein (Live-Vorfall
+        # DOGE/USDT 6h 2026-10-08: Short-Exit 15:23, danach Long auf die
+        # 06:00-Kerze bei 0.0834 -- Entry bereits UNTER dem SL 0.08383).
+        last_exit_time = tracker_pre.get('last_exit_time')
+        if last_exit_time and pd.Timestamp(candle_time) <= pd.Timestamp(last_exit_time):
+            logger.info(f"Signalkerze {candle_time} begann vor dem letzten Exit ({last_exit_time}) "
+                        f"— im Backtest nicht handelbar, kein Entry.")
+            return
 
     if side == 'long' and not params.get('behavior', {}).get('use_longs', True):
         logger.info("Longs deaktiviert.")
@@ -676,6 +688,20 @@ def place_entry_orders(
 
     if sl_pct <= 0:
         logger.warning("SL-Distanz = 0. Überspringe.")
+        return
+
+    # Aktueller Preis bereits jenseits des strukturellen SL → Entry wuerde sofort
+    # im Verlust starten, SL-Trigger laege auf der falschen Seite des Kurses und
+    # der Overshoot-Check im naechsten Zyklus wuerde die Position wieder
+    # schliessen (Entry/Close-Schleife, DOGE 2026-10-08).
+    try:
+        live_price = float(exchange.fetch_ticker(symbol)['last'])
+    except Exception as e:
+        logger.warning(f"Ticker nicht abrufbar ({e}) — nutze Signal-Entry fuer SL-Seiten-Check.")
+        live_price = entry_price
+    if (side == 'long' and live_price <= sl_price) or (side == 'short' and live_price >= sl_price):
+        logger.warning(f"Preis {live_price:.6f} liegt bereits jenseits des SL {sl_price:.6f} "
+                       f"({side.upper()}) — kein Entry.")
         return
 
     # Positionsgröße: risikiertes Kapital / SL-Distanz
@@ -1027,8 +1053,20 @@ def full_trade_cycle(
                     time.sleep(2)
                     remaining = exchange.fetch_open_positions(symbol)
                     if not remaining:
-                        _write_tracker(tracker_path, {})
-                        logger.info(f"Overshoot-Schließung {symbol} erfolgreich — Tracker geleert.")
+                        # Nicht komplett leeren: performance (5-Verlust-Pause),
+                        # last_entry_candle_time und last_exit_time muessen
+                        # erhalten bleiben, sonst steigt der naechste Zyklus
+                        # sofort wieder auf dieselbe Signalkerze ein
+                        # (Entry/Close-Schleife DOGE 2026-10-08).
+                        ov_tracker.update({
+                            "stop_loss_ids": [], "take_profit_ids": [],
+                            "active_genome": None, "status": "ok_to_trade",
+                            "last_exit_time": datetime.now(timezone.utc).isoformat(),
+                        })
+                        ov_tracker.pop('last_notified_entry_price', None)
+                        ov_tracker.pop('last_notified_side', None)
+                        _write_tracker(tracker_path, ov_tracker)
+                        logger.info(f"Overshoot-Schließung {symbol} erfolgreich — Trade-Daten im Tracker zurückgesetzt.")
                     else:
                         logger.error(f"Overshoot-Schließung {symbol}: Position noch offen!")
                     send_message(
@@ -1059,6 +1097,9 @@ def full_trade_cycle(
             # Bitget Trailing Stop führt eine Market-Order aus → in fetchClosedOrders(stop=False)
             fill_price = None
             outcome = None
+            # Exit-Zeitpunkt fuer das Backtest-Paritaets-Gate in place_entry_orders();
+            # echter Fill-Zeitstempel falls verfuegbar, sonst Erkennungszeitpunkt.
+            exit_time = datetime.now(timezone.utc)
             try:
                 closed_orders = exchange.fetch_recent_closed_market_orders(symbol, limit=10)
                 reduce_fills = [
@@ -1070,6 +1111,8 @@ def full_trade_cycle(
                     # Neueste Ausführung nehmen
                     latest = max(reduce_fills, key=lambda o: o.get('timestamp') or 0)
                     fill_price = float(latest.get('average') or latest.get('price') or 0)
+                    if latest.get('timestamp'):
+                        exit_time = datetime.fromtimestamp(latest['timestamp'] / 1000, tz=timezone.utc)
                     logger.info(f"Trailing Stop-Ausführung gefunden: fill @ {fill_price:.6f}")
             except Exception as e:
                 logger.error(f"Fehler beim Abrufen der Trailing-Stop-Ausführung: {e}")
@@ -1118,7 +1161,8 @@ def full_trade_cycle(
                     pass
 
             tracker = read_tracker(tracker_path)
-            tracker.update({"stop_loss_ids": [], "take_profit_ids": [], "status": "ok_to_trade"})
+            tracker.update({"stop_loss_ids": [], "take_profit_ids": [], "status": "ok_to_trade",
+                            "last_exit_time": exit_time.isoformat()})
             tracker.pop('last_notified_entry_price', None)
             tracker.pop('last_notified_side', None)
             _write_tracker(tracker_path, tracker)

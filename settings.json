@@ -3,6 +3,24 @@
     "_note": "active_strategies: welche Coins live getradet werden (momentum_exit). risk_genome_discover.py liest daraus automatisch alle Eintraege mit strategy_type='momentum_exit'.",
     "active_strategies": [
       {
+        "symbol": "DOGE/USDT:USDT",
+        "timeframe": "6h",
+        "strategy_type": "momentum_exit",
+        "momentum_exit_overrides": {
+          "enabled": true
+        },
+        "active": true
+      },
+      {
+        "symbol": "AAVE/USDT:USDT",
+        "timeframe": "4h",
+        "strategy_type": "momentum_exit",
+        "momentum_exit_overrides": {
+          "enabled": true
+        },
+        "active": true
+      },
+      {
         "symbol": "ADA/USDT:USDT",
         "timeframe": "4h",
         "strategy_type": "momentum_exit",
@@ -12,19 +30,13 @@
         "active": true
       },
       {
-        "symbol": "AAVE/USDT:USDT",
-        "timeframe": "6h",
+        "symbol": "NEAR/USDT:USDT",
+        "timeframe": "4h",
         "strategy_type": "momentum_exit",
         "momentum_exit_overrides": {
-          "enabled": true,
-          "seq_len": 5
+          "enabled": true
         },
-        "active": true,
-        "risk_overrides": {
-          "rr_ratio": 1.5,
-          "risk_per_entry_pct": 1.0,
-          "trailing_callback_rate_pct": 0.5
-        }
+        "active": true
       }
     ],
     "_active_strategies_source": "2026-08-24: momentum_exit-Strategie (Fund AQ/AR, siehe Memory research_dnabot_direction_calibration.md) fuer alle 7 recherchierten Pairs bei 6h -- validiert per backtest_momentum_exit.py gegen echte Bitget-Daten ueber die echte Live-Signalfunktion: 6/7 Pairs positiv voller Zeitraum, 5/7 positiv im 26W-OOS-Fenster (SOL OOS -14.6%, DOGE/ETH OOS marginal). User hat explizit alle 7 wie getestet aktiviert."
@@ -55,7 +67,7 @@
     },
     "backtest_lookback_weeks": 26,
     "_backtest_lookback_note": "Wird von run_portfolio_optimizer_momentum_exit.py gelesen, um --start-date herzuleiten (rollend: heute - N Wochen), falls nicht explizit per CLI gesetzt. Dokumentiert ausserdem die im Projekt etablierte OOS-Fensterkonvention (risk_genome_discover.py::OOS_WEEKS ist dort separat hartkodiert). 26W statt kuerzerer Fenster: kuerzere Fenster hatten mehr Leerwochen (kein Trade) und dadurch kuenstlich hohen Calmar.",
-    "start_capital": 1000,
+    "start_capital": 100,
     "max_drawdown_pct": 30,
     "_max_drawdown_pct_note": "Obergrenze fuer die Team-Auswahl im Portfolio-Optimizer -- er fuegt so lange weitere Coins hinzu, wie das gemeinsame Calmar-Ergebnis steigt UND dieses Limit nicht gerissen wird.",
     "send_telegram_on_completion": true

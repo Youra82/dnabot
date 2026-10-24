@@ -42,6 +42,49 @@ logger = logging.getLogger(__name__)
 FETCH_LIMIT = 200  # identisch zu trade_manager.py::FETCH_LIMIT (Live-Fenstergroesse)
 
 
+def simulate_momentum_exit_trades(df, symbol, timeframe, seq_len, rr_ratio, trailing_callback_pct_percent):
+    """Trades der momentum_exit-Strategie auf df -- gemeinsam fuer die Pipeline (main) und den
+    taeglichen Live-vs-Backtest-Abgleich (daily_live_vs_backtest_check.py).
+    trailing_callback_pct_percent in Prozent (0.5 = 0,5 %)."""
+    params = {
+        'market': {'symbol': symbol, 'timeframe': timeframe},
+        'risk': {'rr_ratio': rr_ratio},
+        'momentum_exit': {'enabled': True, 'seq_len': seq_len},
+    }
+    trailing_callback_pct = trailing_callback_pct_percent / 100.0
+    dummy_genome = {'genome_id': 'MOM', 'score': 0.0, 'wins': 0, 'total_occurrences': 1}
+
+    trades = []
+    busy_until_idx = -1
+    n = len(df)
+    warmup = max(seq_len, MIN_CANDLES_REQUIRED)
+
+    for i in range(warmup, n):
+        if i <= busy_until_idx:
+            continue
+        # Live-treue Fenstergroesse: dieselben letzten FETCH_LIMIT Kerzen,
+        # die trade_manager.py::full_trade_cycle() via fetch_recent_ohlcv sehen wuerde.
+        window = df.iloc[max(0, i + 1 - FETCH_LIMIT):i + 1]
+        signal = get_momentum_exit_signal(window, params)
+        if signal is None:
+            continue
+
+        sim_signal = {
+            'seq_len': seq_len,
+            'direction': signal['side'].upper(),
+            'rr_ratio': rr_ratio,
+            'genome': dummy_genome,
+        }
+        # max_hold_candles wie im urspruenglichen Fund-AQ-Research: kein
+        # separates Timeout-Limit noetig ueber die reguläre simulate_trade()-
+        # Kappung hinaus -- Standard 20 Kerzen (backtester.py-Default).
+        trade = simulate_trade(sim_signal, df, i, max_hold_candles=20,
+                                trailing_callback_pct=trailing_callback_pct)
+        trades.append(trade)
+        busy_until_idx = trade['exit_idx']
+    return trades
+
+
 def main():
     parser = argparse.ArgumentParser(description="Backtest-Validator: momentum_exit-Strategie (Fund AQ)")
     parser.add_argument('--symbol', type=str, required=True)
@@ -76,42 +119,8 @@ def main():
         sys.exit(1)
     logger.info(f"{len(df)} Kerzen geladen.")
 
-    params = {
-        'market': {'symbol': args.symbol, 'timeframe': args.timeframe},
-        'risk': {'rr_ratio': args.rr_ratio},
-        'momentum_exit': {'enabled': True, 'seq_len': args.seq_len},
-    }
-    trailing_callback_pct = args.trailing_callback_pct / 100.0
-    dummy_genome = {'genome_id': 'MOM', 'score': 0.0, 'wins': 0, 'total_occurrences': 1}
-
-    trades = []
-    busy_until_idx = -1
-    n = len(df)
-    warmup = max(args.seq_len, MIN_CANDLES_REQUIRED)
-
-    for i in range(warmup, n):
-        if i <= busy_until_idx:
-            continue
-        # Live-treue Fenstergroesse: dieselben letzten FETCH_LIMIT Kerzen,
-        # die trade_manager.py::full_trade_cycle() via fetch_recent_ohlcv sehen wuerde.
-        window = df.iloc[max(0, i + 1 - FETCH_LIMIT):i + 1]
-        signal = get_momentum_exit_signal(window, params)
-        if signal is None:
-            continue
-
-        sim_signal = {
-            'seq_len': args.seq_len,
-            'direction': signal['side'].upper(),
-            'rr_ratio': args.rr_ratio,
-            'genome': dummy_genome,
-        }
-        # max_hold_candles wie im urspruenglichen Fund-AQ-Research: kein
-        # separates Timeout-Limit noetig ueber die reguläre simulate_trade()-
-        # Kappung hinaus -- Standard 20 Kerzen (backtester.py-Default).
-        trade = simulate_trade(sim_signal, df, i, max_hold_candles=20,
-                                trailing_callback_pct=trailing_callback_pct)
-        trades.append(trade)
-        busy_until_idx = trade['exit_idx']
+    trades = simulate_momentum_exit_trades(df, args.symbol, args.timeframe, args.seq_len,
+                                           args.rr_ratio, args.trailing_callback_pct)
 
     logger.info(f"{len(trades)} Trades simuliert.")
 

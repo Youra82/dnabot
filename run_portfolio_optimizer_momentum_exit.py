@@ -191,7 +191,7 @@ def load_all_results(start_date=None, end_date=None):
 
 
 def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
-                        fee_pct: float = FEE_PCT_PER_SIDE) -> dict:
+                        fee_pct: float = FEE_PCT_PER_SIDE, return_trades: bool = False) -> dict:
     """Simuliert ein Portfolio mit GEMEINSAMEM Kapital-Pool -- alle Trades aller
     Pairs chronologisch zusammengefuehrt, jeder Trade riskiert risk_pct% der
     AKTUELLEN Equity (Kompoundierung)."""
@@ -211,6 +211,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
                 'pnl_pct':   t.get('pnl_pct', 0.0),
                 'sl_pct':    t.get('sl_pct', 1.0),
                 'entry_time': str(t.get('entry_time', '')),
+                '_src':       t,
             })
 
     all_trades.sort(key=lambda t: t['entry_time'])
@@ -234,6 +235,7 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
             pnl -= position_size * (fee_pct / 100.0) * 2.0  # Einstieg + Ausstieg
         if outcome == 'WIN':
             wins += 1
+        t['pnl_usdt'] = pnl
 
         equity += pnl
         if equity > peak:
@@ -246,13 +248,17 @@ def simulate_portfolio(pair_results: list, capital: float, risk_pct: float,
     n = len(all_trades)
     total_pnl_pct = (equity - capital) / capital * 100.0 if capital > 0 else 0.0
 
-    return {
+    result = {
         'total_pnl_pct': total_pnl_pct,
         'final_equity':  equity,
         'max_dd':        max_dd,
         'n_trades':      n,
         'win_rate':      wins / n if n > 0 else 0.0,
     }
+    if return_trades:  # Ergebnis je Trade (Live-vs-Backtest-Abgleich), aendert keine Rechnung
+        result['trades'] = [{**t['_src'], 'market': t['market'], 'timeframe': t['timeframe'],
+                             'pnl_usdt': t['pnl_usdt']} for t in all_trades]
+    return result
 
 
 def compute_filtered_stats(trades: list, capital: float, risk_pct: float,
@@ -733,7 +739,29 @@ def generate_trades_excel(selected: list, pm: dict, capital: float, risk_pct: fl
     return output_file
 
 
+def _active_keys() -> list:
+    from dnabot.utils.team_history import strategy_key
+    try:
+        with open(SETTINGS_PATH, encoding='utf-8') as f:
+            active = json.load(f).get('live_trading_settings', {}).get('active_strategies', [])
+        return sorted(strategy_key(s['symbol'], s['timeframe']) for s in active if s.get('active'))
+    except Exception:
+        return []
+
+
+def _record_selection(team_before: list) -> None:
+    """Teamhistorie: Ergebnis der Portfolio-Auswahl festhalten, auch wenn das Team gleich bleibt."""
+    try:
+        from dnabot.utils.team_history import record_team
+        after = _active_keys()
+        record_team(after, source='wochenauswahl: neu' if after != team_before else 'wochenauswahl: beibehalten',
+                    force=True)
+    except Exception as e:
+        print(f"  Warnung: Teamhistorie nicht geschrieben: {e}")
+
+
 def write_to_settings(selected: list, risk_pct: float = None):
+    team_before = _active_keys()
     try:
         with open(SETTINGS_PATH, encoding='utf-8') as f:
             settings = json.load(f)
@@ -779,6 +807,7 @@ def write_to_settings(selected: list, risk_pct: float = None):
     try:
         with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
+        _record_selection(team_before)
         risk_info = f" | Risiko/Trade: {risk_pct}%" if risk_pct is not None else ""
         print(f"\n{G}✓ settings.json aktualisiert — {len(new_strategies)} Strategie(n) eingetragen{risk_info}.{NC}\n")
         return True

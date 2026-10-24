@@ -52,6 +52,18 @@ def _run_auto_optimizer():
         logging.warning(f"Auto-Optimizer-Scheduler konnte nicht gestartet werden: {e}")
 
 
+def _record_team(strategies):
+    """Teamhistorie: welches Portfolio ab wann live lief (fuer Live-vs-Backtest-Abgleich)."""
+    try:
+        from dnabot.utils.team_history import record_team, strategy_key
+        keys = [strategy_key(s['symbol'], s['timeframe']) for s in strategies
+                if isinstance(s, dict) and s.get('active') and s.get('symbol') and s.get('timeframe')]
+        if record_team(keys, source='master_runner'):
+            logging.info(f"Teamhistorie: neues Team aufgezeichnet ({len(keys)} Strategien).")
+    except Exception as e:
+        logging.warning(f"Teamhistorie nicht geschrieben: {e}")
+
+
 def main():
     settings_file = os.path.join(SCRIPT_DIR, 'settings.json')
     secret_file = os.path.join(SCRIPT_DIR, 'secret.json')
@@ -68,6 +80,13 @@ def main():
 
     _run_auto_optimizer()
 
+    # Taeglicher Live-vs-Backtest-Abgleich im Hintergrund (prueft selbst, ob faellig)
+    daily_check = os.path.join(SCRIPT_DIR, 'daily_live_vs_backtest_check.py')
+    if os.path.exists(daily_check):
+        os.makedirs(os.path.join(SCRIPT_DIR, 'logs'), exist_ok=True)
+        with open(os.path.join(SCRIPT_DIR, 'logs', 'daily_live_vs_backtest_check.log'), 'a') as log_f:
+            subprocess.Popen([python_exe, daily_check], stdout=log_f, stderr=subprocess.STDOUT)
+
     try:
         with open(settings_file, 'r') as f:
             settings = json.load(f)
@@ -82,6 +101,7 @@ def main():
         if not strategies:
             logging.warning("Keine aktiven Strategien in settings.json.")
             return
+        _record_team(strategies)
 
         for strat in strategies:
             if not isinstance(strat, dict) or not strat.get('active', False):

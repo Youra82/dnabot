@@ -174,6 +174,40 @@ def check_orders(open_pos, plans):
     return flags
 
 
+def positions_without_sl(open_pos, plans):
+    """Offene Positionen ohne Stop-Loss bei Bitget. SL = Schliess-Order auf der Verlustseite des
+    aktuellen Kurses (Long: Trigger unter dem Kurs, Short: darueber) oder ein an der Einstiegs-
+    Order haengender SL (stopLossTriggerPrice). TP wird bewusst nicht verlangt -- mehrere Bots
+    steigen ohne TP-Order aus (Trailing, Gegen-Brick, Market-Close)."""
+    flags = []
+    for p in open_pos:
+        side, sym = p.get('holdSide'), p.get('symbol')
+        try:
+            mark = float(p.get('markPrice') or p.get('openPriceAvg') or 0)
+        except (TypeError, ValueError):
+            mark = 0.0
+        has_sl = False
+        for o in plans:
+            if o.get('symbol') != sym or o.get('tradeSide') == 'open':
+                continue
+            if o.get('posSide') and side and o['posSide'] != side:
+                continue
+            if str(o.get('stopLossTriggerPrice') or '0') not in ('', '0', '0.0'):
+                has_sl = True
+                break
+            try:
+                trig = float(o.get('triggerPrice') or 0)
+            except (TypeError, ValueError):
+                continue
+            if o.get('planType') != 'track_plan' and trig > 0 and mark > 0 and (
+                    (side == 'long' and trig < mark) or (side == 'short' and trig > mark)):
+                has_sl = True
+                break
+        if not has_sl:
+            flags.append(f"❗ Position {sym[:-4]} {side} OHNE Stop-Loss bei Bitget (Kurs {mark:g})")
+    return flags
+
+
 # --- Simulator-Seite ----------------------------------------------------------
 
 def _symbol_raw(key):
@@ -510,7 +544,7 @@ def run_check(days, send, history_path):
     # Live mit Trades vor Beginn der Teamhistorie gegen einen Backtest ohne diese Trades
     live_eval = [t for t in live if not any(t is u for u in unknown)]
     items = build_items(rows, extra, missing, live_eval, end)
-    order_flags = data_flags + check_orders(open_pos, plans)
+    order_flags = positions_without_sl(open_pos, plans) + data_flags + check_orders(open_pos, plans)
     team_lines = portfolio_lines(hist, start, end)
     msg = build_message(items, unknown, order_flags, live_eval, equity, days, team_lines)
     print(msg)
